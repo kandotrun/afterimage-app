@@ -127,7 +127,7 @@ struct UploadPlan: Decodable, Equatable, Sendable {
                 throw DecodingError.dataCorruptedError(forKey: .url, in: container, debugDescription: "single upload requires url")
             }
         case .multipart:
-            guard uploadId != nil, partSize != nil, partCount != nil, partUrlTemplate != nil else {
+            guard partSize != nil, partCount != nil, partUrlTemplate != nil else {
                 throw DecodingError.dataCorruptedError(forKey: .partUrlTemplate, in: container, debugDescription: "multipart upload plan is incomplete")
             }
         }
