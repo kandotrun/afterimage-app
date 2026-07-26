@@ -72,6 +72,7 @@ interface UploadPartRow {
 
 interface CleanupAssetRow {
   id: string;
+  user_id: string;
   object_key: string;
   thumbnail_key: string | null;
   upload_mode: "single" | "multipart";
@@ -254,6 +255,73 @@ function decodeCursor(value: string | undefined): [string, string] | null {
   }
 }
 
+async function renewAssetStatus(
+  bindings: Env,
+  assetId: string,
+  userId: string,
+  status: "uploading" | "ready",
+  now: Date,
+): Promise<boolean> {
+  const result = await bindings.DB.prepare(
+    "UPDATE assets SET updated_at = ? WHERE id = ? AND user_id = ? AND status = ?",
+  ).bind(now.toISOString(), assetId, userId, status).run();
+  return (result.meta.changes ?? 0) === 1;
+}
+
+const SINGLE_UPLOAD_LEASE_TTL_MS = 15 * 60 * 1000;
+
+async function claimSingleUploadLease(
+  bindings: Env,
+  assetId: string,
+  userId: string,
+  lease: string,
+  now: Date,
+): Promise<boolean> {
+  const staleBefore = new Date(now.getTime() - SINGLE_UPLOAD_LEASE_TTL_MS).toISOString();
+  const result = await bindings.DB.prepare(
+    `UPDATE assets SET upload_lease = ?, updated_at = ?
+      WHERE id = ? AND user_id = ? AND status = 'uploading' AND upload_mode = 'single'
+        AND (upload_lease IS NULL OR updated_at <= ?)`,
+  ).bind(lease, now.toISOString(), assetId, userId, staleBefore).run();
+  return (result.meta.changes ?? 0) === 1;
+}
+
+async function releaseSingleUploadLease(
+  bindings: Env,
+  assetId: string,
+  userId: string,
+  lease: string,
+  now: Date,
+): Promise<void> {
+  await bindings.DB.prepare(
+    `UPDATE assets SET upload_lease = NULL, updated_at = ?
+      WHERE id = ? AND user_id = ? AND status = 'uploading' AND upload_lease = ?`,
+  ).bind(now.toISOString(), assetId, userId, lease).run();
+}
+
+function assetObjectPrefix(userId: string, assetId: string): string {
+  return `users/${userId}/assets/${assetId}/`;
+}
+
+async function deleteAssetPrefixObjects(
+  bindings: Env,
+  userId: string,
+  assetId: string,
+  keepKeys: ReadonlySet<string> = new Set(),
+): Promise<void> {
+  const prefix = assetObjectPrefix(userId, assetId);
+  let cursor: string | undefined;
+  do {
+    const options: R2ListOptions = cursor
+      ? { prefix, cursor, limit: 1_000 }
+      : { prefix, limit: 1_000 };
+    const listed = await bindings.MEDIA.list(options);
+    const keys = listed.objects.map((object) => object.key).filter((key) => !keepKeys.has(key));
+    if (keys.length > 0) await bindings.MEDIA.delete(keys);
+    cursor = listed.truncated ? listed.cursor : undefined;
+  } while (cursor);
+}
+
 function authMiddleware(now: () => Date): MiddlewareHandler<AppEnvironment> {
   return async (context, next) => {
     const authorization = context.req.header("authorization");
@@ -285,19 +353,22 @@ export async function cleanupExpiredState(bindings: Env, now = new Date()) {
     bindings.DB.prepare("DELETE FROM media_grants WHERE expires_at <= ?").bind(nowIso),
   ]);
   const candidates = await bindings.DB.prepare(
-    `SELECT id, object_key, thumbnail_key, upload_mode, upload_id, status
+    `SELECT id, user_id, object_key, thumbnail_key, upload_mode, upload_id, status
        FROM assets
       WHERE status IN ('uploading', 'failed') AND updated_at <= ?
-      ORDER BY updated_at ASC LIMIT 100`,
+      ORDER BY updated_at ASC, id ASC LIMIT 100`,
   ).bind(staleBefore).all<CleanupAssetRow>();
 
+  let quarantinedAssets = 0;
   let abandonedAssets = 0;
   for (const asset of candidates.results) {
     if (asset.status === "uploading") {
-      const claim = await bindings.DB.prepare(
-        "UPDATE assets SET status = 'failed' WHERE id = ? AND status = 'uploading' AND updated_at <= ?",
-      ).bind(asset.id, staleBefore).run();
-      if ((claim.meta.changes ?? 0) === 0) continue;
+      const quarantined = await bindings.DB.prepare(
+        `UPDATE assets SET status = 'failed', updated_at = ?
+          WHERE id = ? AND status = 'uploading' AND updated_at <= ?`,
+      ).bind(nowIso, asset.id, staleBefore).run();
+      quarantinedAssets += quarantined.meta.changes ?? 0;
+      continue;
     }
 
     if (asset.upload_mode === "multipart" && asset.upload_id) {
@@ -307,10 +378,9 @@ export async function cleanupExpiredState(bindings: Env, now = new Date()) {
         // R2 may already have expired or aborted the multipart upload.
       }
     }
-    const objectKeys = asset.thumbnail_key
-      ? [asset.object_key, asset.thumbnail_key]
-      : [asset.object_key];
-    await bindings.MEDIA.delete(objectKeys);
+    const thumbnailKey = `${assetObjectPrefix(asset.user_id, asset.id)}thumbnail.jpg`;
+    await bindings.MEDIA.delete([asset.object_key, thumbnailKey]);
+    await deleteAssetPrefixObjects(bindings, asset.user_id, asset.id);
     const deleted = await bindings.DB.prepare(
       "DELETE FROM assets WHERE id = ? AND status = 'failed'",
     ).bind(asset.id).run();
@@ -320,6 +390,7 @@ export async function cleanupExpiredState(bindings: Env, now = new Date()) {
   return {
     expiredSessions: expiredSessions?.meta.changes ?? 0,
     expiredGrants: expiredGrants?.meta.changes ?? 0,
+    quarantinedAssets,
     abandonedAssets,
   };
 }
@@ -501,13 +572,42 @@ export function createApp(overrides: Partial<AppDependencies> = {}) {
       return errorResponse(context, 400, "upload_size_mismatch", "Upload length differs from its declared size.");
     }
     if (!context.req.raw.body) return errorResponse(context, 400, "missing_body", "Upload body is required.");
-    await context.env.MEDIA.put(asset.object_key, context.req.raw.body, {
-      httpMetadata: { contentType: asset.content_type },
-      customMetadata: { assetId: asset.id, userId: auth.userId },
-    });
-    await context.env.DB.prepare(
-      "UPDATE assets SET updated_at = ? WHERE id = ? AND user_id = ? AND status = 'uploading'",
-    ).bind(dependencies.now().toISOString(), asset.id, auth.userId).run();
+
+    const lease = crypto.randomUUID();
+    const now = dependencies.now();
+    const claimed = await claimSingleUploadLease(context.env, asset.id, auth.userId, lease, now);
+    if (!claimed) {
+      return errorResponse(context, 409, "upload_conflict", "Another upload or completion is active.");
+    }
+    const attemptKey = `${assetObjectPrefix(auth.userId, asset.id)}attempts/${lease}`;
+    try {
+      await context.env.MEDIA.put(attemptKey, context.req.raw.body, {
+        httpMetadata: { contentType: asset.content_type },
+        customMetadata: { assetId: asset.id, userId: auth.userId, uploadLease: lease },
+      });
+    } catch (error) {
+      try {
+        await releaseSingleUploadLease(context.env, asset.id, auth.userId, lease, dependencies.now());
+      } catch {
+        // The lease expires; preserve an ambiguously written attempt for prefix cleanup.
+      }
+      throw error;
+    }
+
+    let finalized: D1Result;
+    try {
+      finalized = await context.env.DB.prepare(
+        `UPDATE assets SET object_key = ?, upload_lease = NULL, updated_at = ?
+          WHERE id = ? AND user_id = ? AND status = 'uploading' AND upload_lease = ?`,
+      ).bind(attemptKey, dependencies.now().toISOString(), asset.id, auth.userId, lease).run();
+    } catch (error) {
+      // A D1 exception is ambiguous: it may have committed. Never delete the unique attempt here.
+      throw error;
+    }
+    if ((finalized.meta.changes ?? 0) !== 1) {
+      await context.env.MEDIA.delete(attemptKey);
+      return errorResponse(context, 409, "upload_conflict", "Upload was cancelled while data was being stored.");
+    }
     return new Response(null, { status: 204 });
   });
 
@@ -531,10 +631,20 @@ export function createApp(overrides: Partial<AppDependencies> = {}) {
       return errorResponse(context, 400, "invalid_part_size", "Part length differs from the upload plan.");
     }
     if (!context.req.raw.body) return errorResponse(context, 400, "missing_body", "Part body is required.");
+    const leaseRenewed = await renewAssetStatus(
+      context.env,
+      asset.id,
+      auth.userId,
+      "uploading",
+      dependencies.now(),
+    );
+    if (!leaseRenewed) {
+      return errorResponse(context, 409, "upload_conflict", "Upload is no longer active.");
+    }
 
     const upload = context.env.MEDIA.resumeMultipartUpload(asset.object_key, asset.upload_id);
     const uploadedPart = await upload.uploadPart(partNumber, context.req.raw.body);
-    await context.env.DB.batch([
+    const batchResults = await context.env.DB.batch([
       context.env.DB.prepare(
         `INSERT INTO upload_parts (asset_id, part_number, etag) VALUES (?, ?, ?)
          ON CONFLICT(asset_id, part_number) DO UPDATE SET etag = excluded.etag`,
@@ -543,15 +653,65 @@ export function createApp(overrides: Partial<AppDependencies> = {}) {
         "UPDATE assets SET updated_at = ? WHERE id = ? AND user_id = ? AND status = 'uploading'",
       ).bind(dependencies.now().toISOString(), asset.id, auth.userId),
     ]);
+    if ((batchResults[1]?.meta.changes ?? 0) !== 1) {
+      try {
+        await upload.abort();
+      } catch {
+        // The winning deletion or cleanup may already have aborted it.
+      }
+      await context.env.DB.prepare(
+        "DELETE FROM upload_parts WHERE asset_id = ? AND part_number = ?",
+      ).bind(asset.id, partNumber).run();
+      return errorResponse(context, 409, "upload_conflict", "Upload was cancelled while the part was being stored.");
+    }
     return context.json({ part: uploadedPart });
   });
 
   api.post("/assets/:assetId/upload/complete", async (context) => {
     const auth = context.get("auth");
-    const asset = await findOwnedAsset(context.env, context.req.param("assetId"), auth.userId);
+    let asset = await findOwnedAsset(context.env, context.req.param("assetId"), auth.userId);
     if (!asset) return errorResponse(context, 404, "upload_not_found", "Upload was not found.");
-    if (asset.status === "ready") return context.json({ asset: assetJson(asset) });
+    if (asset.status === "ready") {
+      try {
+        const keep = new Set([asset.object_key, ...(asset.thumbnail_key ? [asset.thumbnail_key] : [])]);
+        await deleteAssetPrefixObjects(context.env, auth.userId, asset.id, keep);
+      } catch {
+        // Prefix cleanup is best-effort; the ready object remains authoritative in D1.
+      }
+      return context.json({ asset: assetJson(asset) });
+    }
     if (asset.status !== "uploading") return errorResponse(context, 409, "upload_failed", "Upload cannot be completed.");
+
+    let completionLease: string | undefined;
+    if (asset.upload_mode === "single") {
+      completionLease = crypto.randomUUID();
+      const claimed = await claimSingleUploadLease(
+        context.env,
+        asset.id,
+        auth.userId,
+        completionLease,
+        dependencies.now(),
+      );
+      if (!claimed) {
+        return errorResponse(context, 409, "upload_conflict", "An upload or completion is still active.");
+      }
+      const refreshed = await findOwnedAsset(context.env, asset.id, auth.userId);
+      if (!refreshed || refreshed.status !== "uploading") {
+        return errorResponse(context, 409, "upload_conflict", "Upload state changed during completion.");
+      }
+      asset = refreshed;
+    } else {
+      const leaseRenewed = await renewAssetStatus(
+        context.env,
+        asset.id,
+        auth.userId,
+        "uploading",
+        dependencies.now(),
+      );
+      if (!leaseRenewed) {
+        return errorResponse(context, 409, "upload_conflict", "Upload is no longer active.");
+      }
+    }
 
     if (asset.upload_mode === "multipart") {
       if (!asset.upload_id || !asset.part_size) {
@@ -569,23 +729,80 @@ export function createApp(overrides: Partial<AppDependencies> = {}) {
       try {
         await context.env.MEDIA.resumeMultipartUpload(asset.object_key, asset.upload_id).complete(completeParts);
       } catch {
-        return errorResponse(context, 409, "multipart_completion_failed", "R2 rejected multipart completion.");
+        const alreadyCompleted = await context.env.MEDIA.head(asset.object_key);
+        if (!alreadyCompleted) {
+          return errorResponse(context, 409, "multipart_completion_failed", "R2 rejected multipart completion.");
+        }
       }
     }
 
-    const object = await context.env.MEDIA.head(asset.object_key);
-    if (!object) return errorResponse(context, 409, "upload_object_missing", "Uploaded object does not exist.");
+    let object: R2Object | null;
+    try {
+      object = await context.env.MEDIA.head(asset.object_key);
+    } catch (error) {
+      if (completionLease) {
+        try {
+          await releaseSingleUploadLease(context.env, asset.id, auth.userId, completionLease, dependencies.now());
+        } catch {
+          // The lease expires if D1 is unavailable.
+        }
+      }
+      throw error;
+    }
+    if (!object) {
+      if (completionLease) {
+        await releaseSingleUploadLease(context.env, asset.id, auth.userId, completionLease, dependencies.now());
+      }
+      return errorResponse(context, 409, "upload_object_missing", "Uploaded object does not exist.");
+    }
     if (object.size !== asset.byte_size) {
-      if (asset.upload_mode === "single") await context.env.MEDIA.delete(asset.object_key);
+      const failed = completionLease
+        ? await context.env.DB.prepare(
+            `UPDATE assets SET status = 'failed', upload_lease = NULL, updated_at = ?
+              WHERE id = ? AND user_id = ? AND status = 'uploading' AND upload_lease = ?`,
+          ).bind(dependencies.now().toISOString(), asset.id, auth.userId, completionLease).run()
+        : await context.env.DB.prepare(
+            "UPDATE assets SET status = 'failed', updated_at = ? WHERE id = ? AND user_id = ? AND status = 'uploading'",
+          ).bind(dependencies.now().toISOString(), asset.id, auth.userId).run();
+      if ((failed.meta.changes ?? 0) === 1) await context.env.MEDIA.delete(asset.object_key);
       return errorResponse(context, 409, "upload_size_mismatch", "Uploaded object size differs from metadata.");
     }
 
     const updatedAt = dependencies.now().toISOString();
-    await context.env.DB.prepare(
-      "UPDATE assets SET status = 'ready', updated_at = ? WHERE id = ? AND user_id = ? AND status = 'uploading'",
-    ).bind(updatedAt, asset.id, auth.userId).run();
+    let readyTransition: D1Result;
+    try {
+      readyTransition = completionLease
+        ? await context.env.DB.prepare(
+            `UPDATE assets SET status = 'ready', upload_lease = NULL, updated_at = ?
+              WHERE id = ? AND user_id = ? AND status = 'uploading' AND upload_lease = ?`,
+          ).bind(updatedAt, asset.id, auth.userId, completionLease).run()
+        : await context.env.DB.prepare(
+            "UPDATE assets SET status = 'ready', updated_at = ? WHERE id = ? AND user_id = ? AND status = 'uploading'",
+          ).bind(updatedAt, asset.id, auth.userId).run();
+    } catch (error) {
+      // A D1 exception is ambiguous: preserving the referenced R2 object avoids committed-row data loss.
+      throw error;
+    }
+    if ((readyTransition.meta.changes ?? 0) !== 1) {
+      const concurrent = await findOwnedAsset(context.env, asset.id, auth.userId);
+      if (concurrent?.status === "ready") {
+        return context.json({ asset: assetJson(concurrent) });
+      }
+      if (!concurrent || concurrent.status === "failed") {
+        await context.env.MEDIA.delete(asset.object_key);
+      }
+      return errorResponse(context, 409, "upload_conflict", "Upload was cancelled while completion was being stored.");
+    }
     const completed = await findOwnedAsset(context.env, asset.id, auth.userId);
-    if (!completed) throw new Error("completed asset disappeared");
+    if (!completed) {
+      return errorResponse(context, 409, "upload_conflict", "Asset was deleted during completion.");
+    }
+    try {
+      const keep = new Set([completed.object_key, ...(completed.thumbnail_key ? [completed.thumbnail_key] : [])]);
+      await deleteAssetPrefixObjects(context.env, auth.userId, completed.id, keep);
+    } catch {
+      // Orphan attempt cleanup is best-effort and can be retried by an idempotent completion call.
+    }
     return context.json({ asset: assetJson(completed) });
   });
 
@@ -630,14 +847,28 @@ export function createApp(overrides: Partial<AppDependencies> = {}) {
       return errorResponse(context, 413, "thumbnail_size_invalid", "Thumbnail must be at most 5 MiB.");
     }
     if (!context.req.raw.body) return errorResponse(context, 400, "missing_body", "Thumbnail body is required.");
+    const leaseRenewed = await renewAssetStatus(
+      context.env,
+      asset.id,
+      auth.userId,
+      "ready",
+      dependencies.now(),
+    );
+    if (!leaseRenewed) {
+      return errorResponse(context, 409, "thumbnail_conflict", "Asset is no longer available for thumbnail upload.");
+    }
     const thumbnailKey = `users/${auth.userId}/assets/${asset.id}/thumbnail.jpg`;
     await context.env.MEDIA.put(thumbnailKey, context.req.raw.body, {
       httpMetadata: { contentType: "image/jpeg" },
       customMetadata: { assetId: asset.id, userId: auth.userId, role: "thumbnail" },
     });
-    await context.env.DB.prepare(
-      "UPDATE assets SET thumbnail_key = ?, updated_at = ? WHERE id = ? AND user_id = ?",
+    const thumbnailTransition = await context.env.DB.prepare(
+      "UPDATE assets SET thumbnail_key = ?, updated_at = ? WHERE id = ? AND user_id = ? AND status = 'ready'",
     ).bind(thumbnailKey, dependencies.now().toISOString(), asset.id, auth.userId).run();
+    if ((thumbnailTransition.meta.changes ?? 0) !== 1) {
+      await context.env.MEDIA.delete(thumbnailKey);
+      return errorResponse(context, 409, "thumbnail_conflict", "Asset was deleted while its thumbnail was being stored.");
+    }
     return new Response(null, { status: 204 });
   });
 
@@ -660,6 +891,10 @@ export function createApp(overrides: Partial<AppDependencies> = {}) {
     const auth = context.get("auth");
     const asset = await findOwnedAsset(context.env, context.req.param("assetId"), auth.userId);
     if (!asset) return errorResponse(context, 404, "asset_not_found", "Asset was not found.");
+    await context.env.DB.prepare(
+      `UPDATE assets SET status = 'failed', updated_at = ?
+        WHERE id = ? AND user_id = ? AND status IN ('uploading', 'ready')`,
+    ).bind(dependencies.now().toISOString(), asset.id, auth.userId).run();
     if (asset.upload_mode === "multipart" && asset.status === "uploading" && asset.upload_id) {
       try {
         await context.env.MEDIA.resumeMultipartUpload(asset.object_key, asset.upload_id).abort();
@@ -667,8 +902,9 @@ export function createApp(overrides: Partial<AppDependencies> = {}) {
         // An already-expired or completed multipart upload is safe to continue deleting.
       }
     }
-    const objectKeys = asset.thumbnail_key ? [asset.object_key, asset.thumbnail_key] : [asset.object_key];
-    await context.env.MEDIA.delete(objectKeys);
+    const thumbnailKey = `${assetObjectPrefix(auth.userId, asset.id)}thumbnail.jpg`;
+    await context.env.MEDIA.delete([asset.object_key, thumbnailKey]);
+    await deleteAssetPrefixObjects(context.env, auth.userId, asset.id);
     await context.env.DB.prepare("DELETE FROM assets WHERE id = ? AND user_id = ?")
       .bind(asset.id, auth.userId).run();
     return new Response(null, { status: 204 });

@@ -24,7 +24,160 @@ async function signIn(subject = "apple-user-a") {
   }, env);
   expect(response.status).toBe(200);
   const body = await response.json<{ token: string }>();
-  return { app, authorization: `Bearer ${body.token}` };
+  return { app, authorization: "Bearer " + body.token };
+}
+
+function deferred() {
+  let resolve!: () => void;
+  const promise = new Promise<void>((complete) => { resolve = complete; });
+  return { promise, resolve };
+}
+
+function envWithMediaHooks(hooks: {
+  beforePut?: () => Promise<void>;
+  afterPut?: () => Promise<void>;
+  afterDelete?: () => Promise<void>;
+  beforeUploadPart?: () => Promise<void>;
+  beforeComplete?: () => Promise<void>;
+}): Env {
+  const media = new Proxy(env.MEDIA, {
+    get(target, property) {
+      if (property === "put") {
+        return async (
+          key: string,
+          value: ReadableStream | ArrayBuffer | ArrayBufferView | string | null | Blob,
+          options?: R2PutOptions,
+        ) => {
+          await hooks.beforePut?.();
+          const object = await target.put(key, value, options);
+          await hooks.afterPut?.();
+          return object;
+        };
+      }
+      if (property === "delete") {
+        return async (keys: string | string[]) => {
+          await target.delete(keys);
+          await hooks.afterDelete?.();
+        };
+      }
+      if (property === "resumeMultipartUpload") {
+        return (key: string, uploadId: string) => {
+          const upload = target.resumeMultipartUpload(key, uploadId);
+          return new Proxy(upload, {
+            get(multipart, member) {
+              if (member === "uploadPart") {
+                return async (
+                  partNumber: number,
+                  value: ReadableStream | ArrayBuffer | ArrayBufferView | string | Blob,
+                  options?: R2UploadPartOptions,
+                ) => {
+                  await hooks.beforeUploadPart?.();
+                  return multipart.uploadPart(partNumber, value, options);
+                };
+              }
+              if (member === "complete") {
+                return async (parts: R2UploadedPart[]) => {
+                  await hooks.beforeComplete?.();
+                  return multipart.complete(parts);
+                };
+              }
+              const multipartMember = Reflect.get(multipart, member, multipart) as unknown;
+              return typeof multipartMember === "function" ? multipartMember.bind(multipart) : multipartMember;
+            },
+          });
+        };
+      }
+      const member = Reflect.get(target, property, target) as unknown;
+      return typeof member === "function" ? member.bind(target) : member;
+    },
+  });
+  return { ...env, MEDIA: media };
+}
+
+function envWithOneBatchFailure(): Env {
+  const db = new Proxy(env.DB, {
+    get(target, property) {
+      if (property === "batch") {
+        return async () => { throw new Error("injected D1 batch failure"); };
+      }
+      const member = Reflect.get(target, property, target) as unknown;
+      return typeof member === "function" ? member.bind(target) : member;
+    },
+  });
+  return { ...env, DB: db };
+}
+
+function wrapStatementWithCommittedRunFailure(
+  statement: D1PreparedStatement,
+): D1PreparedStatement {
+  return new Proxy(statement, {
+    get(target, property) {
+      if (property === "bind") {
+        return (...values: unknown[]) => wrapStatementWithCommittedRunFailure(target.bind(...values));
+      }
+      if (property === "run") {
+        return async () => {
+          await target.run();
+          throw new Error("injected D1 response loss after commit");
+        };
+      }
+      const member = Reflect.get(target, property, target) as unknown;
+      return typeof member === "function" ? member.bind(target) : member;
+    },
+  });
+}
+
+function envWithCommittedRunFailure(sqlFragment: string): Env {
+  const db = new Proxy(env.DB, {
+    get(target, property) {
+      if (property === "prepare") {
+        return (query: string) => {
+          const statement = target.prepare(query);
+          return query.includes(sqlFragment)
+            ? wrapStatementWithCommittedRunFailure(statement)
+            : statement;
+        };
+      }
+      const member = Reflect.get(target, property, target) as unknown;
+      return typeof member === "function" ? member.bind(target) : member;
+    },
+  });
+  return { ...env, DB: db };
+}
+
+function wrapStatementWithRunFailureBeforeCommit(
+  statement: D1PreparedStatement,
+): D1PreparedStatement {
+  return new Proxy(statement, {
+    get(target, property) {
+      if (property === "bind") {
+        return (...values: unknown[]) => wrapStatementWithRunFailureBeforeCommit(target.bind(...values));
+      }
+      if (property === "run") {
+        return async () => { throw new Error("injected D1 failure before commit"); };
+      }
+      const member = Reflect.get(target, property, target) as unknown;
+      return typeof member === "function" ? member.bind(target) : member;
+    },
+  });
+}
+
+function envWithRunFailureBeforeCommit(sqlFragment: string): Env {
+  const db = new Proxy(env.DB, {
+    get(target, property) {
+      if (property === "prepare") {
+        return (query: string) => {
+          const statement = target.prepare(query);
+          return query.includes(sqlFragment)
+            ? wrapStatementWithRunFailureBeforeCommit(statement)
+            : statement;
+        };
+      }
+      const member = Reflect.get(target, property, target) as unknown;
+      return typeof member === "function" ? member.bind(target) : member;
+    },
+  });
+  return { ...env, DB: db };
 }
 
 beforeEach(async () => {
@@ -216,6 +369,257 @@ describe("asset upload and private timeline", () => {
     await expect(complete.json()).resolves.toMatchObject({ asset: { status: "ready", byteSize: total } });
   }, 30_000);
 
+  it("renews a stale multipart upload before storing a part", async () => {
+    const { app, authorization } = await signIn("multipart-race-owner");
+    const first = new Uint8Array(5 * 1024 * 1024).fill(65);
+    const create = await app.request("/v1/assets", {
+      method: "POST",
+      headers: { authorization, "content-type": "application/json" },
+      body: JSON.stringify({
+        kind: "video",
+        filename: "resumed-large.mp4",
+        contentType: "video/mp4",
+        byteSize: first.byteLength + 3,
+        capturedAt: "2026-07-25T00:00:00.000Z",
+      }),
+    }, env);
+    const created = await create.json<{ asset: { id: string } }>();
+    await env.DB.prepare("UPDATE assets SET updated_at = ? WHERE id = ?")
+      .bind("2026-07-25T00:00:00.000Z", created.asset.id).run();
+
+    const raceEnv = envWithMediaHooks({
+      beforeUploadPart: async () => { await cleanupExpiredState(env, NOW); },
+    });
+    const part = await app.request(`/v1/assets/${created.asset.id}/upload/parts/1`, {
+      method: "PUT",
+      headers: {
+        authorization,
+        "content-type": "application/octet-stream",
+        "content-length": String(first.byteLength),
+      },
+      body: first,
+    }, raceEnv);
+
+    expect(part.status).toBe(200);
+    expect(await env.DB.prepare("SELECT status FROM assets WHERE id = ?")
+      .bind(created.asset.id).first()).toMatchObject({ status: "uploading" });
+  }, 30_000);
+
+  it("aborts a multipart upload when the part loses its D1 claim", async () => {
+    const { app, authorization } = await signIn("multipart-claim-owner");
+    const first = new Uint8Array(5 * 1024 * 1024).fill(65);
+    const create = await app.request("/v1/assets", {
+      method: "POST",
+      headers: { authorization, "content-type": "application/json" },
+      body: JSON.stringify({
+        kind: "video",
+        filename: "cancelled-large.mp4",
+        contentType: "video/mp4",
+        byteSize: first.byteLength + 3,
+        capturedAt: "2026-07-27T00:00:00.000Z",
+      }),
+    }, env);
+    const created = await create.json<{ asset: { id: string } }>();
+    const raceEnv = envWithMediaHooks({
+      beforeUploadPart: async () => {
+        await env.DB.prepare("UPDATE assets SET status = 'failed' WHERE id = ?")
+          .bind(created.asset.id).run();
+      },
+    });
+
+    const part = await app.request(`/v1/assets/${created.asset.id}/upload/parts/1`, {
+      method: "PUT",
+      headers: {
+        authorization,
+        "content-type": "application/octet-stream",
+        "content-length": String(first.byteLength),
+      },
+      body: first,
+    }, raceEnv);
+
+    expect(part.status).toBe(409);
+    await expect(part.json()).resolves.toMatchObject({ error: { code: "upload_conflict" } });
+    expect(await env.DB.prepare("SELECT COUNT(*) AS count FROM upload_parts WHERE asset_id = ?")
+      .bind(created.asset.id).first<{ count: number }>()).toMatchObject({ count: 0 });
+  }, 30_000);
+
+  it("allows a multipart part retry after a transient D1 batch failure", async () => {
+    const { app, authorization } = await signIn("multipart-retry-owner");
+    const first = new Uint8Array(5 * 1024 * 1024).fill(65);
+    const create = await app.request("/v1/assets", {
+      method: "POST",
+      headers: { authorization, "content-type": "application/json" },
+      body: JSON.stringify({
+        kind: "video",
+        filename: "retry-large.mp4",
+        contentType: "video/mp4",
+        byteSize: first.byteLength + 3,
+        capturedAt: "2026-07-27T00:00:00.000Z",
+      }),
+    }, env);
+    const created = await create.json<{ asset: { id: string } }>();
+    const request = {
+      method: "PUT",
+      headers: {
+        authorization,
+        "content-type": "application/octet-stream",
+        "content-length": String(first.byteLength),
+      },
+      body: first,
+    };
+
+    const failed = await app.request(
+      `/v1/assets/${created.asset.id}/upload/parts/1`,
+      request,
+      envWithOneBatchFailure(),
+    );
+    expect(failed.status).toBe(500);
+
+    const retried = await app.request(`/v1/assets/${created.asset.id}/upload/parts/1`, request, env);
+    expect(retried.status).toBe(200);
+    expect(await env.DB.prepare("SELECT COUNT(*) AS count FROM upload_parts WHERE asset_id = ?")
+      .bind(created.asset.id).first<{ count: number }>()).toMatchObject({ count: 1 });
+  }, 30_000);
+
+  it("renews a stale multipart upload before completing it", async () => {
+    const { app, authorization } = await signIn("multipart-complete-owner");
+    const first = new Uint8Array(5 * 1024 * 1024).fill(65);
+    const second = new Uint8Array([66, 67, 68]);
+    const create = await app.request("/v1/assets", {
+      method: "POST",
+      headers: { authorization, "content-type": "application/json" },
+      body: JSON.stringify({
+        kind: "video",
+        filename: "resumed-completion.mp4",
+        contentType: "video/mp4",
+        byteSize: first.byteLength + second.byteLength,
+        capturedAt: "2026-07-25T00:00:00.000Z",
+      }),
+    }, env);
+    const created = await create.json<{ asset: { id: string } }>();
+    for (const [partNumber, body] of [[1, first], [2, second]] as const) {
+      const part = await app.request(`/v1/assets/${created.asset.id}/upload/parts/${partNumber}`, {
+        method: "PUT",
+        headers: {
+          authorization,
+          "content-type": "application/octet-stream",
+          "content-length": String(body.byteLength),
+        },
+        body,
+      }, env);
+      expect(part.status).toBe(200);
+    }
+    await env.DB.prepare("UPDATE assets SET updated_at = ? WHERE id = ?")
+      .bind("2026-07-25T00:00:00.000Z", created.asset.id).run();
+
+    const raceEnv = envWithMediaHooks({
+      beforeComplete: async () => { await cleanupExpiredState(env, NOW); },
+    });
+    const complete = await app.request(`/v1/assets/${created.asset.id}/upload/complete`, {
+      method: "POST",
+      headers: { authorization },
+    }, raceEnv);
+
+    expect(complete.status).toBe(200);
+    await expect(complete.json()).resolves.toMatchObject({ asset: { status: "ready" } });
+  }, 30_000);
+
+  it("retries multipart completion after R2 succeeds but D1 ready rolls back", async () => {
+    const { app, authorization } = await signIn("multipart-complete-retry-owner");
+    const first = new Uint8Array(5 * 1024 * 1024).fill(12);
+    const second = new Uint8Array([4, 5, 6]);
+    const create = await app.request("/v1/assets", {
+      method: "POST",
+      headers: { authorization, "content-type": "application/json" },
+      body: JSON.stringify({
+        kind: "video",
+        filename: "retry-complete.mp4",
+        contentType: "video/mp4",
+        byteSize: first.byteLength + second.byteLength,
+        capturedAt: "2026-07-27T00:00:00.000Z",
+      }),
+    }, env);
+    const body = await create.json<{
+      asset: { id: string };
+      upload: { partUrlTemplate: string };
+    }>();
+    for (const [partNumber, bytes] of [[1, first], [2, second]] as const) {
+      await app.request(body.upload.partUrlTemplate.replace("{partNumber}", String(partNumber)), {
+        method: "PUT",
+        headers: {
+          authorization,
+          "content-type": "application/octet-stream",
+          "content-length": String(bytes.byteLength),
+        },
+        body: bytes,
+      }, env);
+    }
+
+    const firstCompletion = await app.request(`/v1/assets/${body.asset.id}/upload/complete`, {
+      method: "POST",
+      headers: { authorization },
+    }, envWithRunFailureBeforeCommit("UPDATE assets SET status = 'ready', updated_at"));
+    expect(firstCompletion.status).toBe(500);
+    expect(await env.DB.prepare("SELECT status FROM assets WHERE id = ?")
+      .bind(body.asset.id).first()).toMatchObject({ status: "uploading" });
+
+    const retried = await app.request(`/v1/assets/${body.asset.id}/upload/complete`, {
+      method: "POST",
+      headers: { authorization },
+    }, env);
+    expect(retried.status).toBe(200);
+    await expect(retried.json()).resolves.toMatchObject({ asset: { status: "ready" } });
+  });
+
+  it("removes a completed multipart object when the D1 ready transition loses its claim", async () => {
+    const { app, authorization } = await signIn("multipart-complete-claim-owner");
+    const first = new Uint8Array(5 * 1024 * 1024).fill(65);
+    const second = new Uint8Array([66, 67, 68]);
+    const create = await app.request("/v1/assets", {
+      method: "POST",
+      headers: { authorization, "content-type": "application/json" },
+      body: JSON.stringify({
+        kind: "video",
+        filename: "cancelled-completion.mp4",
+        contentType: "video/mp4",
+        byteSize: first.byteLength + second.byteLength,
+        capturedAt: "2026-07-27T00:00:00.000Z",
+      }),
+    }, env);
+    const created = await create.json<{ asset: { id: string } }>();
+    for (const [partNumber, body] of [[1, first], [2, second]] as const) {
+      const part = await app.request(`/v1/assets/${created.asset.id}/upload/parts/${partNumber}`, {
+        method: "PUT",
+        headers: {
+          authorization,
+          "content-type": "application/octet-stream",
+          "content-length": String(body.byteLength),
+        },
+        body,
+      }, env);
+      expect(part.status).toBe(200);
+    }
+    const stored = await env.DB.prepare("SELECT object_key FROM assets WHERE id = ?")
+      .bind(created.asset.id).first<{ object_key: string }>();
+    const raceEnv = envWithMediaHooks({
+      beforeComplete: async () => {
+        await env.DB.prepare("UPDATE assets SET status = 'failed' WHERE id = ?")
+          .bind(created.asset.id).run();
+      },
+    });
+
+    const complete = await app.request(`/v1/assets/${created.asset.id}/upload/complete`, {
+      method: "POST",
+      headers: { authorization },
+    }, raceEnv);
+
+    expect(complete.status).toBe(409);
+    await expect(complete.json()).resolves.toMatchObject({ error: { code: "upload_conflict" } });
+    expect(await env.MEDIA.head(stored!.object_key)).toBeNull();
+    expect(await env.DB.prepare("SELECT status FROM assets WHERE id = ?")
+      .bind(created.asset.id).first()).toMatchObject({ status: "failed" });
+  }, 30_000);
+
   it("does not expose another user's metadata or media", async () => {
     const owner = await signIn("owner");
     const stranger = await signIn("stranger");
@@ -288,6 +692,235 @@ describe("asset upload and private timeline", () => {
     expect(await env.MEDIA.head(stored!.object_key)).toBeNull();
   });
 
+  it("renews a stale upload before R2 so cleanup cannot reclaim it mid-request", async () => {
+    const { app, authorization } = await signIn("cleanup-race-owner");
+    const create = await app.request("/v1/assets", {
+      method: "POST",
+      headers: { authorization, "content-type": "application/json" },
+      body: JSON.stringify({
+        kind: "photo",
+        filename: "resumed.heic",
+        contentType: "image/heic",
+        byteSize: 5,
+        capturedAt: "2026-07-25T00:00:00.000Z",
+      }),
+    }, env);
+    const { asset, upload } = await create.json<{ asset: { id: string }; upload: { url: string } }>();
+    await env.DB.prepare("UPDATE assets SET updated_at = ? WHERE id = ?")
+      .bind("2026-07-25T00:00:00.000Z", asset.id).run();
+
+    let cleanupResult: Awaited<ReturnType<typeof cleanupExpiredState>> | undefined;
+    const raceEnv = envWithMediaHooks({
+      beforePut: async () => {
+        cleanupResult = await cleanupExpiredState(env, NOW);
+      },
+    });
+    const uploaded = await app.request(upload.url, {
+      method: "PUT",
+      headers: { authorization, "content-type": "image/heic", "content-length": "5" },
+      body: "fresh",
+    }, raceEnv);
+
+    expect(uploaded.status).toBe(204);
+    expect(cleanupResult).toMatchObject({ abandonedAssets: 0 });
+    expect(await env.DB.prepare("SELECT status FROM assets WHERE id = ?")
+      .bind(asset.id).first()).toMatchObject({ status: "uploading" });
+    const stored = await env.DB.prepare("SELECT object_key FROM assets WHERE id = ?")
+      .bind(asset.id).first<{ object_key: string }>();
+    expect(await env.MEDIA.head(stored!.object_key)).not.toBeNull();
+  });
+
+  it("serializes single uploads and completion with an upload lease", async () => {
+    const { app, authorization } = await signIn("single-lease-owner");
+    const create = await app.request("/v1/assets", {
+      method: "POST",
+      headers: { authorization, "content-type": "application/json" },
+      body: JSON.stringify({
+        kind: "photo",
+        filename: "lease-race.heic",
+        contentType: "image/heic",
+        byteSize: 5,
+        capturedAt: "2026-07-27T00:00:00.000Z",
+      }),
+    }, env);
+    const { asset, upload } = await create.json<{ asset: { id: string }; upload: { url: string } }>();
+
+    const uploadReachedR2 = deferred();
+    const releaseUpload = deferred();
+    const raceEnv = envWithMediaHooks({
+      beforePut: async () => {
+        uploadReachedR2.resolve();
+        await releaseUpload.promise;
+      },
+    });
+    const firstUploadPromise = app.request(upload.url, {
+      method: "PUT",
+      headers: { authorization, "content-type": "image/heic", "content-length": "5" },
+      body: "first",
+    }, raceEnv);
+    await uploadReachedR2.promise;
+
+    const competingUpload = await app.request(upload.url, {
+      method: "PUT",
+      headers: { authorization, "content-type": "image/heic", "content-length": "5" },
+      body: "other",
+    }, env);
+    const blockedComplete = await app.request(`/v1/assets/${asset.id}/upload/complete`, {
+      method: "POST",
+      headers: { authorization },
+    }, env);
+
+    expect(competingUpload.status).toBe(409);
+    expect(blockedComplete.status).toBe(409);
+    releaseUpload.resolve();
+    expect((await firstUploadPromise).status).toBe(204);
+
+    const stored = await env.DB.prepare("SELECT user_id, object_key FROM assets WHERE id = ?")
+      .bind(asset.id).first<{ user_id: string; object_key: string }>();
+    const orphanKey = `users/${stored!.user_id}/assets/${asset.id}/attempts/orphan`;
+    await env.MEDIA.put(orphanKey, "orphan");
+
+    const completed = await app.request(`/v1/assets/${asset.id}/upload/complete`, {
+      method: "POST",
+      headers: { authorization },
+    }, env);
+    expect(completed.status).toBe(200);
+    await expect(completed.json()).resolves.toMatchObject({ asset: { status: "ready" } });
+
+    const object = await env.MEDIA.get(stored!.object_key);
+    expect(await object!.text()).toBe("first");
+    expect(await env.MEDIA.head(orphanKey)).toBeNull();
+  });
+
+  it("preserves a single attempt when D1 commits finalization before returning an error", async () => {
+    const { app, authorization } = await signIn("single-ambiguous-owner");
+    const create = await app.request("/v1/assets", {
+      method: "POST",
+      headers: { authorization, "content-type": "application/json" },
+      body: JSON.stringify({
+        kind: "photo",
+        filename: "ambiguous-upload.heic",
+        contentType: "image/heic",
+        byteSize: 5,
+        capturedAt: "2026-07-27T00:00:00.000Z",
+      }),
+    }, env);
+    const { asset, upload } = await create.json<{ asset: { id: string }; upload: { url: string } }>();
+    const uploaded = await app.request(upload.url, {
+      method: "PUT",
+      headers: { authorization, "content-type": "image/heic", "content-length": "5" },
+      body: "image",
+    }, envWithCommittedRunFailure("UPDATE assets SET object_key"));
+
+    expect(uploaded.status).toBe(500);
+    const stored = await env.DB.prepare(
+      "SELECT status, object_key, upload_lease FROM assets WHERE id = ?",
+    ).bind(asset.id).first<{ status: string; object_key: string; upload_lease: string | null }>();
+    expect(stored).toMatchObject({ status: "uploading", upload_lease: null });
+    expect(await env.MEDIA.head(stored!.object_key)).not.toBeNull();
+
+    const completed = await app.request(`/v1/assets/${asset.id}/upload/complete`, {
+      method: "POST",
+      headers: { authorization },
+    }, env);
+    expect(completed.status).toBe(200);
+  });
+
+  it("preserves completed media when D1 commits ready before returning an error", async () => {
+    const { app, authorization } = await signIn("complete-ambiguous-owner");
+    const create = await app.request("/v1/assets", {
+      method: "POST",
+      headers: { authorization, "content-type": "application/json" },
+      body: JSON.stringify({
+        kind: "photo",
+        filename: "ambiguous-complete.heic",
+        contentType: "image/heic",
+        byteSize: 5,
+        capturedAt: "2026-07-27T00:00:00.000Z",
+      }),
+    }, env);
+    const { asset, upload } = await create.json<{ asset: { id: string }; upload: { url: string } }>();
+    await app.request(upload.url, {
+      method: "PUT",
+      headers: { authorization, "content-type": "image/heic", "content-length": "5" },
+      body: "image",
+    }, env);
+    const stored = await env.DB.prepare("SELECT object_key FROM assets WHERE id = ?")
+      .bind(asset.id).first<{ object_key: string }>();
+
+    const completed = await app.request(`/v1/assets/${asset.id}/upload/complete`, {
+      method: "POST",
+      headers: { authorization },
+    }, envWithCommittedRunFailure("UPDATE assets SET status = 'ready', upload_lease"));
+
+    expect(completed.status).toBe(500);
+    expect(await env.DB.prepare("SELECT status FROM assets WHERE id = ?")
+      .bind(asset.id).first()).toMatchObject({ status: "ready" });
+    expect(await env.MEDIA.head(stored!.object_key)).not.toBeNull();
+    expect((await app.request(`/v1/assets/${asset.id}/upload/complete`, {
+      method: "POST",
+      headers: { authorization },
+    }, env)).status).toBe(200);
+  });
+
+  it("removes an R2 object when deletion wins during a single upload", async () => {
+    const { app, authorization } = await signIn("delete-race-owner");
+    const create = await app.request("/v1/assets", {
+      method: "POST",
+      headers: { authorization, "content-type": "application/json" },
+      body: JSON.stringify({
+        kind: "photo",
+        filename: "deleted-during-upload.heic",
+        contentType: "image/heic",
+        byteSize: 5,
+        capturedAt: "2026-07-27T00:00:00.000Z",
+      }),
+    }, env);
+    const { asset, upload } = await create.json<{ asset: { id: string }; upload: { url: string } }>();
+    const stored = await env.DB.prepare("SELECT object_key FROM assets WHERE id = ?")
+      .bind(asset.id).first<{ object_key: string }>();
+
+    const uploadReachedR2 = deferred();
+    const releaseUpload = deferred();
+    const deleteRemovedR2 = deferred();
+    const releaseDelete = deferred();
+    let interceptFirstDelete = true;
+    const raceEnv = envWithMediaHooks({
+      beforePut: async () => {
+        uploadReachedR2.resolve();
+        await releaseUpload.promise;
+      },
+      afterDelete: async () => {
+        if (!interceptFirstDelete) return;
+        interceptFirstDelete = false;
+        deleteRemovedR2.resolve();
+        await releaseDelete.promise;
+      },
+    });
+
+    const uploadPromise = app.request(upload.url, {
+      method: "PUT",
+      headers: { authorization, "content-type": "image/heic", "content-length": "5" },
+      body: "later",
+    }, raceEnv);
+    await uploadReachedR2.promise;
+    const deletePromise = app.request(`/v1/assets/${asset.id}`, {
+      method: "DELETE",
+      headers: { authorization },
+    }, raceEnv);
+    await deleteRemovedR2.promise;
+    releaseUpload.resolve();
+    const uploaded = await uploadPromise;
+    releaseDelete.resolve();
+    const deleted = await deletePromise;
+
+    expect(deleted.status).toBe(204);
+    expect(uploaded.status).toBe(409);
+    await expect(uploaded.json()).resolves.toMatchObject({ error: { code: "upload_conflict" } });
+    expect(await env.DB.prepare("SELECT id FROM assets WHERE id = ?").bind(asset.id).first()).toBeNull();
+    expect(await env.MEDIA.head(stored!.object_key)).toBeNull();
+  });
+
   it("stores a bounded JPEG thumbnail and deletes all owned R2 objects with the asset", async () => {
     const { app, authorization } = await signIn();
     const create = await app.request("/v1/assets", {
@@ -338,6 +971,112 @@ describe("asset upload and private timeline", () => {
     expect(deleted.status).toBe(204);
     expect(await env.MEDIA.head(stored!.object_key)).toBeNull();
     expect(await env.MEDIA.head(stored!.thumbnail_key)).toBeNull();
+    expect(await env.DB.prepare("SELECT id FROM assets WHERE id = ?").bind(asset.id).first()).toBeNull();
+  });
+
+  it("preserves a thumbnail when D1 commits before returning an error", async () => {
+    const { app, authorization } = await signIn("thumbnail-ambiguous-owner");
+    const create = await app.request("/v1/assets", {
+      method: "POST",
+      headers: { authorization, "content-type": "application/json" },
+      body: JSON.stringify({
+        kind: "photo",
+        filename: "ambiguous-thumbnail.heic",
+        contentType: "image/heic",
+        byteSize: 5,
+        capturedAt: "2026-07-27T00:00:00.000Z",
+      }),
+    }, env);
+    const { asset, upload } = await create.json<{ asset: { id: string }; upload: { url: string } }>();
+    await app.request(upload.url, {
+      method: "PUT",
+      headers: { authorization, "content-type": "image/heic", "content-length": "5" },
+      body: "image",
+    }, env);
+    await app.request(`/v1/assets/${asset.id}/upload/complete`, {
+      method: "POST",
+      headers: { authorization },
+    }, env);
+
+    const thumbnailKey = `users/${(await env.DB.prepare("SELECT user_id FROM assets WHERE id = ?")
+      .bind(asset.id).first<{ user_id: string }>())!.user_id}/assets/${asset.id}/thumbnail.jpg`;
+    const response = await app.request(`/v1/assets/${asset.id}/thumbnail`, {
+      method: "PUT",
+      headers: { authorization, "content-type": "image/jpeg", "content-length": "4" },
+      body: "jpeg",
+    }, envWithCommittedRunFailure("UPDATE assets SET thumbnail_key"));
+
+    expect(response.status).toBe(500);
+    expect(await env.DB.prepare("SELECT thumbnail_key FROM assets WHERE id = ?")
+      .bind(asset.id).first()).toMatchObject({ thumbnail_key: thumbnailKey });
+    expect(await env.MEDIA.head(thumbnailKey)).not.toBeNull();
+  });
+
+  it("removes a thumbnail object when deletion wins during its upload", async () => {
+    const { app, authorization } = await signIn("thumbnail-race-owner");
+    const create = await app.request("/v1/assets", {
+      method: "POST",
+      headers: { authorization, "content-type": "application/json" },
+      body: JSON.stringify({
+        kind: "photo",
+        filename: "thumbnail-race.jpg",
+        contentType: "image/jpeg",
+        byteSize: 5,
+        capturedAt: "2026-07-27T00:00:00.000Z",
+      }),
+    }, env);
+    const { asset, upload } = await create.json<{ asset: { id: string }; upload: { url: string } }>();
+    await app.request(upload.url, {
+      method: "PUT",
+      headers: { authorization, "content-type": "image/jpeg", "content-length": "5" },
+      body: "image",
+    }, env);
+    await app.request(`/v1/assets/${asset.id}/upload/complete`, {
+      method: "POST",
+      headers: { authorization },
+    }, env);
+    const stored = await env.DB.prepare("SELECT object_key FROM assets WHERE id = ?")
+      .bind(asset.id).first<{ object_key: string }>();
+    const thumbnailKey = stored!.object_key.replace(/\/media$/, "/thumbnail.jpg");
+
+    const thumbnailReachedR2 = deferred();
+    const releaseThumbnail = deferred();
+    const deleteRemovedR2 = deferred();
+    const releaseDelete = deferred();
+    let interceptFirstDelete = true;
+    const raceEnv = envWithMediaHooks({
+      beforePut: async () => {
+        thumbnailReachedR2.resolve();
+        await releaseThumbnail.promise;
+      },
+      afterDelete: async () => {
+        if (!interceptFirstDelete) return;
+        interceptFirstDelete = false;
+        deleteRemovedR2.resolve();
+        await releaseDelete.promise;
+      },
+    });
+
+    const thumbnailPromise = app.request(`/v1/assets/${asset.id}/thumbnail`, {
+      method: "PUT",
+      headers: { authorization, "content-type": "image/jpeg", "content-length": "5" },
+      body: "thumb",
+    }, raceEnv);
+    await thumbnailReachedR2.promise;
+    const deletePromise = app.request(`/v1/assets/${asset.id}`, {
+      method: "DELETE",
+      headers: { authorization },
+    }, raceEnv);
+    await deleteRemovedR2.promise;
+    releaseThumbnail.resolve();
+    const thumbnail = await thumbnailPromise;
+    releaseDelete.resolve();
+    const deleted = await deletePromise;
+
+    expect(deleted.status).toBe(204);
+    expect(thumbnail.status).toBe(409);
+    await expect(thumbnail.json()).resolves.toMatchObject({ error: { code: "thumbnail_conflict" } });
+    expect(await env.MEDIA.head(thumbnailKey)).toBeNull();
     expect(await env.DB.prepare("SELECT id FROM assets WHERE id = ?").bind(asset.id).first()).toBeNull();
   });
 
@@ -399,16 +1138,28 @@ describe("asset upload and private timeline", () => {
       ).bind("expired-grant", ready.asset.id, user!.id, "expired-grant-hash", "2026-07-26T00:00:00.000Z", "2026-07-25T00:00:00.000Z"),
     ]);
 
-    const result = await cleanupExpiredState(env, NOW);
+    const firstCleanup = await cleanupExpiredState(env, NOW);
 
-    expect(result).toMatchObject({ expiredSessions: 1, expiredGrants: 1, abandonedAssets: 1 });
+    expect(firstCleanup).toMatchObject({
+      expiredSessions: 1,
+      expiredGrants: 1,
+      quarantinedAssets: 1,
+      abandonedAssets: 0,
+    });
     expect(await env.DB.prepare("SELECT id FROM sessions WHERE id = 'expired-session'").first()).toBeNull();
     expect(await env.DB.prepare("SELECT id FROM media_grants WHERE id = 'expired-grant'").first()).toBeNull();
-    expect(await env.DB.prepare("SELECT id FROM assets WHERE id = ?").bind(abandoned.asset.id).first()).toBeNull();
-    expect(await env.MEDIA.head(abandonedKey!.object_key)).toBeNull();
+    expect(await env.DB.prepare("SELECT status FROM assets WHERE id = ?").bind(abandoned.asset.id).first())
+      .toMatchObject({ status: "failed" });
+    expect(await env.MEDIA.head(abandonedKey!.object_key)).not.toBeNull();
     expect(await env.DB.prepare("SELECT id FROM assets WHERE id = ? AND status = 'ready'")
       .bind(ready.asset.id).first()).not.toBeNull();
     expect(await env.DB.prepare("SELECT COUNT(*) AS count FROM sessions WHERE user_id = ?")
       .bind(user!.id).first<{ count: number }>()).toMatchObject({ count: 1 });
+
+    const afterGrace = new Date(NOW.getTime() + 24 * 60 * 60 * 1000 + 1);
+    const secondCleanup = await cleanupExpiredState(env, afterGrace);
+    expect(secondCleanup).toMatchObject({ expiredSessions: 0, expiredGrants: 0, abandonedAssets: 1 });
+    expect(await env.DB.prepare("SELECT id FROM assets WHERE id = ?").bind(abandoned.asset.id).first()).toBeNull();
+    expect(await env.MEDIA.head(abandonedKey!.object_key)).toBeNull();
   });
 });
