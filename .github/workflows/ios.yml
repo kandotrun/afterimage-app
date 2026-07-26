@@ -50,9 +50,15 @@ jobs:
             -project afterimage.xcodeproj \
             -scheme afterimage \
             -destination 'platform=iOS Simulator,id=${{ steps.simulator.outputs.id }}' \
+            -derivedDataPath DerivedData \
             -resultBundlePath TestResults.xcresult \
             CODE_SIGNING_ALLOWED=NO \
             | tee xcodebuild.log
+      - name: Verify bundled privacy manifest
+        run: |
+          MANIFEST="ios/DerivedData/Build/Products/Debug-iphonesimulator/afterimage.app/PrivacyInfo.xcprivacy"
+          test -f "$MANIFEST"
+          test "$(/usr/libexec/PlistBuddy -c 'Print :NSPrivacyTracking' "$MANIFEST")" = "false"
       - name: Upload Xcode result bundle
         if: always()
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
