@@ -1,0 +1,105 @@
+import CoreHaptics
+import UIKit
+
+struct HapticEventDescriptor: Equatable, Sendable {
+    enum Kind: Equatable, Sendable { case transient, continuous }
+    let kind: Kind
+    let relativeTime: TimeInterval
+    let intensity: Float
+    let sharpness: Float
+    let duration: TimeInterval
+}
+
+enum HapticCue: Sendable {
+    case selection
+    case lift
+    case progress
+    case success
+    case failure
+    case delete
+
+    var events: [HapticEventDescriptor] {
+        switch self {
+        case .selection:
+            [init(kind: .transient, relativeTime: 0, intensity: 0.32, sharpness: 0.72, duration: 0)]
+        case .lift:
+            [init(kind: .transient, relativeTime: 0, intensity: 0.45, sharpness: 0.42, duration: 0)]
+        case .progress:
+            [init(kind: .transient, relativeTime: 0, intensity: 0.16, sharpness: 0.35, duration: 0)]
+        case .success:
+            [
+                init(kind: .transient, relativeTime: 0, intensity: 0.55, sharpness: 0.45, duration: 0),
+                init(kind: .transient, relativeTime: 0.08, intensity: 0.90, sharpness: 0.82, duration: 0),
+            ]
+        case .failure:
+            [
+                init(kind: .continuous, relativeTime: 0, intensity: 0.42, sharpness: 0.16, duration: 0.12),
+                init(kind: .transient, relativeTime: 0.14, intensity: 0.68, sharpness: 0.22, duration: 0),
+            ]
+        case .delete:
+            [init(kind: .transient, relativeTime: 0, intensity: 0.72, sharpness: 0.18, duration: 0)]
+        }
+    }
+}
+
+@MainActor
+final class HapticEngine {
+    private var engine: CHHapticEngine?
+
+    init() {
+        guard CHHapticEngine.capabilitiesForHardware().supportsHaptics else { return }
+        do {
+            let engine = try CHHapticEngine()
+            engine.isAutoShutdownEnabled = true
+            engine.resetHandler = { [weak self] in
+                Task { @MainActor in try? self?.engine?.start() }
+            }
+            self.engine = engine
+            try engine.start()
+        } catch {
+            engine = nil
+        }
+    }
+
+    func play(_ cue: HapticCue) {
+        guard let engine else {
+            playUIKitFallback(cue)
+            return
+        }
+        do {
+            try engine.start()
+            let events = cue.events.map { descriptor in
+                let parameters = [
+                    CHHapticEventParameter(parameterID: .hapticIntensity, value: descriptor.intensity),
+                    CHHapticEventParameter(parameterID: .hapticSharpness, value: descriptor.sharpness),
+                ]
+                let type: CHHapticEvent.EventType = descriptor.kind == .transient ? .hapticTransient : .hapticContinuous
+                return CHHapticEvent(
+                    eventType: type,
+                    parameters: parameters,
+                    relativeTime: descriptor.relativeTime,
+                    duration: descriptor.duration
+                )
+            }
+            let pattern = try CHHapticPattern(events: events, parameters: [])
+            try engine.makePlayer(with: pattern).start(atTime: CHHapticTimeImmediate)
+        } catch {
+            playUIKitFallback(cue)
+        }
+    }
+
+    private func playUIKitFallback(_ cue: HapticCue) {
+        switch cue {
+        case .success:
+            UINotificationFeedbackGenerator().notificationOccurred(.success)
+        case .failure:
+            UINotificationFeedbackGenerator().notificationOccurred(.error)
+        case .selection, .progress:
+            UISelectionFeedbackGenerator().selectionChanged()
+        case .lift:
+            UIImpactFeedbackGenerator(style: .light).impactOccurred()
+        case .delete:
+            UIImpactFeedbackGenerator(style: .heavy).impactOccurred()
+        }
+    }
+}

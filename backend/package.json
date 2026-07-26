@@ -1,0 +1,24 @@
+{
+  "name": "@afterimage/backend",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "typecheck": "tsc --noEmit",
+    "types": "wrangler types ./src/worker-configuration.d.ts --config wrangler.test.jsonc",
+    "deploy:dry": "wrangler deploy --dry-run --config wrangler.test.jsonc --outdir ../../.wrangler-dry-run"
+  },
+  "dependencies": {
+    "hono": "4.12.32",
+    "jose": "6.2.4",
+    "zod": "4.4.3"
+  },
+  "devDependencies": {
+    "@cloudflare/vitest-pool-workers": "0.18.8",
+    "@types/node": "24.13.3",
+    "typescript": "7.0.2",
+    "vitest": "4.1.10",
+    "wrangler": "4.114.0"
+  }
+}

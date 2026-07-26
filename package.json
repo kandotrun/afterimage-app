@@ -1,0 +1,15 @@
+{
+  "name": "afterimage-app",
+  "private": true,
+  "workspaces": [
+    "backend"
+  ],
+  "engines": {
+    "node": ">=24"
+  },
+  "scripts": {
+    "test": "npm --workspace backend test",
+    "typecheck": "npm --workspace backend run typecheck",
+    "check": "npm run test && npm run typecheck && npm --workspace backend run deploy:dry"
+  }
+}
