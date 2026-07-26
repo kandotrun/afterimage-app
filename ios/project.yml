@@ -3,9 +3,6 @@ options:
   bundleIdPrefix: com.kandotrun
   deploymentTarget:
     iOS: "26.0"
-  fileTypes:
-    xcprivacy:
-      buildPhase: resources
 settings:
   base:
     SWIFT_VERSION: "6.0"
@@ -18,10 +15,11 @@ targets:
     type: application
     platform: iOS
     sources:
-      - Sources
-    resources:
-      - Resources/Assets.xcassets
-      - Resources/PrivacyInfo.xcprivacy
+      - path: Sources
+      - path: Resources/Assets.xcassets
+        buildPhase: resources
+      - path: Resources/PrivacyInfo.xcprivacy
+        buildPhase: resources
     settings:
       base:
         PRODUCT_NAME: afterimage

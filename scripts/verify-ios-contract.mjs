@@ -15,8 +15,7 @@ const swift = readdirSync(sourceRoot, { recursive: true, withFileTypes: true })
 
 assert.match(project, /PRODUCT_NAME:\s*afterimage/);
 assert.match(project, /IPHONEOS_DEPLOYMENT_TARGET:\s*["']?26\.0/);
-assert.match(project, /Resources\/PrivacyInfo\.xcprivacy/);
-assert.match(project, /xcprivacy:\s*\n\s+buildPhase:\s*resources/);
+assert.match(project, /path:\s*Resources\/PrivacyInfo\.xcprivacy\s*\n\s+buildPhase:\s*resources/);
 assert.match(privacy, /<key>NSPrivacyTracking<\/key>\s*<false\/>/);
 for (const category of [
   "NSPrivacyCollectedDataTypeName",
