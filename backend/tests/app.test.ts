@@ -95,6 +95,18 @@ describe("asset upload and private timeline", () => {
       .bind(created.asset.id).first<{ object_key: string }>();
     expect(objectKey?.object_key).toMatch(/\/media$/);
 
+    const undersizedUpload = await app.request(created.upload.url, {
+      method: "PUT",
+      headers: {
+        authorization,
+        "content-type": "video/quicktime",
+        "content-length": "3",
+      },
+      body: "hey",
+    }, env);
+    expect(undersizedUpload.status).toBe(400);
+    await expect(undersizedUpload.json()).resolves.toMatchObject({ error: { code: "upload_size_mismatch" } });
+
     const upload = await app.request(created.upload.url, {
       method: "PUT",
       headers: { authorization, "content-type": "video/quicktime", "content-length": "11" },
@@ -248,7 +260,7 @@ describe("asset upload and private timeline", () => {
     await expect(response.json()).resolves.toMatchObject({ error: { code: "invalid_asset" } });
   });
 
-  it("fails closed when the uploaded object size differs from declared metadata", async () => {
+  it("rejects an upload whose body length differs from declared metadata before writing R2", async () => {
     const { app, authorization } = await signIn();
     const create = await app.request("/v1/assets", {
       method: "POST",
@@ -262,18 +274,18 @@ describe("asset upload and private timeline", () => {
       }),
     }, env);
     const { asset, upload } = await create.json<{ asset: { id: string }; upload: { url: string } }>();
-    await app.request(upload.url, {
+    const rejected = await app.request(upload.url, {
       method: "PUT",
       headers: { authorization, "content-type": "image/jpeg", "content-length": "3" },
       body: "bad",
     }, env);
+    expect(rejected.status).toBe(400);
+    await expect(rejected.json()).resolves.toMatchObject({ error: { code: "upload_size_mismatch" } });
 
-    const complete = await app.request(`/v1/assets/${asset.id}/upload/complete`, {
-      method: "POST",
-      headers: { authorization },
-    }, env);
-    expect(complete.status).toBe(409);
-    await expect(complete.json()).resolves.toMatchObject({ error: { code: "upload_size_mismatch" } });
+    const stored = await env.DB.prepare("SELECT object_key FROM assets WHERE id = ?")
+      .bind(asset.id).first<{ object_key: string }>();
+    expect(stored).not.toBeNull();
+    expect(await env.MEDIA.head(stored!.object_key)).toBeNull();
   });
 
   it("stores a bounded JPEG thumbnail and deletes all owned R2 objects with the asset", async () => {

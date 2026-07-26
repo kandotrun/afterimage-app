@@ -343,37 +343,44 @@ actor MediaCompressor {
         duration: CMTime?,
         progress: ProgressHandler?
     ) async throws {
-        try await withCheckedThrowingContinuation { continuation in
-            let gate = ContinuationGate(continuation)
-            let queue = DispatchQueue(label: "com.kandotrun.afterimage.media-pump.\(UUID().uuidString)")
-            pipeline.input.requestMediaDataWhenReady(on: queue) { [pipeline] in
-                while pipeline.input.isReadyForMoreMediaData {
-                    if pipeline.session.reader.status == .cancelled || pipeline.session.writer.status == .cancelled {
-                        pipeline.input.markAsFinished()
-                        gate.resume(throwing: AfterimageError.cancelled)
-                        return
-                    }
-                    if pipeline.session.reader.status == .failed {
-                        pipeline.input.markAsFinished()
-                        gate.resume(throwing: pipeline.session.reader.error ?? AfterimageError.compressionFailed("メディアを読み込めませんでした。"))
-                        return
-                    }
-                    guard let sampleBuffer = pipeline.output.copyNextSampleBuffer() else {
-                        pipeline.input.markAsFinished()
-                        gate.resume()
-                        return
-                    }
-                    guard pipeline.input.append(sampleBuffer) else {
-                        pipeline.input.markAsFinished()
-                        gate.resume(throwing: pipeline.session.writer.error ?? AfterimageError.compressionFailed("メディアを書き込めませんでした。"))
-                        return
-                    }
-                    if let duration, duration.seconds > 0, let progress {
-                        let time = CMSampleBufferGetPresentationTimeStamp(sampleBuffer).seconds
-                        progress(min(0.99, max(0, time / duration.seconds)))
+        let cancellation = PumpCancellationRelay()
+        try await withTaskCancellationHandler {
+            try Task.checkCancellation()
+            try await withCheckedThrowingContinuation { continuation in
+                let gate = ContinuationGate(continuation)
+                guard cancellation.install(gate) else { return }
+                let queue = DispatchQueue(label: "com.kandotrun.afterimage.media-pump.\(UUID().uuidString)")
+                pipeline.input.requestMediaDataWhenReady(on: queue) { [pipeline] in
+                    while pipeline.input.isReadyForMoreMediaData {
+                        if pipeline.session.reader.status == .cancelled || pipeline.session.writer.status == .cancelled {
+                            pipeline.input.markAsFinished()
+                            gate.resume(throwing: AfterimageError.cancelled)
+                            return
+                        }
+                        if pipeline.session.reader.status == .failed {
+                            pipeline.input.markAsFinished()
+                            gate.resume(throwing: pipeline.session.reader.error ?? AfterimageError.compressionFailed("メディアを読み込めませんでした。"))
+                            return
+                        }
+                        guard let sampleBuffer = pipeline.output.copyNextSampleBuffer() else {
+                            pipeline.input.markAsFinished()
+                            gate.resume()
+                            return
+                        }
+                        guard pipeline.input.append(sampleBuffer) else {
+                            pipeline.input.markAsFinished()
+                            gate.resume(throwing: pipeline.session.writer.error ?? AfterimageError.compressionFailed("メディアを書き込めませんでした。"))
+                            return
+                        }
+                        if let duration, duration.seconds > 0, let progress {
+                            let time = CMSampleBufferGetPresentationTimeStamp(sampleBuffer).seconds
+                            progress(min(0.99, max(0, time / duration.seconds)))
+                        }
                     }
                 }
             }
+        } onCancel: {
+            cancellation.cancel(session: pipeline.session)
         }
     }
 
@@ -431,6 +438,38 @@ private final class MediaSamplePipeline: @unchecked Sendable {
         self.input = input
         self.output = output
         self.session = session
+    }
+}
+
+private final class PumpCancellationRelay: @unchecked Sendable {
+    private let lock = NSLock()
+    private var isCancelled = false
+    private var gate: ContinuationGate?
+
+    func install(_ gate: ContinuationGate) -> Bool {
+        lock.lock()
+        if isCancelled {
+            lock.unlock()
+            gate.resume(throwing: AfterimageError.cancelled)
+            return false
+        }
+        self.gate = gate
+        lock.unlock()
+        return true
+    }
+
+    func cancel(session: AVReadWriteSession) {
+        lock.lock()
+        guard !isCancelled else {
+            lock.unlock()
+            return
+        }
+        isCancelled = true
+        let gate = gate
+        lock.unlock()
+
+        session.cancel()
+        gate?.resume(throwing: AfterimageError.cancelled)
     }
 }
 

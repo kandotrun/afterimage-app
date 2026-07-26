@@ -104,7 +104,8 @@ actor APIClient {
     }
 
     func uploadFile(_ fileURL: URL, to path: String, contentType: String) async throws {
-        let request = try makeRequest(path: path, method: "PUT", contentType: contentType)
+        var request = try makeRequest(path: path, method: "PUT", contentType: contentType)
+        request.setValue(String(try contentLength(of: fileURL)), forHTTPHeaderField: "Content-Length")
         let (_, response) = try await session.upload(for: request, fromFile: fileURL)
         try validate(response: response, data: nil)
     }
@@ -129,7 +130,8 @@ actor APIClient {
     }
 
     func uploadThumbnail(_ fileURL: URL, assetID: String) async throws {
-        let request = try makeRequest(path: "/v1/assets/\(assetID)/thumbnail", method: "PUT", contentType: "image/jpeg")
+        var request = try makeRequest(path: "/v1/assets/\(assetID)/thumbnail", method: "PUT", contentType: "image/jpeg")
+        request.setValue(String(try contentLength(of: fileURL)), forHTTPHeaderField: "Content-Length")
         let (_, response) = try await session.upload(for: request, fromFile: fileURL)
         try validate(response: response, data: nil)
     }
@@ -154,6 +156,14 @@ actor APIClient {
         let request = try makeRequest(path: "/v1/assets/\(assetID)", method: "DELETE")
         let (data, response) = try await session.data(for: request)
         try validate(response: response, data: data)
+    }
+
+    private func contentLength(of fileURL: URL) throws -> Int {
+        let values = try fileURL.resourceValues(forKeys: [.fileSizeKey])
+        guard let fileSize = values.fileSize, fileSize > 0 else {
+            throw AfterimageError.invalidConfiguration
+        }
+        return fileSize
     }
 
     private func rawData(_ request: URLRequest) async throws -> Data {

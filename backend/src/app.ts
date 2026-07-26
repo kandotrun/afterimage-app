@@ -497,8 +497,8 @@ export function createApp(overrides: Partial<AppDependencies> = {}) {
       return errorResponse(context, 415, "content_type_mismatch", "Upload Content-Type differs from metadata.");
     }
     const contentLength = Number(context.req.header("content-length"));
-    if (Number.isFinite(contentLength) && contentLength > asset.byte_size) {
-      return errorResponse(context, 413, "upload_too_large", "Upload exceeds its declared size.");
+    if (!Number.isSafeInteger(contentLength) || contentLength !== asset.byte_size) {
+      return errorResponse(context, 400, "upload_size_mismatch", "Upload length differs from its declared size.");
     }
     if (!context.req.raw.body) return errorResponse(context, 400, "missing_body", "Upload body is required.");
     await context.env.MEDIA.put(asset.object_key, context.req.raw.body, {

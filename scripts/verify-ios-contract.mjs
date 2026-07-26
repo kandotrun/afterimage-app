@@ -16,6 +16,7 @@ const swift = readdirSync(sourceRoot, { recursive: true, withFileTypes: true })
 assert.match(project, /PRODUCT_NAME:\s*afterimage/);
 assert.match(project, /IPHONEOS_DEPLOYMENT_TARGET:\s*["']?26\.0/);
 assert.match(project, /Resources\/PrivacyInfo\.xcprivacy/);
+assert.match(project, /xcprivacy:\s*\n\s+buildPhase:\s*resources/);
 assert.match(privacy, /<key>NSPrivacyTracking<\/key>\s*<false\/>/);
 for (const category of [
   "NSPrivacyCollectedDataTypeName",
@@ -36,6 +37,7 @@ for (const symbol of [
   "loadTransferable",
   "FileHandle",
   "AVVideoCodecType.hevc",
+  "PumpCancellationRelay",
   "AVAssetReaderTrackOutput(track: audioTrack, outputSettings: nil)",
   "AVAssetWriterInput(mediaType: .audio, outputSettings: nil",
   "CGImageDestinationLossyCompressionQuality",
