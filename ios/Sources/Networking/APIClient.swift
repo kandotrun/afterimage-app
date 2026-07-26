@@ -3,6 +3,10 @@ import Foundation
 struct APIPathResolver: Sendable {
     let baseURL: URL
 
+    static func resolve(_ path: String, against baseURL: URL) throws -> URL {
+        try APIPathResolver(baseURL: baseURL).resolve(path)
+    }
+
     func resolve(_ path: String) throws -> URL {
         if let absolute = URL(string: path), absolute.scheme != nil { return absolute }
         guard var components = URLComponents(url: baseURL, resolvingAgainstBaseURL: false) else {
