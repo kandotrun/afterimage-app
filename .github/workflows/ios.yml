@@ -56,9 +56,23 @@ jobs:
             | tee xcodebuild.log
       - name: Verify bundled privacy manifest
         run: |
-          MANIFEST="ios/DerivedData/Build/Products/Debug-iphonesimulator/afterimage.app/PrivacyInfo.xcprivacy"
-          test -f "$MANIFEST"
-          test "$(/usr/libexec/PlistBuddy -c 'Print :NSPrivacyTracking' "$MANIFEST")" = "false"
+          python3 - <<'PY'
+          import plistlib
+          from pathlib import Path
+
+          products = Path("ios/DerivedData/Build/Products")
+          apps = sorted(products.rglob("*.app"))
+          manifests = sorted(app / "PrivacyInfo.xcprivacy" for app in apps if (app / "PrivacyInfo.xcprivacy").is_file())
+          print("app bundles:", [str(path) for path in apps])
+          print("privacy manifests:", [str(path) for path in manifests])
+          if len(manifests) != 1:
+              raise SystemExit(f"expected exactly one bundled privacy manifest, found {len(manifests)}")
+          with manifests[0].open("rb") as handle:
+              privacy = plistlib.load(handle)
+          if privacy.get("NSPrivacyTracking") is not False:
+              raise SystemExit("bundled privacy manifest must declare tracking=false")
+          print("bundled privacy manifest: PASS")
+          PY
       - name: Upload Xcode result bundle
         if: always()
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
