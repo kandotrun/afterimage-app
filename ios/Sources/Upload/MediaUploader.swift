@@ -6,7 +6,14 @@ struct MultipartChunk: Equatable, Sendable {
     let length: Int
 }
 
+typealias UploadChunk = MultipartChunk
+
 enum MultipartChunkPlanner {
+    static func plan(fileSize: Int64, partSize: Int) throws -> [UploadChunk] {
+        guard fileSize > 0, partSize > 0 else { throw AfterimageError.uploadPlanInvalid }
+        return chunks(fileSize: fileSize, partSize: partSize)
+    }
+
     static func chunks(fileSize: Int64, partSize: Int) -> [MultipartChunk] {
         guard fileSize > 0, partSize > 0 else { return [] }
         var chunks: [MultipartChunk] = []
@@ -45,12 +52,13 @@ actor MediaUploader {
             progress(1)
         case .multipart:
             guard let partSize = plan.partSize,
-                  let template = plan.partUrlTemplate,
+                  let partCount = plan.partCount,
                   partSize > 0 else {
                 throw AfterimageError.uploadPlanInvalid
             }
-            let chunks = MultipartChunkPlanner.chunks(fileSize: media.byteSize, partSize: partSize)
-            guard chunks.count == plan.partCount else { throw AfterimageError.uploadPlanInvalid }
+            let chunks = try MultipartChunkPlanner.plan(fileSize: media.byteSize, partSize: partSize)
+            guard chunks.count == partCount else { throw AfterimageError.uploadPlanInvalid }
+
             let handle = try FileHandle(forReadingFrom: media.url)
             defer { try? handle.close() }
             for chunk in chunks {
@@ -58,7 +66,7 @@ actor MediaUploader {
                 try handle.seek(toOffset: UInt64(chunk.offset))
                 let data = try Self.readExactly(chunk.length, from: handle)
                 guard data.count == chunk.length else { throw AfterimageError.invalidResponse }
-                let path = template.replacingOccurrences(of: "{partNumber}", with: String(chunk.partNumber))
+                let path = try plan.path(forPart: chunk.partNumber)
                 _ = try await api.uploadPart(data, to: path)
                 progress(Double(chunk.partNumber) / Double(chunks.count))
             }

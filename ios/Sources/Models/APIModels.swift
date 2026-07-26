@@ -94,6 +94,17 @@ struct UploadPlan: Decodable, Equatable, Sendable {
     let partCount: Int?
     let partUrlTemplate: String?
 
+    func path(forPart partNumber: Int) throws -> String {
+        guard mode == .multipart,
+              let partCount,
+              (1...partCount).contains(partNumber),
+              let partUrlTemplate,
+              partUrlTemplate.contains("{partNumber}") else {
+            throw AfterimageError.uploadPlanInvalid
+        }
+        return partUrlTemplate.replacingOccurrences(of: "{partNumber}", with: String(partNumber))
+    }
+
     private enum CodingKeys: String, CodingKey {
         case mode, url, method, headers, maxBytes, uploadId, partSize, partCount, partUrlTemplate
     }
