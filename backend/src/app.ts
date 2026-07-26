@@ -601,7 +601,15 @@ export function createApp(overrides: Partial<AppDependencies> = {}) {
           WHERE id = ? AND user_id = ? AND status = 'uploading' AND upload_lease = ?`,
       ).bind(attemptKey, dependencies.now().toISOString(), asset.id, auth.userId, lease).run();
     } catch (error) {
-      // A D1 exception is ambiguous: it may have committed. Never delete the unique attempt here.
+      // The UPDATE outcome is ambiguous. Read back the authoritative pointer before compensating.
+      try {
+        const current = await findOwnedAsset(context.env, asset.id, auth.userId);
+        if (!current || current.status === "failed" || current.object_key !== attemptKey) {
+          await context.env.MEDIA.delete(attemptKey);
+        }
+      } catch {
+        // If reconciliation is also unavailable, a failed-row tombstone retains prefix cleanup eligibility.
+      }
       throw error;
     }
     if ((finalized.meta.changes ?? 0) !== 1) {
@@ -643,7 +651,20 @@ export function createApp(overrides: Partial<AppDependencies> = {}) {
     }
 
     const upload = context.env.MEDIA.resumeMultipartUpload(asset.object_key, asset.upload_id);
-    const uploadedPart = await upload.uploadPart(partNumber, context.req.raw.body);
+    let uploadedPart: R2UploadedPart;
+    try {
+      uploadedPart = await upload.uploadPart(partNumber, context.req.raw.body);
+    } catch (error) {
+      try {
+        const current = await findOwnedAsset(context.env, asset.id, auth.userId);
+        if (!current || current.status !== "uploading") {
+          return errorResponse(context, 409, "upload_conflict", "Upload completed or was cancelled before the part was stored.");
+        }
+      } catch {
+        // Preserve the original R2 error when D1 cannot reconcile the state.
+      }
+      throw error;
+    }
     const batchResults = await context.env.DB.batch([
       context.env.DB.prepare(
         `INSERT INTO upload_parts (asset_id, part_number, etag) VALUES (?, ?, ?)
@@ -654,10 +675,13 @@ export function createApp(overrides: Partial<AppDependencies> = {}) {
       ).bind(dependencies.now().toISOString(), asset.id, auth.userId),
     ]);
     if ((batchResults[1]?.meta.changes ?? 0) !== 1) {
-      try {
-        await upload.abort();
-      } catch {
-        // The winning deletion or cleanup may already have aborted it.
+      const current = await findOwnedAsset(context.env, asset.id, auth.userId);
+      if (!current || current.status === "failed") {
+        try {
+          await upload.abort();
+        } catch {
+          // The winning deletion or cleanup may already have aborted it.
+        }
       }
       await context.env.DB.prepare(
         "DELETE FROM upload_parts WHERE asset_id = ? AND part_number = ?",
@@ -672,6 +696,11 @@ export function createApp(overrides: Partial<AppDependencies> = {}) {
     let asset = await findOwnedAsset(context.env, context.req.param("assetId"), auth.userId);
     if (!asset) return errorResponse(context, 404, "upload_not_found", "Upload was not found.");
     if (asset.status === "ready") {
+      try {
+        await context.env.DB.prepare("DELETE FROM upload_parts WHERE asset_id = ?").bind(asset.id).run();
+      } catch {
+        // Part metadata is non-authoritative after ready and can be cleaned on another idempotent call.
+      }
       try {
         const keep = new Set([asset.object_key, ...(asset.thumbnail_key ? [asset.thumbnail_key] : [])]);
         await deleteAssetPrefixObjects(context.env, auth.userId, asset.id, keep);
@@ -798,6 +827,11 @@ export function createApp(overrides: Partial<AppDependencies> = {}) {
       return errorResponse(context, 409, "upload_conflict", "Asset was deleted during completion.");
     }
     try {
+      await context.env.DB.prepare("DELETE FROM upload_parts WHERE asset_id = ?").bind(completed.id).run();
+    } catch {
+      // Part metadata is non-authoritative after ready and can be retried by idempotent completion.
+    }
+    try {
       const keep = new Set([completed.object_key, ...(completed.thumbnail_key ? [completed.thumbnail_key] : [])]);
       await deleteAssetPrefixObjects(context.env, auth.userId, completed.id, keep);
     } catch {
@@ -875,7 +909,9 @@ export function createApp(overrides: Partial<AppDependencies> = {}) {
   api.get("/assets/:assetId/thumbnail", async (context) => {
     const auth = context.get("auth");
     const asset = await findOwnedAsset(context.env, context.req.param("assetId"), auth.userId);
-    if (!asset?.thumbnail_key) return errorResponse(context, 404, "thumbnail_not_found", "Thumbnail was not found.");
+    if (!asset || asset.status !== "ready" || !asset.thumbnail_key) {
+      return errorResponse(context, 404, "thumbnail_not_found", "Thumbnail was not found.");
+    }
     const object = await context.env.MEDIA.get(asset.thumbnail_key);
     if (!object) return errorResponse(context, 404, "thumbnail_not_found", "Thumbnail body was not found.");
     const headers = new Headers();
@@ -905,8 +941,8 @@ export function createApp(overrides: Partial<AppDependencies> = {}) {
     const thumbnailKey = `${assetObjectPrefix(auth.userId, asset.id)}thumbnail.jpg`;
     await context.env.MEDIA.delete([asset.object_key, thumbnailKey]);
     await deleteAssetPrefixObjects(context.env, auth.userId, asset.id);
-    await context.env.DB.prepare("DELETE FROM assets WHERE id = ? AND user_id = ?")
-      .bind(asset.id, auth.userId).run();
+    // Keep the failed row as a tombstone. Scheduled cleanup repeats prefix deletion after the
+    // grace period, catching writes that were already in flight when this request deleted R2.
     return new Response(null, { status: 204 });
   });
 
@@ -923,11 +959,13 @@ export function createApp(overrides: Partial<AppDependencies> = {}) {
       upload_mode, upload_id, part_size, created_at, updated_at FROM assets`;
     const statement = cursor
       ? context.env.DB.prepare(
-          `${select} WHERE user_id = ? AND (captured_at < ? OR (captured_at = ? AND id < ?))
+          `${select} WHERE user_id = ? AND status IN ('uploading', 'ready')
+             AND (captured_at < ? OR (captured_at = ? AND id < ?))
            ORDER BY captured_at DESC, id DESC LIMIT ?`,
         ).bind(auth.userId, cursor[0], cursor[0], cursor[1], limit + 1)
       : context.env.DB.prepare(
-          `${select} WHERE user_id = ? ORDER BY captured_at DESC, id DESC LIMIT ?`,
+          `${select} WHERE user_id = ? AND status IN ('uploading', 'ready')
+           ORDER BY captured_at DESC, id DESC LIMIT ?`,
         ).bind(auth.userId, limit + 1);
     const result = await statement.all<AssetRow>();
     const hasMore = result.results.length > limit;

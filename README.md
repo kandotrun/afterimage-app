@@ -27,6 +27,12 @@ The initial vertical slice is deployed and covers:
 
 The production Worker currently runs at `https://afterimage-api.softbank.workers.dev` with APAC D1 (`afterimage-prod`) and private APAC R2 (`afterimage-media-prod`). Deployment-local Cloudflare IDs live only in ignored `backend/wrangler.jsonc`.
 
+## Deletion and cleanup invariant
+
+Asset deletion immediately blocks authenticated access and deletes the current R2 keys plus the whole per-asset prefix. The D1 row remains as a hidden, terminal `failed` tombstone for 24 hours; scheduled cleanup then repeats prefix deletion before removing the row. This grace pass is intentional: it catches a media write that was already in flight when the first deletion completed.
+
+Abandoned uploads use the same two-stage policy: stale `uploading` rows become `failed`, and only a later cleanup pass removes their R2 prefix and D1 metadata.
+
 ## Before TestFlight
 
 The vertical slice is not yet an App Store release candidate. Complete these release blockers first:
