@@ -162,8 +162,7 @@ enum AfterimageError: LocalizedError, Sendable {
         case let .api(_, _, message): message
         case .missingCredential: "Appleの認証情報を受け取れませんでした。"
         case .unsupportedMedia: "この写真・動画形式にはまだ対応していません。"
-        case let .compressionFailed(reason): "軽量化できませんでした。元データは送信していません。
-\(reason)"
+        case let .compressionFailed(reason): "軽量化できませんでした。元データは送信していません。\n\(reason)"
         case .uploadPlanInvalid: "アップロードの準備に失敗しました。"
         case .cancelled: "アップロードをキャンセルしました。"
         }

@@ -170,8 +170,7 @@ private struct EmptyTimelineView: View {
             AfterglowMark()
             Text("最初のafterimageを残そう")
                 .font(.title2.bold())
-            Text("下の＋から写真や動画を選ぶと、
-音を変えずに軽くして保存します。")
+            Text("下の＋から写真や動画を選ぶと、\n音を変えずに軽くして保存します。")
                 .font(.body)
                 .foregroundStyle(.secondary)
                 .multilineTextAlignment(.center)

@@ -30,6 +30,7 @@ for (const symbol of [
   "CGImageDestinationLossyCompressionQuality",
   "partUrlTemplate",
   "replacingOccurrences(of: \"{partNumber}\"",
+  "/upload/complete",
   "AVPlayer",
   "/playback",
 ]) {

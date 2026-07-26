@@ -16,7 +16,7 @@ See [`AGENTS.md`](./AGENTS.md) for security and TDD rules.
 
 ## Status
 
-The initial vertical slice targets:
+The initial vertical slice is deployed and covers:
 
 1. Sign in with Apple
 2. Photo/video import without loading large movies into memory
@@ -24,4 +24,6 @@ The initial vertical slice targets:
 4. Private timeline and Range-capable playback
 5. macOS CI build/test for the native app
 
-Deployment-local Cloudflare IDs live only in ignored `backend/wrangler.jsonc`. Copy `backend/wrangler.example.jsonc` when provisioning a new environment.
+The production Worker currently runs at `https://afterimage-api.softbank.workers.dev` with APAC D1 (`afterimage-prod`) and private APAC R2 (`afterimage-media-prod`). Deployment-local Cloudflare IDs live only in ignored `backend/wrangler.jsonc`.
+
+Copy `backend/wrangler.example.jsonc` when provisioning another environment.

@@ -14,8 +14,7 @@ struct LoginView: View {
                 Text("afterimage")
                     .font(.system(size: 48, weight: .bold, design: .rounded))
                     .tracking(-2)
-                Text("撮った日々が、
-あとから見つかる。")
+                Text("撮った日々が、\nあとから見つかる。")
                     .font(.title2.weight(.medium))
                     .foregroundStyle(.secondary)
                     .padding(.top, 12)
