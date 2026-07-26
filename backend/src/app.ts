@@ -70,6 +70,15 @@ interface UploadPartRow {
   etag: string;
 }
 
+interface CleanupAssetRow {
+  id: string;
+  object_key: string;
+  thumbnail_key: string | null;
+  upload_mode: "single" | "multipart";
+  upload_id: string | null;
+  status: "uploading" | "failed";
+}
+
 const appleAuthSchema = z.object({
   identityToken: z.string().min(10).max(16_384),
   displayName: z.string().trim().min(1).max(100).optional(),
@@ -268,6 +277,53 @@ function authMiddleware(now: () => Date): MiddlewareHandler<AppEnvironment> {
   };
 }
 
+export async function cleanupExpiredState(bindings: Env, now = new Date()) {
+  const nowIso = now.toISOString();
+  const staleBefore = new Date(now.getTime() - 24 * 60 * 60 * 1000).toISOString();
+  const [expiredSessions, expiredGrants] = await bindings.DB.batch([
+    bindings.DB.prepare("DELETE FROM sessions WHERE expires_at <= ?").bind(nowIso),
+    bindings.DB.prepare("DELETE FROM media_grants WHERE expires_at <= ?").bind(nowIso),
+  ]);
+  const candidates = await bindings.DB.prepare(
+    `SELECT id, object_key, thumbnail_key, upload_mode, upload_id, status
+       FROM assets
+      WHERE status IN ('uploading', 'failed') AND updated_at <= ?
+      ORDER BY updated_at ASC LIMIT 100`,
+  ).bind(staleBefore).all<CleanupAssetRow>();
+
+  let abandonedAssets = 0;
+  for (const asset of candidates.results) {
+    if (asset.status === "uploading") {
+      const claim = await bindings.DB.prepare(
+        "UPDATE assets SET status = 'failed' WHERE id = ? AND status = 'uploading' AND updated_at <= ?",
+      ).bind(asset.id, staleBefore).run();
+      if ((claim.meta.changes ?? 0) === 0) continue;
+    }
+
+    if (asset.upload_mode === "multipart" && asset.upload_id) {
+      try {
+        await bindings.MEDIA.resumeMultipartUpload(asset.object_key, asset.upload_id).abort();
+      } catch {
+        // R2 may already have expired or aborted the multipart upload.
+      }
+    }
+    const objectKeys = asset.thumbnail_key
+      ? [asset.object_key, asset.thumbnail_key]
+      : [asset.object_key];
+    await bindings.MEDIA.delete(objectKeys);
+    const deleted = await bindings.DB.prepare(
+      "DELETE FROM assets WHERE id = ? AND status = 'failed'",
+    ).bind(asset.id).run();
+    abandonedAssets += deleted.meta.changes ?? 0;
+  }
+
+  return {
+    expiredSessions: expiredSessions?.meta.changes ?? 0,
+    expiredGrants: expiredGrants?.meta.changes ?? 0,
+    abandonedAssets,
+  };
+}
+
 export function createApp(overrides: Partial<AppDependencies> = {}) {
   const dependencies: AppDependencies = {
     verifyAppleIdentityToken: overrides.verifyAppleIdentityToken ?? verifyAppleIdentityTokenAgainstApple,
@@ -365,7 +421,7 @@ export function createApp(overrides: Partial<AppDependencies> = {}) {
     const auth = context.get("auth");
     const nowIso = dependencies.now().toISOString();
     const assetId = crypto.randomUUID();
-    const objectKey = `users/${auth.userId}/assets/${assetId}/original`;
+    const objectKey = `users/${auth.userId}/assets/${assetId}/media`;
     const singleLimit = integerBinding(context.env.SINGLE_UPLOAD_MAX_BYTES, 5_242_880, 1, 100 * 1024 * 1024);
     const partSize = integerBinding(
       context.env.MULTIPART_PART_SIZE_BYTES,
@@ -449,6 +505,9 @@ export function createApp(overrides: Partial<AppDependencies> = {}) {
       httpMetadata: { contentType: asset.content_type },
       customMetadata: { assetId: asset.id, userId: auth.userId },
     });
+    await context.env.DB.prepare(
+      "UPDATE assets SET updated_at = ? WHERE id = ? AND user_id = ? AND status = 'uploading'",
+    ).bind(dependencies.now().toISOString(), asset.id, auth.userId).run();
     return new Response(null, { status: 204 });
   });
 
@@ -475,10 +534,15 @@ export function createApp(overrides: Partial<AppDependencies> = {}) {
 
     const upload = context.env.MEDIA.resumeMultipartUpload(asset.object_key, asset.upload_id);
     const uploadedPart = await upload.uploadPart(partNumber, context.req.raw.body);
-    await context.env.DB.prepare(
-      `INSERT INTO upload_parts (asset_id, part_number, etag) VALUES (?, ?, ?)
-       ON CONFLICT(asset_id, part_number) DO UPDATE SET etag = excluded.etag`,
-    ).bind(asset.id, uploadedPart.partNumber, uploadedPart.etag).run();
+    await context.env.DB.batch([
+      context.env.DB.prepare(
+        `INSERT INTO upload_parts (asset_id, part_number, etag) VALUES (?, ?, ?)
+         ON CONFLICT(asset_id, part_number) DO UPDATE SET etag = excluded.etag`,
+      ).bind(asset.id, uploadedPart.partNumber, uploadedPart.etag),
+      context.env.DB.prepare(
+        "UPDATE assets SET updated_at = ? WHERE id = ? AND user_id = ? AND status = 'uploading'",
+      ).bind(dependencies.now().toISOString(), asset.id, auth.userId),
+    ]);
     return context.json({ part: uploadedPart });
   });
 

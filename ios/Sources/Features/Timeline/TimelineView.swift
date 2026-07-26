@@ -62,7 +62,7 @@ struct TimelineView: View {
                             Task { try? await model.refreshTimeline() }
                         }
                         Button("サインアウト", systemImage: "rectangle.portrait.and.arrow.right", role: .destructive) {
-                            model.signOut()
+                            Task { await model.signOut() }
                         }
                     } label: {
                         Image(systemName: "person.crop.circle")

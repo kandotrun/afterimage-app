@@ -197,6 +197,7 @@ actor MediaCompressor {
         let reader = try AVAssetReader(asset: asset)
         let writer = try AVAssetWriter(outputURL: outputURL, fileType: .mov)
         writer.shouldOptimizeForNetworkUse = true
+        let ioSession = AVReadWriteSession(reader: reader, writer: writer)
 
         let pixelSettings: [String: Any] = [
             kCVPixelBufferPixelFormatTypeKey as String: kCVPixelFormatType_420YpCbCr8BiPlanarVideoRange,
@@ -238,7 +239,7 @@ actor MediaCompressor {
         }
         writer.add(videoInput)
 
-        var audioPipelines: [AudioPipeline] = []
+        var audioPipelines: [MediaSamplePipeline] = []
         for audioTrack in try await asset.loadTracks(withMediaType: .audio) {
             let descriptions = try await audioTrack.load(.formatDescriptions)
             let formatHint = descriptions.first
@@ -251,7 +252,7 @@ actor MediaCompressor {
             }
             reader.add(output)
             writer.add(input)
-            audioPipelines.append(AudioPipeline(input: input, output: output))
+            audioPipelines.append(MediaSamplePipeline(input: input, output: output, session: ioSession))
         }
 
         guard writer.startWriting() else {
@@ -262,16 +263,14 @@ actor MediaCompressor {
             throw AfterimageError.compressionFailed(reader.error?.localizedDescription ?? "入力を開始できませんでした。")
         }
         writer.startSession(atSourceTime: .zero)
+        let videoPipeline = MediaSamplePipeline(input: videoInput, output: videoOutput, session: ioSession)
 
         do {
             try await withTaskCancellationHandler {
                 try await withThrowingTaskGroup(of: Void.self) { group in
                     group.addTask {
                         try await Self.pump(
-                            input: videoInput,
-                            output: videoOutput,
-                            reader: reader,
-                            writer: writer,
+                            pipeline: videoPipeline,
                             duration: duration,
                             progress: progress
                         )
@@ -279,10 +278,7 @@ actor MediaCompressor {
                     for pipeline in audioPipelines {
                         group.addTask {
                             try await Self.pump(
-                                input: pipeline.input,
-                                output: pipeline.output,
-                                reader: reader,
-                                writer: writer,
+                                pipeline: pipeline,
                                 duration: nil,
                                 progress: nil
                             )
@@ -290,14 +286,12 @@ actor MediaCompressor {
                     }
                     try await group.waitForAll()
                 }
-                await writer.finishWriting()
+                await ioSession.finishWriting()
             } onCancel: {
-                reader.cancelReading()
-                writer.cancelWriting()
+                ioSession.cancel()
             }
         } catch {
-            reader.cancelReading()
-            writer.cancelWriting()
+            ioSession.cancel()
             try? FileManager.default.removeItem(at: outputURL)
             if error is CancellationError {
                 throw AfterimageError.cancelled
@@ -345,36 +339,33 @@ actor MediaCompressor {
     }
 
     private static func pump(
-        input: AVAssetWriterInput,
-        output: AVAssetReaderOutput,
-        reader: AVAssetReader,
-        writer: AVAssetWriter,
+        pipeline: MediaSamplePipeline,
         duration: CMTime?,
         progress: ProgressHandler?
     ) async throws {
         try await withCheckedThrowingContinuation { continuation in
             let gate = ContinuationGate(continuation)
             let queue = DispatchQueue(label: "com.kandotrun.afterimage.media-pump.\(UUID().uuidString)")
-            input.requestMediaDataWhenReady(on: queue) {
-                while input.isReadyForMoreMediaData {
-                    if reader.status == .cancelled || writer.status == .cancelled {
-                        input.markAsFinished()
+            pipeline.input.requestMediaDataWhenReady(on: queue) { [pipeline] in
+                while pipeline.input.isReadyForMoreMediaData {
+                    if pipeline.session.reader.status == .cancelled || pipeline.session.writer.status == .cancelled {
+                        pipeline.input.markAsFinished()
                         gate.resume(throwing: AfterimageError.cancelled)
                         return
                     }
-                    if reader.status == .failed {
-                        input.markAsFinished()
-                        gate.resume(throwing: reader.error ?? AfterimageError.compressionFailed("メディアを読み込めませんでした。"))
+                    if pipeline.session.reader.status == .failed {
+                        pipeline.input.markAsFinished()
+                        gate.resume(throwing: pipeline.session.reader.error ?? AfterimageError.compressionFailed("メディアを読み込めませんでした。"))
                         return
                     }
-                    guard let sampleBuffer = output.copyNextSampleBuffer() else {
-                        input.markAsFinished()
+                    guard let sampleBuffer = pipeline.output.copyNextSampleBuffer() else {
+                        pipeline.input.markAsFinished()
                         gate.resume()
                         return
                     }
-                    guard input.append(sampleBuffer) else {
-                        input.markAsFinished()
-                        gate.resume(throwing: writer.error ?? AfterimageError.compressionFailed("メディアを書き込めませんでした。"))
+                    guard pipeline.input.append(sampleBuffer) else {
+                        pipeline.input.markAsFinished()
+                        gate.resume(throwing: pipeline.session.writer.error ?? AfterimageError.compressionFailed("メディアを書き込めませんでした。"))
                         return
                     }
                     if let duration, duration.seconds > 0, let progress {
@@ -412,9 +403,35 @@ actor MediaCompressor {
     }
 }
 
-private struct AudioPipeline: @unchecked Sendable {
+private final class AVReadWriteSession: @unchecked Sendable {
+    let reader: AVAssetReader
+    let writer: AVAssetWriter
+
+    init(reader: AVAssetReader, writer: AVAssetWriter) {
+        self.reader = reader
+        self.writer = writer
+    }
+
+    func cancel() {
+        reader.cancelReading()
+        writer.cancelWriting()
+    }
+
+    func finishWriting() async {
+        await writer.finishWriting()
+    }
+}
+
+private final class MediaSamplePipeline: @unchecked Sendable {
     let input: AVAssetWriterInput
     let output: AVAssetReaderOutput
+    let session: AVReadWriteSession
+
+    init(input: AVAssetWriterInput, output: AVAssetReaderOutput, session: AVReadWriteSession) {
+        self.input = input
+        self.output = output
+        self.session = session
+    }
 }
 
 private final class ContinuationGate: @unchecked Sendable {

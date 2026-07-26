@@ -27,6 +27,9 @@
       "bucket_name": "afterimage-app-media"
     }
   ],
+  "triggers": {
+    "crons": ["17 3 * * *"]
+  },
   "observability": {
     "enabled": true,
     "head_sampling_rate": 1

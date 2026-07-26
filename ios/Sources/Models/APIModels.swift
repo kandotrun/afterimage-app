@@ -166,6 +166,11 @@ enum AfterimageError: LocalizedError, Sendable {
     case uploadPlanInvalid
     case cancelled
 
+    var invalidatesSession: Bool {
+        guard case let .api(status, _, _) = self else { return false }
+        return status == 401
+    }
+
     var errorDescription: String? {
         switch self {
         case .invalidConfiguration: "接続先の設定を確認できませんでした。"

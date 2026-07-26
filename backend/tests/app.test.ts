@@ -1,6 +1,6 @@
 import { env } from "cloudflare:workers";
 import { beforeEach, describe, expect, it } from "vitest";
-import { createApp, type AppleIdentity } from "../src/app";
+import { cleanupExpiredState, createApp, type AppleIdentity } from "../src/app";
 
 const NOW = new Date("2026-07-27T00:00:00.000Z");
 
@@ -57,6 +57,18 @@ describe("health and authentication", () => {
       user: { appleSubject: "apple-user-a", email: "apple-user-a@example.com" },
     });
   });
+
+  it("revokes the current bearer session on logout", async () => {
+    const { app, authorization } = await signIn();
+    const logout = await app.request("/v1/auth/session", {
+      method: "DELETE",
+      headers: { authorization },
+    }, env);
+    expect(logout.status).toBe(204);
+
+    const reused = await app.request("/v1/me", { headers: { authorization } }, env);
+    expect(reused.status).toBe(401);
+  });
 });
 
 describe("asset upload and private timeline", () => {
@@ -79,6 +91,9 @@ describe("asset upload and private timeline", () => {
     expect(create.status).toBe(201);
     const created = await create.json<{ asset: { id: string }; upload: { mode: string; url: string } }>();
     expect(created.upload.mode).toBe("single");
+    const objectKey = await env.DB.prepare("SELECT object_key FROM assets WHERE id = ?")
+      .bind(created.asset.id).first<{ object_key: string }>();
+    expect(objectKey?.object_key).toMatch(/\/media$/);
 
     const upload = await app.request(created.upload.url, {
       method: "PUT",
@@ -312,5 +327,76 @@ describe("asset upload and private timeline", () => {
     expect(await env.MEDIA.head(stored!.object_key)).toBeNull();
     expect(await env.MEDIA.head(stored!.thumbnail_key)).toBeNull();
     expect(await env.DB.prepare("SELECT id FROM assets WHERE id = ?").bind(asset.id).first()).toBeNull();
+  });
+
+  it("cleans expired state and abandoned uploads without touching active data", async () => {
+    const { app, authorization } = await signIn("cleanup-owner");
+
+    const createAbandoned = await app.request("/v1/assets", {
+      method: "POST",
+      headers: { authorization, "content-type": "application/json" },
+      body: JSON.stringify({
+        kind: "photo",
+        filename: "abandoned.heic",
+        contentType: "image/heic",
+        byteSize: 5,
+        capturedAt: "2026-07-25T00:00:00.000Z",
+      }),
+    }, env);
+    const abandoned = await createAbandoned.json<{ asset: { id: string }; upload: { url: string } }>();
+    await app.request(abandoned.upload.url, {
+      method: "PUT",
+      headers: { authorization, "content-type": "image/heic", "content-length": "5" },
+      body: "stale",
+    }, env);
+    await env.DB.prepare("UPDATE assets SET updated_at = ? WHERE id = ?")
+      .bind("2026-07-25T00:00:00.000Z", abandoned.asset.id).run();
+    const abandonedKey = await env.DB.prepare("SELECT object_key FROM assets WHERE id = ?")
+      .bind(abandoned.asset.id).first<{ object_key: string }>();
+
+    const createReady = await app.request("/v1/assets", {
+      method: "POST",
+      headers: { authorization, "content-type": "application/json" },
+      body: JSON.stringify({
+        kind: "photo",
+        filename: "ready.heic",
+        contentType: "image/heic",
+        byteSize: 5,
+        capturedAt: "2026-07-27T00:00:00.000Z",
+      }),
+    }, env);
+    const ready = await createReady.json<{ asset: { id: string }; upload: { url: string } }>();
+    await app.request(ready.upload.url, {
+      method: "PUT",
+      headers: { authorization, "content-type": "image/heic", "content-length": "5" },
+      body: "ready",
+    }, env);
+    await app.request(`/v1/assets/${ready.asset.id}/upload/complete`, {
+      method: "POST",
+      headers: { authorization },
+    }, env);
+
+    const user = await env.DB.prepare("SELECT id FROM users WHERE apple_subject = ?")
+      .bind("cleanup-owner").first<{ id: string }>();
+    await env.DB.batch([
+      env.DB.prepare(
+        "INSERT INTO sessions (id, user_id, token_hash, expires_at, created_at) VALUES (?, ?, ?, ?, ?)",
+      ).bind("expired-session", user!.id, "expired-session-hash", "2026-07-26T00:00:00.000Z", "2026-07-25T00:00:00.000Z"),
+      env.DB.prepare(
+        "INSERT INTO media_grants (id, asset_id, user_id, token_hash, expires_at, created_at) VALUES (?, ?, ?, ?, ?, ?)",
+      ).bind("expired-grant", ready.asset.id, user!.id, "expired-grant-hash", "2026-07-26T00:00:00.000Z", "2026-07-25T00:00:00.000Z"),
+    ]);
+
+    const result = await cleanupExpiredState(env, NOW);
+
+    expect(result).toMatchObject({ expiredSessions: 1, expiredGrants: 1, abandonedAssets: 1 });
+    expect(await env.DB.prepare("SELECT id FROM sessions WHERE id = 'expired-session'").first()).toBeNull();
+    expect(await env.DB.prepare("SELECT id FROM media_grants WHERE id = 'expired-grant'").first()).toBeNull();
+    expect(await env.DB.prepare("SELECT id FROM assets WHERE id = ?").bind(abandoned.asset.id).first()).toBeNull();
+    expect(await env.MEDIA.head(abandonedKey!.object_key)).toBeNull();
+    expect(await env.DB.prepare("SELECT id FROM assets WHERE id = ? AND status = 'ready'")
+      .bind(ready.asset.id).first()).not.toBeNull();
+    expect(await env.DB.prepare("SELECT COUNT(*) AS count FROM sessions WHERE user_id = ?")
+      .bind(user!.id).first<{ count: number }>()).toMatchObject({ count: 1 });
   });
 });

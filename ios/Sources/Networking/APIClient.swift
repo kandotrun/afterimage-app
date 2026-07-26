@@ -8,7 +8,16 @@ struct APIPathResolver: Sendable {
     }
 
     func resolve(_ path: String) throws -> URL {
-        if let absolute = URL(string: path), absolute.scheme != nil { return absolute }
+        if let absolute = URL(string: path), absolute.scheme != nil {
+            let scheme = absolute.scheme?.lowercased()
+            let permitsHTTP = baseURL.scheme?.lowercased() == "http" && scheme == "http"
+            guard scheme == "https" || permitsHTTP,
+                  absolute.user == nil,
+                  absolute.password == nil else {
+                throw AfterimageError.invalidConfiguration
+            }
+            return absolute
+        }
         guard var components = URLComponents(url: baseURL, resolvingAgainstBaseURL: false) else {
             throw AfterimageError.invalidConfiguration
         }
@@ -20,6 +29,21 @@ struct APIPathResolver: Sendable {
         components.queryItems = relative.queryItems
         guard let url = components.url else { throw AfterimageError.invalidConfiguration }
         return url
+    }
+
+    func isAPIOrigin(_ url: URL) -> Bool {
+        url.scheme?.lowercased() == baseURL.scheme?.lowercased()
+            && url.host?.lowercased() == baseURL.host?.lowercased()
+            && effectivePort(of: url) == effectivePort(of: baseURL)
+    }
+
+    private func effectivePort(of url: URL) -> Int? {
+        if let port = url.port { return port }
+        return switch url.scheme?.lowercased() {
+        case "https": 443
+        case "http": 80
+        default: nil
+        }
     }
 }
 
@@ -37,6 +61,19 @@ actor APIClient {
 
     func setBearerToken(_ token: String?) {
         bearerToken = token
+    }
+
+    func revokeSession() async throws {
+        let request: URLRequest
+        do {
+            request = try makeRequest(path: "/v1/auth/session", method: "DELETE")
+        } catch {
+            bearerToken = nil
+            throw error
+        }
+        bearerToken = nil
+        let (data, response) = try await session.data(for: request)
+        try validate(response: response, data: data)
     }
 
     func signIn(identityToken: String, displayName: String?) async throws -> AuthResponse {
@@ -139,13 +176,14 @@ actor APIClient {
         contentType: String? = nil,
         authenticated: Bool = true
     ) throws -> URLRequest {
-        var request = URLRequest(url: try resolver.resolve(path))
+        let url = try resolver.resolve(path)
+        var request = URLRequest(url: url)
         request.httpMethod = method
         request.httpBody = body
         request.timeoutInterval = 120
         request.setValue("application/json", forHTTPHeaderField: "Accept")
         if let contentType { request.setValue(contentType, forHTTPHeaderField: "Content-Type") }
-        if authenticated, let bearerToken {
+        if authenticated, resolver.isAPIOrigin(url), let bearerToken {
             request.setValue("Bearer \(bearerToken)", forHTTPHeaderField: "Authorization")
         }
         return request

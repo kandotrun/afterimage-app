@@ -78,11 +78,19 @@ final class AppModel: ObservableObject {
             guard let token = try sessionStore.load() else { return }
             await api.setBearerToken(token)
             isAuthenticated = true
-            try await refreshTimeline()
+            do {
+                try await refreshTimeline()
+            } catch {
+                if (error as? AfterimageError)?.invalidatesSession == true {
+                    clearLocalSession()
+                    await api.setBearerToken(nil)
+                } else {
+                    show(error: error)
+                }
+            }
         } catch {
-            try? sessionStore.clear()
-            await api.setBearerToken(nil)
             isAuthenticated = false
+            show(error: error)
         }
     }
 
@@ -114,15 +122,12 @@ final class AppModel: ObservableObject {
         }
     }
 
-    func signOut() {
+    func signOut() async {
         uploadTask?.cancel()
         uploadTask = nil
         upload = nil
-        try? sessionStore.clear()
-        Task { await api.setBearerToken(nil) }
-        assets = []
-        nextCursor = nil
-        isAuthenticated = false
+        clearLocalSession()
+        try? await api.revokeSession()
         haptics.play(.selection)
     }
 
@@ -257,6 +262,13 @@ final class AppModel: ObservableObject {
             if error is CancellationError { throw AfterimageError.cancelled }
             throw error
         }
+    }
+
+    private func clearLocalSession() {
+        try? sessionStore.clear()
+        assets = []
+        nextCursor = nil
+        isAuthenticated = false
     }
 
     private func show(error: Error) {
