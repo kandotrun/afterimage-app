@@ -2,6 +2,7 @@ import CoreTransferable
 import Foundation
 import Photos
 import PhotosUI
+import SwiftUI
 import UniformTypeIdentifiers
 
 struct ImportedMedia: Sendable {

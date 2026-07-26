@@ -1,6 +1,7 @@
 import AuthenticationServices
 import Foundation
 import PhotosUI
+import SwiftUI
 
 struct AppNotice: Identifiable, Equatable {
     let id = UUID()
