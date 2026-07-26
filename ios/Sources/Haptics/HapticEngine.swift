@@ -21,23 +21,23 @@ enum HapticCue: Sendable {
     var events: [HapticEventDescriptor] {
         switch self {
         case .selection:
-            [init(kind: .transient, relativeTime: 0, intensity: 0.32, sharpness: 0.72, duration: 0)]
+            [HapticEventDescriptor(kind: .transient, relativeTime: 0, intensity: 0.32, sharpness: 0.72, duration: 0)]
         case .lift:
-            [init(kind: .transient, relativeTime: 0, intensity: 0.45, sharpness: 0.42, duration: 0)]
+            [HapticEventDescriptor(kind: .transient, relativeTime: 0, intensity: 0.45, sharpness: 0.42, duration: 0)]
         case .progress:
-            [init(kind: .transient, relativeTime: 0, intensity: 0.16, sharpness: 0.35, duration: 0)]
+            [HapticEventDescriptor(kind: .transient, relativeTime: 0, intensity: 0.16, sharpness: 0.35, duration: 0)]
         case .success:
             [
-                init(kind: .transient, relativeTime: 0, intensity: 0.55, sharpness: 0.45, duration: 0),
-                init(kind: .transient, relativeTime: 0.08, intensity: 0.90, sharpness: 0.82, duration: 0),
+                HapticEventDescriptor(kind: .transient, relativeTime: 0, intensity: 0.55, sharpness: 0.45, duration: 0),
+                HapticEventDescriptor(kind: .transient, relativeTime: 0.08, intensity: 0.90, sharpness: 0.82, duration: 0),
             ]
         case .failure:
             [
-                init(kind: .continuous, relativeTime: 0, intensity: 0.42, sharpness: 0.16, duration: 0.12),
-                init(kind: .transient, relativeTime: 0.14, intensity: 0.68, sharpness: 0.22, duration: 0),
+                HapticEventDescriptor(kind: .continuous, relativeTime: 0, intensity: 0.42, sharpness: 0.16, duration: 0.12),
+                HapticEventDescriptor(kind: .transient, relativeTime: 0.14, intensity: 0.68, sharpness: 0.22, duration: 0),
             ]
         case .delete:
-            [init(kind: .transient, relativeTime: 0, intensity: 0.72, sharpness: 0.18, duration: 0)]
+            [HapticEventDescriptor(kind: .transient, relativeTime: 0, intensity: 0.72, sharpness: 0.18, duration: 0)]
         }
     }
 }
