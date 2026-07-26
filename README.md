@@ -23,7 +23,17 @@ The initial vertical slice is deployed and covers:
 3. Authenticated single and multipart R2 upload
 4. Private timeline and Range-capable playback
 5. macOS CI build/test for the native app
+6. Privacy manifest for linked account data and private photos/videos
 
 The production Worker currently runs at `https://afterimage-api.softbank.workers.dev` with APAC D1 (`afterimage-prod`) and private APAC R2 (`afterimage-media-prod`). Deployment-local Cloudflare IDs live only in ignored `backend/wrangler.jsonc`.
+
+## Before TestFlight
+
+The vertical slice is not yet an App Store release candidate. Complete these release blockers first:
+
+- Bind every Sign in with Apple request to a unique nonce, verify it server-side, and reject nonce replay.
+- Add in-app account deletion that removes D1 metadata, active multipart uploads, and all owned R2 objects.
+- Configure the Apple Developer team, signing, App Store privacy answers, and a public privacy policy/support URL.
+- Validate HEVC output and byte-for-byte audio passthrough on physical devices across representative AAC/ALAC input files, interruptions, low-storage conditions, and backgrounding.
 
 Copy `backend/wrangler.example.jsonc` when provisioning another environment.

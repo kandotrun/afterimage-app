@@ -18,6 +18,7 @@ targets:
       - Sources
     resources:
       - Resources/Assets.xcassets
+      - Resources/PrivacyInfo.xcprivacy
     settings:
       base:
         PRODUCT_NAME: afterimage
