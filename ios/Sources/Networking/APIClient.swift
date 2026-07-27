@@ -83,12 +83,6 @@ actor APIClient {
         return try await decode(request)
     }
 
-    /// Development login without Apple verification (sideloaded builds).
-    func devSignIn() async throws -> AuthResponse {
-        let request = try makeRequest(path: "/v1/auth/dev", method: "POST", body: Data("{}".utf8), contentType: "application/json", authenticated: false)
-        return try await decode(request)
-    }
-
     func timeline(cursor: String? = nil, limit: Int = 40) async throws -> TimelinePage {
         var components = URLComponents()
         components.path = "/v1/assets"

@@ -37,20 +37,6 @@ struct LoginView: View {
                 .frame(height: 50)
                 .disabled(isSigningIn)
 
-                Button {
-                    isSigningIn = true
-                    Task {
-                        await model.devSignIn()
-                        isSigningIn = false
-                    }
-                } label: {
-                    Text("開発モードで開く")
-                        .font(.subheadline)
-                        .foregroundStyle(.secondary)
-                }
-                .disabled(isSigningIn)
-                .padding(.top, 12)
-
                 Text("写真と動画は非公開で保存されます。動画の音は変えません。")
                     .font(.footnote)
                     .foregroundStyle(.tertiary)

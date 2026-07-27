@@ -147,21 +147,6 @@ final class AppModel: ObservableObject {
         }
     }
 
-    /// Development login without Apple verification (sideloaded builds).
-    func devSignIn() async {
-        do {
-            let response = try await api.devSignIn()
-            try sessionStore.save(response.token)
-            await api.setBearerToken(response.token)
-            isAuthenticated = true
-            haptics.play(.success)
-            try await refreshTimeline()
-        } catch {
-            haptics.play(.failure)
-            show(error: error)
-        }
-    }
-
     func signOut() async {
         uploadTask?.cancel()
         uploadTask = nil
