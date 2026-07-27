@@ -10,6 +10,7 @@ struct AppNotice: Identifiable, Equatable {
 }
 
 enum UploadStage: Equatable {
+    case checking
     case importing
     case compressing(MediaKind)
     case uploading
@@ -17,6 +18,7 @@ enum UploadStage: Equatable {
 
     var title: String {
         switch self {
+        case .checking: L10n.string("upload.stage.checking")
         case .importing: L10n.string("upload.stage.importing")
         case .compressing(.video): L10n.string("upload.stage.compressing_video")
         case .compressing(.image): L10n.string("upload.stage.compressing_photo")
@@ -33,6 +35,31 @@ struct UploadPresentation: Equatable {
     var total: Int
 }
 
+struct ImportSelectionSummary: Equatable {
+    let selectedCount: Int
+    let skippedCount: Int
+
+    var uploadCount: Int { max(0, selectedCount - skippedCount) }
+
+    var title: String {
+        if uploadCount == 0 {
+            return L10n.format("upload.duplicates.all_title", Int64(selectedCount))
+        }
+        return L10n.format(
+            "upload.duplicates.partial_title",
+            Int64(selectedCount),
+            Int64(skippedCount)
+        )
+    }
+
+    var detail: String {
+        if uploadCount == 0 {
+            return L10n.string("upload.duplicates.all_detail")
+        }
+        return L10n.format("upload.duplicates.partial_detail", Int64(uploadCount))
+    }
+}
+
 @MainActor
 final class AppModel: ObservableObject {
     @Published private(set) var isAuthenticated = false
@@ -40,6 +67,7 @@ final class AppModel: ObservableObject {
     @Published private(set) var assets: [Asset] = []
     @Published private(set) var isLoadingTimeline = false
     @Published var upload: UploadPresentation?
+    @Published private(set) var importSelectionSummary: ImportSelectionSummary?
     @Published var notice: AppNotice?
 
     private let api: APIClient
@@ -151,6 +179,7 @@ final class AppModel: ObservableObject {
         uploadTask?.cancel()
         uploadTask = nil
         upload = nil
+        importSelectionSummary = nil
         clearLocalSession()
         try? await api.revokeSession()
         haptics.play(.selection)
@@ -184,20 +213,57 @@ final class AppModel: ObservableObject {
               uploadTask == nil,
               !BackgroundUploadManager.shared.hasPendingUpload else { return }
         haptics.play(.lift)
+        importSelectionSummary = nil
+        upload = UploadPresentation(stage: .checking, progress: 0.01, current: 0, total: items.count)
         uploadTask = Task { [weak self] in
             guard let self else { return }
-            for (index, item) in items.enumerated() {
-                if Task.isCancelled { break }
-                do {
-                    try await self.process(item: item, current: index + 1, total: items.count)
-                } catch {
-                    if !Task.isCancelled {
-                        self.haptics.play(.failure)
-                        self.show(error: error)
+            let identities = items.map { MediaImporter.identity(for: $0) }
+
+            do {
+                let candidates = ImportSelectionPolicy.candidates(from: identities)
+                let existing = try await self.api.existingSourceFingerprints(for: candidates)
+                let plan = ImportSelectionPolicy.plan(identities: identities, existing: existing)
+                var skippedCount = plan.skippedCount
+                self.updateImportSelectionSummary(
+                    selectedCount: items.count,
+                    skippedCount: skippedCount
+                )
+
+                if plan.uploadIndexes.isEmpty {
+                    self.haptics.play(.selection)
+                } else {
+                    for (position, index) in plan.uploadIndexes.enumerated() {
+                        if Task.isCancelled { break }
+                        do {
+                            try await self.process(
+                                item: items[index],
+                                identity: identities[index],
+                                current: position + 1,
+                                total: plan.uploadIndexes.count
+                            )
+                        } catch let error as AfterimageError where error.isDuplicateAsset {
+                            skippedCount += 1
+                            self.updateImportSelectionSummary(
+                                selectedCount: items.count,
+                                skippedCount: skippedCount
+                            )
+                            continue
+                        } catch {
+                            if !Task.isCancelled {
+                                self.haptics.play(.failure)
+                                self.show(error: error)
+                            }
+                            break
+                        }
                     }
-                    break
+                }
+            } catch {
+                if !Task.isCancelled {
+                    self.haptics.play(.failure)
+                    self.show(error: error)
                 }
             }
+
             self.upload = nil
             self.uploadTask = nil
         }
@@ -259,7 +325,12 @@ final class AppModel: ObservableObject {
         haptics.play(.delete)
     }
 
-    private func process(item: PhotosPickerItem, current: Int, total: Int) async throws {
+    private func process(
+        item: PhotosPickerItem,
+        identity: ImportIdentity?,
+        current: Int,
+        total: Int
+    ) async throws {
         upload = UploadPresentation(stage: .importing, progress: 0.02, current: current, total: total)
         let imported = try await MediaImporter.load(item)
         var optimized: OptimizedMedia?
@@ -282,6 +353,7 @@ final class AppModel: ObservableObject {
 
             let created = try await api.createAsset(CreateAssetRequest(
                 mediaType: optimized.kind,
+                sourceFingerprint: identity?.sourceFingerprint,
                 filename: optimized.filename,
                 contentType: optimized.contentType,
                 byteSize: optimized.byteSize,
@@ -334,8 +406,6 @@ final class AppModel: ObservableObject {
                                 case .success:
                                     try? await self.refreshTimeline()
                                     self.haptics.play(.success)
-                                    self.upload = nil
-                                    self.uploadTask = nil
                                     continuation.resume()
                                 case .failure(let error):
                                     continuation.resume(throwing: error)
@@ -402,6 +472,12 @@ final class AppModel: ObservableObject {
         if resumed, upload == nil {
             upload = UploadPresentation(stage: .uploading, progress: 0.50, current: 1, total: 1)
         }
+    }
+
+    private func updateImportSelectionSummary(selectedCount: Int, skippedCount: Int) {
+        importSelectionSummary = skippedCount > 0
+            ? ImportSelectionSummary(selectedCount: selectedCount, skippedCount: skippedCount)
+            : nil
     }
 
     private func clearLocalSession() {

@@ -122,8 +122,26 @@ const contentTypes = [
   "video/quicktime",
 ] as const;
 
+const sourceFingerprintSchema = z.string().regex(/^[a-f0-9]{64}$/);
+
+const existingAssetsSchema = z.object({
+  items: z.array(z.object({
+    sourceFingerprint: sourceFingerprintSchema,
+    filename: z.string().trim().min(1).max(255).refine(
+      (value) => value !== "." && value !== ".." && !/[\/\\\0]/.test(value),
+      "unsafe filename",
+    ),
+  })).min(1).max(12),
+}).superRefine((value, context) => {
+  const fingerprints = value.items.map((item) => item.sourceFingerprint);
+  if (new Set(fingerprints).size !== fingerprints.length) {
+    context.addIssue({ code: "custom", path: ["items"], message: "duplicate source fingerprints" });
+  }
+});
+
 const assetSchema = z.object({
   kind: z.enum(["photo", "video"]),
+  sourceFingerprint: sourceFingerprintSchema.optional(),
   filename: z.string().trim().min(1).max(255).refine(
     (value) => value !== "." && value !== ".." && !/[\/\\\0]/.test(value),
     "unsafe filename",
@@ -720,11 +738,63 @@ export function createApp(overrides: Partial<AppDependencies> = {}) {
     return new Response(null, { status: 204 });
   });
 
+  api.post("/assets/existing", async (context) => {
+    const parsed = existingAssetsSchema.safeParse(await parseJson(context));
+    if (!parsed.success) {
+      return errorResponse(context, 400, "invalid_asset_candidates", "Asset candidates are invalid.");
+    }
+    const auth = context.get("auth");
+    const placeholders = parsed.data.items.map(() => "?").join(", ");
+    const fingerprints = parsed.data.items.map((item) => item.sourceFingerprint);
+    const filenames = parsed.data.items.map((item) => item.filename);
+    const rows = await context.env.DB.prepare(
+      `SELECT source_fingerprint, filename
+         FROM assets
+        WHERE user_id = ? AND status IN ('uploading', 'ready')
+          AND (
+            source_fingerprint IN (${placeholders})
+            OR (source_fingerprint IS NULL AND filename IN (${placeholders}))
+          )`,
+    ).bind(auth.userId, ...fingerprints, ...filenames).all<{
+      source_fingerprint: string | null;
+      filename: string;
+    }>();
+    const storedFingerprints = new Set(
+      rows.results.flatMap((row) => row.source_fingerprint ? [row.source_fingerprint] : []),
+    );
+    const legacyFilenames = new Set(
+      rows.results.filter((row) => row.source_fingerprint === null).map((row) => row.filename),
+    );
+    const existingSourceFingerprints = parsed.data.items
+      .filter((item) => storedFingerprints.has(item.sourceFingerprint) || legacyFilenames.has(item.filename))
+      .map((item) => item.sourceFingerprint);
+    return context.json({ existingSourceFingerprints });
+  });
+
   api.post("/assets", async (context) => {
     const parsed = assetSchema.safeParse(await parseJson(context));
     if (!parsed.success) return errorResponse(context, 400, "invalid_asset", "Asset metadata is invalid.");
     const auth = context.get("auth");
     const nowIso = dependencies.now().toISOString();
+    if (parsed.data.sourceFingerprint) {
+      const duplicate = await context.env.DB.prepare(
+        `SELECT id FROM assets
+          WHERE user_id = ? AND status IN ('uploading', 'ready')
+            AND (
+              source_fingerprint = ?
+              OR (source_fingerprint IS NULL AND filename = ?)
+            )
+          LIMIT 1`,
+      ).bind(auth.userId, parsed.data.sourceFingerprint, parsed.data.filename).first<{ id: string }>();
+      if (duplicate) {
+        return errorResponse(
+          context,
+          409,
+          "duplicate_asset",
+          "This photo or video is already in afterimage.",
+        );
+      }
+    }
     const assetId = crypto.randomUUID();
     const objectKey = `users/${auth.userId}/assets/${assetId}/media`;
     const singleLimit = integerBinding(context.env.SINGLE_UPLOAD_MAX_BYTES, 5_242_880, 1, 100 * 1024 * 1024);
@@ -748,17 +818,19 @@ export function createApp(overrides: Partial<AppDependencies> = {}) {
       uploadId = multipart.uploadId;
     }
 
+    let inserted: D1Result;
     try {
-      await context.env.DB.prepare(
-        `INSERT INTO assets (
-          id, user_id, kind, filename, content_type, byte_size, captured_at,
+      inserted = await context.env.DB.prepare(
+        `INSERT OR IGNORE INTO assets (
+          id, user_id, kind, source_fingerprint, filename, content_type, byte_size, captured_at,
           duration_ms, width, height, status, object_key, thumbnail_key,
           upload_mode, upload_id, part_size, created_at, updated_at
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'uploading', ?, NULL, ?, ?, ?, ?, ?)`,
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'uploading', ?, NULL, ?, ?, ?, ?, ?)`,
       ).bind(
         assetId,
         auth.userId,
         parsed.data.kind,
+        parsed.data.sourceFingerprint ?? null,
         parsed.data.filename,
         parsed.data.contentType,
         parsed.data.byteSize,
@@ -776,6 +848,15 @@ export function createApp(overrides: Partial<AppDependencies> = {}) {
     } catch (error) {
       if (multipart) await multipart.abort();
       throw error;
+    }
+    if ((inserted.meta.changes ?? 0) !== 1) {
+      if (multipart) await multipart.abort();
+      return errorResponse(
+        context,
+        409,
+        "duplicate_asset",
+        "This photo or video is already in afterimage.",
+      );
     }
 
     const asset = await findOwnedAsset(context.env, assetId, auth.userId);
