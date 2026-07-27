@@ -39,10 +39,13 @@ struct Asset: Codable, Identifiable, Hashable, Sendable {
     let updatedAt: Date
     let thumbnailUrl: String?
     let contentUrl: String?
+    let transcriptionStatus: String?
+    let transcriptUrl: String?
 
     private enum CodingKeys: String, CodingKey {
         case id, status, filename, contentType, byteSize, width, height, durationMs
         case capturedAt, createdAt, updatedAt, thumbnailUrl, contentUrl
+        case transcriptionStatus, transcriptUrl
         case mediaType = "kind"
     }
 }
@@ -146,6 +149,19 @@ struct CompleteUploadRequest: Encodable, Sendable {
 struct PlaybackGrant: Decodable, Sendable {
     let url: String
     let expiresAt: Date
+}
+
+struct ResolvedPlaybackGrant: Equatable, Sendable {
+    let url: URL
+    let expiresAt: Date
+}
+
+struct TranscriptResponse: Decodable, Equatable, Sendable {
+    let assetId: String
+    let status: String
+    let language: String?
+    let text: String
+    let updatedAt: Date?
 }
 
 struct APIErrorEnvelope: Decodable, Sendable {

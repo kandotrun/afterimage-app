@@ -227,8 +227,12 @@ final class AppModel: ObservableObject {
         try await api.contentData(assetID: asset.id)
     }
 
-    func playbackURL(for asset: Asset) async throws -> URL {
-        try await api.playbackURL(assetID: asset.id)
+    func playbackGrant(for asset: Asset) async throws -> ResolvedPlaybackGrant {
+        try await api.playbackGrant(assetID: asset.id)
+    }
+
+    func transcript(for asset: Asset) async throws -> TranscriptResponse {
+        try await api.transcript(assetID: asset.id)
     }
 
     private func process(item: PhotosPickerItem, current: Int, total: Int) async throws {
