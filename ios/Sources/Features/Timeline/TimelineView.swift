@@ -23,40 +23,40 @@ struct TimelineView: View {
                     let layout = TimelineGridLayout(containerWidth: proxy.size.width)
 
                     ScrollView {
-                    if sections.isEmpty && !model.isLoadingTimeline {
-                        EmptyTimelineView()
-                            .padding(.top, 120)
-                    } else {
-                        LazyVStack(alignment: .leading, spacing: 28, pinnedViews: [.sectionHeaders]) {
-                            ForEach(sections) { section in
-                                Section {
-                                    LazyVGrid(
-                                        columns: layout.columns,
-                                        spacing: layout.spacing
-                                    ) {
-                                        ForEach(section.assets) { asset in
-                                            NavigationLink(value: asset) {
-                                                MemoryTile(asset: asset)
-                                                    .frame(width: layout.cellLength, height: layout.cellLength)
+                        if sections.isEmpty && !model.isLoadingTimeline {
+                            EmptyTimelineView()
+                                .padding(.top, 120)
+                        } else {
+                            LazyVStack(alignment: .leading, spacing: 28, pinnedViews: [.sectionHeaders]) {
+                                ForEach(sections) { section in
+                                    Section {
+                                        LazyVGrid(
+                                            columns: layout.columns,
+                                            spacing: layout.spacing
+                                        ) {
+                                            ForEach(section.assets) { asset in
+                                                NavigationLink(value: asset) {
+                                                    MemoryTile(asset: asset)
+                                                        .frame(width: layout.cellLength, height: layout.cellLength)
+                                                }
+                                                .buttonStyle(.plain)
+                                                .matchedTransitionSource(id: asset.id, in: zoomTransition)
+                                                .task { await model.loadMoreIfNeeded(after: asset) }
                                             }
-                                            .buttonStyle(.plain)
-                                            .matchedTransitionSource(id: asset.id, in: zoomTransition)
-                                            .task { await model.loadMoreIfNeeded(after: asset) }
                                         }
+                                    } header: {
+                                        Text(section.title)
+                                            .font(.headline.weight(.semibold))
+                                            .padding(.horizontal, 16)
+                                            .padding(.vertical, 8)
+                                            .frame(maxWidth: .infinity, alignment: .leading)
+                                            .background(Color(.systemBackground))
                                     }
-                                } header: {
-                                    Text(section.title)
-                                        .font(.headline.weight(.semibold))
-                                        .padding(.horizontal, 16)
-                                        .padding(.vertical, 8)
-                                        .frame(maxWidth: .infinity, alignment: .leading)
-                                        .background(Color(.systemBackground))
                                 }
                             }
+                            .padding(.bottom, 100)
                         }
-                        .padding(.bottom, 100)
-                    }
-                    }
+                        }
                     .refreshable { try? await model.refreshTimeline() }
                 }
             }
