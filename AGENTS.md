@@ -20,7 +20,7 @@ Afterimage is an iOS-first private lifelog. The first vertical slice imports pho
 6. iOS is iOS 26-only: use native Liquid Glass directly, with no `#available` or legacy Material fallback. Sessions live in Keychain, imports use file-based `Transferable`, and large video is never loaded fully into memory.
 7. Report what was actually built and tested; Linux cannot substitute for an Xcode build. Use macOS CI for the iOS build gate.
 8. R2 receives only optimized media. Re-encode video to HEVC while copying compressed audio samples with nil reader/writer output settings; never fall back to an audio re-encode or silently upload the original on conversion failure.
-9. Repo-managed GitHub Actions jobs run on the repo-scoped MacBook runner using `[self-hosted, macOS, ARM64, afterimage-ci]`. Do not switch them back to GitHub-hosted runners without explicit approval. Keep CI credentials in per-job temporary paths and remove them with `if: always()`; never persist secrets under the runner user's home directory.
+9. Repo-managed GitHub Actions jobs run on the repo-scoped MacBook runner using `[self-hosted, macOS, ARM64, afterimage-ci]`. Do not switch them back to GitHub-hosted runners without explicit approval. Keep API keys in per-job temporary paths and remove them with `if: always()`. TestFlight signing must use the locked, Afterimage-only CI keychain; never unlock the user's login keychain or store a macOS login password.
 
 ## Verification
 
