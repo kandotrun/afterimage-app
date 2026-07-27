@@ -6,7 +6,7 @@
   "compatibility_flags": ["nodejs_compat"],
   "vars": {
     "ENVIRONMENT": "development",
-    "APPLE_BUNDLE_ID": "com.2-38.hogehoge",
+    "APPLE_BUNDLE_ID": "com.2-38.afterimage",
     "SESSION_TTL_SECONDS": "2592000",
     "PLAYBACK_GRANT_TTL_SECONDS": "300",
     "SINGLE_UPLOAD_MAX_BYTES": "5242880",
