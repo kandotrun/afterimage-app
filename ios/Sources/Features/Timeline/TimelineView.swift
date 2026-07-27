@@ -5,6 +5,7 @@ import UIKit
 struct TimelineView: View {
     @EnvironmentObject private var model: AppModel
     @State private var selection: [PhotosPickerItem] = []
+    @State private var pendingOpen: Asset?
 
     private var sections: [MemoryDay] {
         let calendar = Calendar.autoupdatingCurrent
@@ -22,12 +23,16 @@ struct TimelineView: View {
                         EmptyTimelineView()
                             .padding(.top, 120)
                     } else {
-                        LazyVStack(alignment: .leading, spacing: 30, pinnedViews: [.sectionHeaders]) {
+                        LazyVStack(alignment: .leading, spacing: 28, pinnedViews: [.sectionHeaders]) {
                             ForEach(sections) { section in
                                 Section {
                                     LazyVGrid(
-                                        columns: [GridItem(.flexible(), spacing: 3), GridItem(.flexible(), spacing: 3)],
-                                        spacing: 3
+                                        columns: [
+                                            GridItem(.flexible(), spacing: 2),
+                                            GridItem(.flexible(), spacing: 2),
+                                            GridItem(.flexible(), spacing: 2),
+                                        ],
+                                        spacing: 2
                                     ) {
                                         ForEach(section.assets) { asset in
                                             NavigationLink(value: asset) {
@@ -51,9 +56,20 @@ struct TimelineView: View {
                 }
                 .refreshable { try? await model.refreshTimeline() }
             }
-            .navigationTitle("afterimage")
+            .navigationTitle("ライブラリ")
             .navigationDestination(for: Asset.self) { asset in
                 MemoryDetailView(asset: asset)
+            }
+            .navigationDestination(item: $pendingOpen) { asset in
+                MemoryDetailView(asset: asset)
+            }
+            .task {
+                #if DEBUG
+                guard ProcessInfo.processInfo.arguments.contains("-afterimageOpenFirst"),
+                      pendingOpen == nil else { return }
+                try? await Task.sleep(for: .milliseconds(900))
+                pendingOpen = model.assets.first
+                #endif
             }
             .toolbar {
                 ToolbarItem(placement: .topBarTrailing) {
@@ -142,16 +158,10 @@ struct AuthenticatedThumbnail: View {
                     .scaledToFill()
             } else {
                 ZStack {
-                    LinearGradient(
-                        colors: asset.mediaType == .video
-                            ? [Color.indigo.opacity(0.72), Color.orange.opacity(0.42)]
-                            : [Color.orange.opacity(0.60), Color.pink.opacity(0.36)],
-                        startPoint: .topLeading,
-                        endPoint: .bottomTrailing
-                    )
+                    Color(.tertiarySystemFill)
                     Image(systemName: asset.mediaType == .video ? "video.fill" : "photo.fill")
-                        .font(.title2)
-                        .foregroundStyle(.white.opacity(0.82))
+                        .font(.title3)
+                        .foregroundStyle(.tertiary)
                 }
             }
         }
@@ -166,15 +176,17 @@ struct AuthenticatedThumbnail: View {
 
 private struct EmptyTimelineView: View {
     var body: some View {
-        VStack(spacing: 18) {
-            AfterglowMark()
+        VStack(spacing: 16) {
+            Image(systemName: "photo.on.rectangle.angled")
+                .font(.system(size: 52, weight: .light))
+                .foregroundStyle(.secondary)
             Text("最初のafterimageを残そう")
-                .font(.title2.bold())
+                .font(.title3.weight(.semibold))
             Text("下の＋から写真や動画を選ぶと、\n音を変えずに軽くして保存します。")
-                .font(.body)
+                .font(.subheadline)
                 .foregroundStyle(.secondary)
                 .multilineTextAlignment(.center)
-                .lineSpacing(4)
+                .lineSpacing(3)
         }
         .frame(maxWidth: .infinity)
         .padding(.horizontal, 30)

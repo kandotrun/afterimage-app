@@ -1,5 +1,6 @@
 import AuthenticationServices
 import SwiftUI
+import UIKit
 
 struct LoginView: View {
     @EnvironmentObject private var model: AppModel
@@ -7,18 +8,16 @@ struct LoginView: View {
 
     var body: some View {
         MemoryBackdrop {
-            VStack(alignment: .leading, spacing: 0) {
+            VStack(spacing: 0) {
                 Spacer()
-                AfterglowMark()
-                    .padding(.bottom, 24)
+                AppIconMark()
+                    .padding(.bottom, 20)
                 Text("afterimage")
-                    .font(.system(size: 48, weight: .bold, design: .rounded))
-                    .tracking(-2)
-                Text("撮った日々が、\nあとから見つかる。")
-                    .font(.title2.weight(.medium))
+                    .font(.largeTitle.bold())
+                Text("撮った日々が、あとから見つかる。")
+                    .font(.title3)
                     .foregroundStyle(.secondary)
-                    .padding(.top, 12)
-                    .lineSpacing(4)
+                    .padding(.top, 8)
                 Spacer()
                 SignInWithAppleButton(.continue) { request in
                     request.requestedScopes = [.fullName, .email]
@@ -34,19 +33,42 @@ struct LoginView: View {
                         isSigningIn = false
                     }
                 }
-                .signInWithAppleButtonStyle(.whiteOutline)
-                .frame(height: 54)
-                .clipShape(.rect(cornerRadius: 17))
+                .signInWithAppleButtonStyle(.black)
+                .frame(height: 50)
                 .disabled(isSigningIn)
 
                 Text("写真と動画は非公開で保存されます。動画の音は変えません。")
                     .font(.footnote)
                     .foregroundStyle(.tertiary)
+                    .multilineTextAlignment(.center)
                     .padding(.top, 14)
-                    .padding(.bottom, 24)
+                    .padding(.bottom, 12)
             }
-            .padding(.horizontal, 28)
+            .padding(.horizontal, 24)
             .frame(maxWidth: 520)
         }
+    }
+}
+
+/// Renders the bundled app icon the same way the system does (squircle mask).
+private struct AppIconMark: View {
+    var body: some View {
+        Group {
+            if let icon = UIImage(named: "AppIcon") {
+                Image(uiImage: icon)
+                    .resizable()
+                    .scaledToFit()
+            } else {
+                Image(systemName: "circle.dashed")
+                    .resizable()
+                    .scaledToFit()
+                    .padding(14)
+                    .foregroundStyle(.secondary)
+                    .background(Color(.tertiarySystemFill))
+            }
+        }
+        .frame(width: 88, height: 88)
+        .clipShape(.rect(cornerRadius: 20))
+        .accessibilityHidden(true)
     }
 }

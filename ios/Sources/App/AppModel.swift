@@ -65,6 +65,14 @@ final class AppModel: ObservableObject {
     }
 
     static func live() -> AppModel {
+        #if DEBUG
+        let arguments = ProcessInfo.processInfo.arguments
+        if let index = arguments.firstIndex(of: "-afterimageApiBase"),
+           arguments.indices.contains(index + 1),
+           let url = URL(string: arguments[index + 1]) {
+            return AppModel(api: APIClient(baseURL: url))
+        }
+        #endif
         let configured = Bundle.main.object(forInfoDictionaryKey: "AFTERIMAGE_API_BASE_URL") as? String
         let baseURL = configured.flatMap(URL.init(string:)) ?? URL(string: "http://127.0.0.1:8787")!
         return AppModel(api: APIClient(baseURL: baseURL))
@@ -93,6 +101,23 @@ final class AppModel: ObservableObject {
             show(error: error)
         }
     }
+
+    #if DEBUG
+    /// Debug-only: enter the timeline with an externally issued session token
+    /// (e.g. the local seed script) so screenshots can be taken without Apple sign-in.
+    func applyDevSessionToken(_ token: String) async {
+        guard !didBootstrap else { return }
+        didBootstrap = true
+        isBootstrapping = false
+        await api.setBearerToken(token)
+        isAuthenticated = true
+        do {
+            try await refreshTimeline()
+        } catch {
+            show(error: error)
+        }
+    }
+    #endif
 
     func signIn(credential: ASAuthorizationAppleIDCredential) async {
         guard let tokenData = credential.identityToken,

@@ -29,9 +29,21 @@ struct RootView: View {
                 LoginView()
             }
         }
-        .task { await model.bootstrap() }
+        .task { await launch() }
         .alert(item: $model.notice) { notice in
             Alert(title: Text(notice.title), message: Text(notice.message), dismissButton: .default(Text("閉じる")))
         }
+    }
+
+    private func launch() async {
+        let arguments = ProcessInfo.processInfo.arguments
+        #if DEBUG
+        if let index = arguments.firstIndex(of: "-afterimageDevSession"),
+           arguments.indices.contains(index + 1) {
+            await model.applyDevSessionToken(arguments[index + 1])
+            return
+        }
+        #endif
+        await model.bootstrap()
     }
 }

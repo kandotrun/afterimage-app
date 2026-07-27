@@ -1,0 +1,29 @@
+{
+  "$schema": "./node_modules/wrangler/config-schema.json",
+  "name": "afterimage-api",
+  "main": "src/index.ts",
+  "compatibility_date": "2026-07-26",
+  "compatibility_flags": ["nodejs_compat"],
+  "vars": {
+    "ENVIRONMENT": "development",
+    "APPLE_BUNDLE_ID": "com.kandotrun.afterimage",
+    "SESSION_TTL_SECONDS": "2592000",
+    "PLAYBACK_GRANT_TTL_SECONDS": "300",
+    "SINGLE_UPLOAD_MAX_BYTES": "5242880",
+    "MULTIPART_PART_SIZE_BYTES": "8388608"
+  },
+  "d1_databases": [
+    {
+      "binding": "DB",
+      "database_name": "afterimage-dev",
+      "database_id": "local-afterimage-dev",
+      "migrations_dir": "migrations"
+    }
+  ],
+  "r2_buckets": [
+    {
+      "binding": "MEDIA",
+      "bucket_name": "afterimage-dev-media"
+    }
+  ]
+}
