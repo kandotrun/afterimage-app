@@ -6,6 +6,7 @@ struct TimelineView: View {
     @EnvironmentObject private var model: AppModel
     @State private var selection: [PhotosPickerItem] = []
     @State private var pendingOpen: Asset?
+    @Namespace private var zoomTransition
 
     private var sections: [MemoryDay] {
         let calendar = Calendar.autoupdatingCurrent
@@ -39,6 +40,7 @@ struct TimelineView: View {
                                                 MemoryTile(asset: asset)
                                             }
                                             .buttonStyle(.plain)
+                                            .matchedTransitionSource(id: asset.id, in: zoomTransition)
                                             .task { await model.loadMoreIfNeeded(after: asset) }
                                         }
                                     }
@@ -59,6 +61,7 @@ struct TimelineView: View {
             .navigationTitle("ライブラリ")
             .navigationDestination(for: Asset.self) { asset in
                 MemoryDetailView(asset: asset)
+                    .navigationTransition(.zoom(sourceID: asset.id, in: zoomTransition))
             }
             .navigationDestination(item: $pendingOpen) { asset in
                 MemoryDetailView(asset: asset)
