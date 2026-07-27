@@ -4,6 +4,14 @@ A private, iOS-first lifelog inspired by the effortless camera-roll experience o
 
 > This repository is private product code. The existing `kandotrun/afterimage` repository remains the separate self-hosted/OSS project.
 
+## Screenshot
+
+iPhone 17 Pro / iOS 26 Simulator:
+
+<p align="center">
+  <img src="docs/screenshots/ios26-timeline.png" alt="Afterimage running in the iOS 26 Simulator" width="320">
+</p>
+
 ## Stack
 
 - iOS 26 only, SwiftUI, Liquid Glass, PhotosPicker, AuthenticationServices, AVKit, Core Haptics
