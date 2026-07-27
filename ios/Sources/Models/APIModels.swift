@@ -69,8 +69,22 @@ struct TimelinePage: Codable, Equatable, Sendable {
     }
 }
 
+struct ExistingAssetCandidate: Codable, Equatable, Sendable {
+    let sourceFingerprint: String
+    let filename: String
+}
+
+struct ExistingAssetsRequest: Encodable, Sendable {
+    let items: [ExistingAssetCandidate]
+}
+
+struct ExistingAssetsResponse: Decodable, Sendable {
+    let existingSourceFingerprints: [String]
+}
+
 struct CreateAssetRequest: Encodable, Sendable {
     let mediaType: MediaKind
+    let sourceFingerprint: String?
     let filename: String
     let contentType: String
     let byteSize: Int64
@@ -81,7 +95,7 @@ struct CreateAssetRequest: Encodable, Sendable {
 
     private enum CodingKeys: String, CodingKey {
         case mediaType = "kind"
-        case filename, contentType, byteSize, width, height, durationMs, capturedAt
+        case sourceFingerprint, filename, contentType, byteSize, width, height, durationMs, capturedAt
     }
 }
 
@@ -194,6 +208,11 @@ enum AfterimageError: LocalizedError, Sendable {
     var invalidatesSession: Bool {
         guard case let .api(status, _, _) = self else { return false }
         return status == 401
+    }
+
+    var isDuplicateAsset: Bool {
+        guard case let .api(status, code, _) = self else { return false }
+        return status == 409 && code == "duplicate_asset"
     }
 
     var errorDescription: String? {
