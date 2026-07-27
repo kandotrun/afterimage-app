@@ -50,6 +50,7 @@ struct TimelineView: View {
                                         .padding(.horizontal, 16)
                                         .padding(.vertical, 8)
                                         .frame(maxWidth: .infinity, alignment: .leading)
+                                        .background(Color(.systemBackground))
                                 }
                             }
                         }
@@ -118,28 +119,32 @@ private struct MemoryTile: View {
     let asset: Asset
 
     var body: some View {
-        ZStack(alignment: .bottomTrailing) {
-            AuthenticatedThumbnail(asset: asset)
-                .aspectRatio(1, contentMode: .fill)
-                .frame(maxWidth: .infinity)
-                .clipped()
-            if asset.mediaType == .video {
-                HStack(spacing: 4) {
-                    Image(systemName: "play.fill")
-                    if let duration = asset.durationMs {
-                        Text(Self.duration(duration))
-                    }
-                }
-                .font(.caption2.weight(.semibold))
-                .foregroundStyle(.white)
-                .padding(.horizontal, 8)
-                .padding(.vertical, 5)
-                .background(.black.opacity(0.54), in: .capsule)
-                .padding(8)
+        Color(.tertiarySystemFill)
+            .aspectRatio(1, contentMode: .fit)
+            .overlay {
+                AuthenticatedThumbnail(asset: asset)
+                    .frame(maxWidth: .infinity, maxHeight: .infinity)
+                    .clipped()
             }
-        }
-        .contentShape(.rect)
-        .accessibilityLabel(asset.mediaType == .video ? "動画 \(asset.capturedAt.formatted())" : "写真 \(asset.capturedAt.formatted())")
+            .overlay(alignment: .bottomTrailing) {
+                if asset.mediaType == .video {
+                    HStack(spacing: 4) {
+                        Image(systemName: "play.fill")
+                        if let duration = asset.durationMs {
+                            Text(Self.duration(duration))
+                        }
+                    }
+                    .font(.caption2.weight(.semibold))
+                    .foregroundStyle(.white)
+                    .padding(.horizontal, 8)
+                    .padding(.vertical, 5)
+                    .background(.black.opacity(0.54), in: .capsule)
+                    .padding(8)
+                }
+            }
+            .clipped()
+            .contentShape(.rect)
+            .accessibilityLabel(asset.mediaType == .video ? "動画 \(asset.capturedAt.formatted())" : "写真 \(asset.capturedAt.formatted())")
     }
 
     private static func duration(_ milliseconds: Int) -> String {
