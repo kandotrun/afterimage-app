@@ -26,6 +26,12 @@
     <string>写真や動画を、あなたの記憶としてafterimageへ保存します。</string>
     <key>ITSAppUsesNonExemptEncryption</key>
     <false/>
+    <key>NSSupportsLiveActivities</key>
+    <true/>
+    <key>UIBackgroundModes</key>
+    <array>
+        <string>processing</string>
+    </array>
     <key>AFTERIMAGE_API_BASE_URL</key>
     <string>https://afterimage.2-38.com</string>
     <key>NSAppTransportSecurity</key>

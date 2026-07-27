@@ -2,6 +2,7 @@ import SwiftUI
 
 @main
 struct AfterimageApp: App {
+    @UIApplicationDelegateAdaptor(AppDelegate.self) var appDelegate
     @StateObject private var model = AppModel.live()
 
     var body: some Scene {

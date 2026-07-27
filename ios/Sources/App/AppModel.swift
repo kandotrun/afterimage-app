@@ -261,10 +261,8 @@ final class AppModel: ObservableObject {
         let imported = try await MediaImporter.load(item)
         var optimized: OptimizedMedia?
         var remoteAssetID: String?
-        var uploadCompleted = false
         defer {
             imported.removeTemporaryFile()
-            optimized?.removeTemporaryFiles()
         }
 
         do {
@@ -289,24 +287,79 @@ final class AppModel: ObservableObject {
                 capturedAt: optimized.capturedAt
             ))
             remoteAssetID = created.asset.id
+
+            // Hand off to background upload so it survives app suspension.
             upload = UploadPresentation(stage: .uploading, progress: 0.50, current: current, total: total)
-            let ready = try await uploader.upload(
-                media: optimized,
+            let liveActivity = UploadLiveActivityManager.shared
+            liveActivity.start(
+                filename: optimized.filename,
+                stage: UploadStage.uploading.title,
+                current: current,
+                total: total
+            )
+
+            let uploadItem = BackgroundUploadState.Item(
                 assetID: created.asset.id,
-                plan: created.upload
-            ) { [weak self] value in
-                Task { @MainActor in
-                    guard let self else { return }
-                    self.upload?.progress = 0.50 + value * 0.44
-                }
+                filename: optimized.filename,
+                mediaURL: optimized.url,
+                thumbnailURL: optimized.thumbnailURL,
+                contentType: optimized.contentType,
+                byteSize: optimized.byteSize,
+                plan: created.upload,
+                completedParts: [],
+                isComplete: false
+            )
+
+            try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<Void, Error>) in
+                BackgroundUploadManager.shared.startUpload(
+                    items: [uploadItem],
+                    progress: { [weak self] _, progress, itemCurrent, itemTotal in
+                        Task { @MainActor in
+                            guard let self else { return }
+                            self.upload?.progress = 0.50 + progress * 0.44
+                            liveActivity.update(
+                                stage: UploadStage.uploading.title,
+                                progress: 0.50 + progress * 0.44,
+                                current: itemCurrent,
+                                total: itemTotal
+                            )
+                        }
+                    },
+                    completion: { [weak self] result in
+                        Task { @MainActor in
+                            guard let self else { return }
+                            switch result {
+                            case .success:
+                                // R2 transfer done — finalize via API.
+                                self.upload = UploadPresentation(stage: .finishing, progress: 0.96, current: current, total: total)
+                                liveActivity.update(stage: UploadStage.finishing.title, progress: 0.96, current: current, total: total)
+                                do {
+                                    _ = try await self.api.completeUpload(assetID: created.asset.id)
+                                    if let thumbURL = optimized?.thumbnailURL {
+                                        try? await self.api.uploadThumbnail(thumbURL, assetID: created.asset.id)
+                                    }
+                                    optimized?.removeTemporaryFiles()
+                                    liveActivity.end()
+                                    try? await self.refreshTimeline()
+                                    self.haptics.play(.success)
+                                    self.upload = nil
+                                    self.uploadTask = nil
+                                    continuation.resume()
+                                } catch {
+                                    liveActivity.cancel()
+                                    continuation.resume(throwing: error)
+                                }
+                            case .failure(let error):
+                                liveActivity.cancel()
+                                continuation.resume(throwing: error)
+                            }
+                        }
+                    }
+                )
             }
-            uploadCompleted = true
-            upload = UploadPresentation(stage: .finishing, progress: 0.96, current: current, total: total)
-            try? await api.uploadThumbnail(optimized.thumbnailURL, assetID: ready.id)
-            try await refreshTimeline()
-            haptics.play(.success)
         } catch {
-            if let remoteAssetID, !uploadCompleted {
+            UploadLiveActivityManager.shared.cancel()
+            if let remoteAssetID {
                 try? await api.deleteAsset(assetID: remoteAssetID)
             }
             if error is CancellationError { throw AfterimageError.cancelled }

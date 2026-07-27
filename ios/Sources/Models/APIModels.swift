@@ -90,12 +90,12 @@ struct CreateAssetResponse: Decodable, Sendable {
     let upload: UploadPlan
 }
 
-enum UploadMode: String, Decodable, Sendable {
+enum UploadMode: String, Codable, Sendable {
     case single
     case multipart
 }
 
-struct UploadPlan: Decodable, Equatable, Sendable {
+struct UploadPlan: Codable, Equatable, Sendable {
     let mode: UploadMode
     let url: String?
     let method: String?

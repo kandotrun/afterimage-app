@@ -30,7 +30,22 @@ targets:
         CODE_SIGN_ENTITLEMENTS: Resources/afterimage.entitlements
         ASSETCATALOG_COMPILER_GLOBAL_ACCENT_COLOR_NAME: AccentColor
         ASSETCATALOG_COMPILER_APPICON_NAME: AppIcon
-    dependencies: []
+    dependencies:
+      - target: AfterimageUploadWidget
+  AfterimageUploadWidget:
+    type: app-extension
+    platform: iOS
+    sources:
+      - path: AfterimageUploadWidget
+      - path: Sources/Shared
+    settings:
+      base:
+        PRODUCT_NAME: AfterimageUploadWidget
+        PRODUCT_MODULE_NAME: AfterimageUploadWidget
+        PRODUCT_BUNDLE_IDENTIFIER: com.2-38.afterimage.upload-widget
+        GENERATE_INFOPLIST_FILE: NO
+        INFOPLIST_FILE: AfterimageUploadWidget/Info.plist
+        ASSETCATALOG_COMPILER_GLOBAL_ACCENT_COLOR_NAME: AccentColor
   afterimageTests:
     type: bundle.unit-test
     platform: iOS
