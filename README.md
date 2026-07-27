@@ -4,12 +4,14 @@ A private, iOS-first lifelog inspired by the effortless camera-roll experience o
 
 > This repository is private product code. The existing `kandotrun/afterimage` repository remains the separate self-hosted/OSS project.
 
-## Screenshot
+## Screenshots
 
-iPhone 17 Pro / iOS 26 Simulator:
+iPhone 17 Pro / iOS 26.5 Simulator:
 
 <p align="center">
-  <img src="docs/screenshots/ios26-timeline.png" alt="Afterimage running in the iOS 26 Simulator" width="320">
+  <img src="docs/screenshots/ios26-login.png" alt="Sign in with Apple" width="240">
+  <img src="docs/screenshots/ios26-timeline.png" alt="Timeline" width="240">
+  <img src="docs/screenshots/ios26-detail.png" alt="Memory detail" width="240">
 </p>
 
 ## Stack
@@ -51,3 +53,16 @@ The vertical slice is not yet an App Store release candidate. Complete these rel
 - Validate HEVC output and byte-for-byte audio passthrough on physical devices across representative AAC/ALAC input files, interruptions, low-storage conditions, and backgrounding.
 
 Copy `backend/wrangler.example.jsonc` when provisioning another environment.
+
+## Local development
+
+```bash
+cd backend
+npm run dev          # wrangler dev on :8787 (local D1 + R2, wrangler.dev.jsonc)
+npm run seed:dev     # dev user/session + sample media through the real upload flow
+```
+
+The seed script prints a bearer token for the DEBUG-only launch arguments
+`-afterimageApiBase <url> -afterimageDevSession <token>` (plus
+`-afterimageOpenFirst` to auto-open the first memory). These hooks are
+compiled out of release builds.

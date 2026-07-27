@@ -93,12 +93,14 @@ function generatePhoto(spec, index) {
   const path = join(workDir, spec.file);
   const base = hslToHex(spec.hue, 62, 46);
   const band = hslToHex((spec.hue + 40) % 360, 70, 62);
-  const filter = [
-    `color=c=${base}:s=1170x1266[top]`,
-    `color=c=${band}:s=1170x1266[bot]`,
-    `[top][bot]vstack,drawtext=text='${spec.label}':fontsize=72:fontcolor=white@0.9:x=(w-text_w)/2:y=h*0.82`,
-  ].join(";");
-  runFfmpeg(["-y", "-f", "lavfi", "-i", filter, "-frames:v", "1", "-q:v", "3", path]);
+  const stack = `color=c=${base}:s=1170x1266[top];color=c=${band}:s=1170x1266[bot];[top][bot]vstack`;
+  const withLabel = `${stack},drawtext=text='${spec.label}':fontsize=72:fontcolor=white@0.9:x=(w-text_w)/2:y=h*0.82`;
+  try {
+    runFfmpeg(["-y", "-f", "lavfi", "-i", withLabel, "-frames:v", "1", "-q:v", "3", path]);
+  } catch {
+    // ffmpeg builds without libfreetype have no drawtext; a plain duotone is fine.
+    runFfmpeg(["-y", "-f", "lavfi", "-i", stack, "-frames:v", "1", "-q:v", "3", path]);
+  }
   return path;
 }
 
