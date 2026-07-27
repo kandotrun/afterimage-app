@@ -19,44 +19,46 @@ struct TimelineView: View {
     var body: some View {
         NavigationStack {
             MemoryBackdrop {
-                ScrollView {
-                    if sections.isEmpty && !model.isLoadingTimeline {
-                        EmptyTimelineView()
-                            .padding(.top, 120)
-                    } else {
-                        LazyVStack(alignment: .leading, spacing: 28, pinnedViews: [.sectionHeaders]) {
-                            ForEach(sections) { section in
-                                Section {
-                                    LazyVGrid(
-                                        columns: [
-                                            GridItem(.flexible(), spacing: 2),
-                                            GridItem(.flexible(), spacing: 2),
-                                            GridItem(.flexible(), spacing: 2),
-                                        ],
-                                        spacing: 2
-                                    ) {
-                                        ForEach(section.assets) { asset in
-                                            NavigationLink(value: asset) {
-                                                MemoryTile(asset: asset)
+                GeometryReader { proxy in
+                    let layout = TimelineGridLayout(containerWidth: proxy.size.width)
+
+                    ScrollView {
+                        if sections.isEmpty && !model.isLoadingTimeline {
+                            EmptyTimelineView()
+                                .padding(.top, 120)
+                        } else {
+                            LazyVStack(alignment: .leading, spacing: 28, pinnedViews: [.sectionHeaders]) {
+                                ForEach(sections) { section in
+                                    Section {
+                                        LazyVGrid(
+                                            columns: layout.columns,
+                                            spacing: layout.spacing
+                                        ) {
+                                            ForEach(section.assets) { asset in
+                                                NavigationLink(value: asset) {
+                                                    MemoryTile(asset: asset)
+                                                        .frame(width: layout.cellLength, height: layout.cellLength)
+                                                }
+                                                .buttonStyle(.plain)
+                                                .matchedTransitionSource(id: asset.id, in: zoomTransition)
+                                                .task { await model.loadMoreIfNeeded(after: asset) }
                                             }
-                                            .buttonStyle(.plain)
-                                            .matchedTransitionSource(id: asset.id, in: zoomTransition)
-                                            .task { await model.loadMoreIfNeeded(after: asset) }
                                         }
+                                    } header: {
+                                        Text(section.title)
+                                            .font(.headline.weight(.semibold))
+                                            .padding(.horizontal, 16)
+                                            .padding(.vertical, 8)
+                                            .frame(maxWidth: .infinity, alignment: .leading)
+                                            .background(Color(.systemBackground))
                                     }
-                                } header: {
-                                    Text(section.title)
-                                        .font(.headline.weight(.semibold))
-                                        .padding(.horizontal, 16)
-                                        .padding(.vertical, 8)
-                                        .frame(maxWidth: .infinity, alignment: .leading)
                                 }
                             }
+                            .padding(.bottom, 100)
                         }
-                        .padding(.bottom, 100)
-                    }
+                        }
+                    .refreshable { try? await model.refreshTimeline() }
                 }
-                .refreshable { try? await model.refreshTimeline() }
             }
             .navigationTitle("ライブラリ")
             .navigationDestination(for: Asset.self) { asset in
@@ -118,28 +120,32 @@ private struct MemoryTile: View {
     let asset: Asset
 
     var body: some View {
-        ZStack(alignment: .bottomTrailing) {
-            AuthenticatedThumbnail(asset: asset)
-                .aspectRatio(1, contentMode: .fill)
-                .frame(maxWidth: .infinity)
-                .clipped()
-            if asset.mediaType == .video {
-                HStack(spacing: 4) {
-                    Image(systemName: "play.fill")
-                    if let duration = asset.durationMs {
-                        Text(Self.duration(duration))
-                    }
-                }
-                .font(.caption2.weight(.semibold))
-                .foregroundStyle(.white)
-                .padding(.horizontal, 8)
-                .padding(.vertical, 5)
-                .background(.black.opacity(0.54), in: .capsule)
-                .padding(8)
+        Color(.tertiarySystemFill)
+            .aspectRatio(1, contentMode: .fit)
+            .overlay {
+                AuthenticatedThumbnail(asset: asset)
+                    .frame(maxWidth: .infinity, maxHeight: .infinity)
+                    .clipped()
             }
-        }
-        .contentShape(.rect)
-        .accessibilityLabel(asset.mediaType == .video ? "動画 \(asset.capturedAt.formatted())" : "写真 \(asset.capturedAt.formatted())")
+            .overlay(alignment: .bottomTrailing) {
+                if asset.mediaType == .video {
+                    HStack(spacing: 4) {
+                        Image(systemName: "play.fill")
+                        if let duration = asset.durationMs {
+                            Text(Self.duration(duration))
+                        }
+                    }
+                    .font(.caption2.weight(.semibold))
+                    .foregroundStyle(.white)
+                    .padding(.horizontal, 8)
+                    .padding(.vertical, 5)
+                    .background(.black.opacity(0.54), in: .capsule)
+                    .padding(8)
+                }
+            }
+            .clipped()
+            .contentShape(.rect)
+            .accessibilityLabel(asset.mediaType == .video ? "動画 \(asset.capturedAt.formatted())" : "写真 \(asset.capturedAt.formatted())")
     }
 
     private static func duration(_ milliseconds: Int) -> String {
