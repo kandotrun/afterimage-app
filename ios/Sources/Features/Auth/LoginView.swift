@@ -1,6 +1,5 @@
 import AuthenticationServices
 import SwiftUI
-import UIKit
 
 struct LoginView: View {
     @EnvironmentObject private var model: AppModel
@@ -50,25 +49,14 @@ struct LoginView: View {
     }
 }
 
-/// Renders the bundled app icon the same way the system does (squircle mask).
+/// Keeps the in-app brand mark in sync with the system app icon.
 private struct AppIconMark: View {
     var body: some View {
-        Group {
-            if let icon = UIImage(named: "AppIcon") {
-                Image(uiImage: icon)
-                    .resizable()
-                    .scaledToFit()
-            } else {
-                Image(systemName: "circle.dashed")
-                    .resizable()
-                    .scaledToFit()
-                    .padding(14)
-                    .foregroundStyle(.secondary)
-                    .background(Color(.tertiarySystemFill))
-            }
-        }
-        .frame(width: 88, height: 88)
-        .clipShape(.rect(cornerRadius: 20))
-        .accessibilityHidden(true)
+        Image("BrandMark")
+            .resizable()
+            .scaledToFit()
+            .frame(width: 88, height: 88)
+            .clipShape(.rect(cornerRadius: 20))
+            .accessibilityHidden(true)
     }
 }
