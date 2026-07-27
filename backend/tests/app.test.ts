@@ -1691,3 +1691,99 @@ describe("MCP personal access tokens", () => {
     expect(JSON.stringify(otherDetail)).not.toContain("他人だけの秘密");
   });
 });
+
+
+describe("uploaded asset duplicate detection", () => {
+  const trackedFingerprint = "a".repeat(64);
+  const legacyFingerprint = "b".repeat(64);
+  const newFingerprint = "c".repeat(64);
+
+  function assetBody(filename: string, sourceFingerprint?: string) {
+    return {
+      kind: "video",
+      filename,
+      contentType: "video/quicktime",
+      byteSize: 5,
+      capturedAt: "2026-07-27T00:00:00.000Z",
+      durationMs: 1_000,
+      width: 1_920,
+      height: 1_080,
+      ...(sourceFingerprint ? { sourceFingerprint } : {}),
+    };
+  }
+
+  it("finds active owner assets, including uploads created before fingerprints were stored", async () => {
+    const owner = await signIn("duplicate-check-owner");
+    expect((await owner.app.request("/v1/assets", {
+      method: "POST",
+      headers: { authorization: owner.authorization, "content-type": "application/json" },
+      body: JSON.stringify(assetBody("LEGACY-L0-001.mov")),
+    }, env)).status).toBe(201);
+    expect((await owner.app.request("/v1/assets", {
+      method: "POST",
+      headers: { authorization: owner.authorization, "content-type": "application/json" },
+      body: JSON.stringify(assetBody("TRACKED-L0-001.mov", trackedFingerprint)),
+    }, env)).status).toBe(201);
+
+    const candidates = {
+      items: [
+        { sourceFingerprint: trackedFingerprint, filename: "TRACKED-L0-001.mov" },
+        { sourceFingerprint: legacyFingerprint, filename: "LEGACY-L0-001.mov" },
+        { sourceFingerprint: newFingerprint, filename: "NEW-L0-001.mov" },
+      ],
+    };
+    const existing = await owner.app.request("/v1/assets/existing", {
+      method: "POST",
+      headers: { authorization: owner.authorization, "content-type": "application/json" },
+      body: JSON.stringify(candidates),
+    }, env);
+    expect(existing.status).toBe(200);
+    await expect(existing.json()).resolves.toEqual({
+      existingSourceFingerprints: [trackedFingerprint, legacyFingerprint],
+    });
+
+    const other = await signIn("duplicate-check-other");
+    const privateResult = await other.app.request("/v1/assets/existing", {
+      method: "POST",
+      headers: { authorization: other.authorization, "content-type": "application/json" },
+      body: JSON.stringify(candidates),
+    }, env);
+    expect(privateResult.status).toBe(200);
+    await expect(privateResult.json()).resolves.toEqual({ existingSourceFingerprints: [] });
+  });
+
+  it("rejects a duplicate fingerprint for one owner but allows it after failure or for another owner", async () => {
+    const owner = await signIn("duplicate-create-owner");
+    const sourceFingerprint = "d".repeat(64);
+    const first = await owner.app.request("/v1/assets", {
+      method: "POST",
+      headers: { authorization: owner.authorization, "content-type": "application/json" },
+      body: JSON.stringify(assetBody("FIRST-L0-001.mov", sourceFingerprint)),
+    }, env);
+    expect(first.status).toBe(201);
+    const firstBody = await first.json<{ asset: { id: string } }>();
+
+    const duplicate = await owner.app.request("/v1/assets", {
+      method: "POST",
+      headers: { authorization: owner.authorization, "content-type": "application/json" },
+      body: JSON.stringify(assetBody("RENAMED-L0-001.mov", sourceFingerprint)),
+    }, env);
+    expect(duplicate.status).toBe(409);
+    await expect(duplicate.json()).resolves.toMatchObject({ error: { code: "duplicate_asset" } });
+
+    const other = await signIn("duplicate-create-other");
+    expect((await other.app.request("/v1/assets", {
+      method: "POST",
+      headers: { authorization: other.authorization, "content-type": "application/json" },
+      body: JSON.stringify(assetBody("OTHER-L0-001.mov", sourceFingerprint)),
+    }, env)).status).toBe(201);
+
+    await env.DB.prepare("UPDATE assets SET status = 'failed' WHERE id = ?")
+      .bind(firstBody.asset.id).run();
+    expect((await owner.app.request("/v1/assets", {
+      method: "POST",
+      headers: { authorization: owner.authorization, "content-type": "application/json" },
+      body: JSON.stringify(assetBody("RETRY-L0-001.mov", sourceFingerprint)),
+    }, env)).status).toBe(201);
+  });
+});
