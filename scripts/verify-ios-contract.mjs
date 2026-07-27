@@ -7,6 +7,12 @@ const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const read = (relative) => readFileSync(path.join(root, relative), "utf8");
 const project = read("ios/project.yml");
 const privacy = read("ios/Resources/PrivacyInfo.xcprivacy");
+const login = read("ios/Sources/Features/Auth/LoginView.swift");
+const appIconContents = read("ios/Resources/Assets.xcassets/AppIcon.appiconset/Contents.json");
+const brandMarkContents = read("ios/Resources/Assets.xcassets/BrandMark.imageset/Contents.json");
+const appIcon = readFileSync(
+  path.join(root, "ios/Resources/Assets.xcassets/AppIcon.appiconset/AppIcon-1024.png"),
+);
 const sourceRoot = path.join(root, "ios/Sources");
 const swift = readdirSync(sourceRoot, { recursive: true, withFileTypes: true })
   .filter((entry) => entry.isFile() && entry.name.endsWith(".swift"))
@@ -55,4 +61,21 @@ for (const symbol of [
 }
 
 assert.ok(!swift.includes("AVEncoderBitRateKey"), "audio must never be re-encoded");
+
+const pngSignature = Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]);
+assert.ok(appIcon.subarray(0, 8).equals(pngSignature), "app icon must be a PNG");
+assert.equal(appIcon.readUInt32BE(16), 1024, "app icon width must be 1024 px");
+assert.equal(appIcon.readUInt32BE(20), 1024, "app icon height must be 1024 px");
+assert.equal(appIcon.indexOf(Buffer.from("tRNS")), -1, "app icon must not contain transparency");
+const paletteOffset = appIcon.indexOf(Buffer.from("PLTE"));
+assert.notEqual(paletteOffset, -1, "app icon must use a fixed monochrome palette");
+assert.equal(
+  appIcon.readUInt32BE(paletteOffset - 4) / 3,
+  2,
+  "app icon must contain exactly two flat colors",
+);
+assert.match(appIconContents, /"filename"\s*:\s*"AppIcon-1024\.png"/);
+assert.match(brandMarkContents, /"filename"\s*:\s*"BrandMark@3x\.png"/);
+assert.match(login, /Image\("BrandMark"\)/);
+
 console.log("iOS source contract: PASS");
