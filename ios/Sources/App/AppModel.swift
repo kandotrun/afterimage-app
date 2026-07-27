@@ -235,6 +235,27 @@ final class AppModel: ObservableObject {
         try await api.transcript(assetID: asset.id)
     }
 
+    func transcript(for asset: Asset) async throws -> AssetTranscript {
+        try await api.transcript(assetID: asset.id)
+    }
+
+    func mcpEndpoint() async throws -> URL {
+        try await api.mcpEndpoint()
+    }
+
+    func mcpTokens() async throws -> [MCPToken] {
+        try await api.mcpTokens()
+    }
+
+    func createMCPToken(name: String) async throws -> MCPTokenCreationResponse {
+        try await api.createMCPToken(name: name)
+    }
+
+    func revokeMCPToken(id: String) async throws {
+        try await api.revokeMCPToken(id: id)
+        haptics.play(.delete)
+    }
+
     private func process(item: PhotosPickerItem, current: Int, total: Int) async throws {
         upload = UploadPresentation(stage: .importing, progress: 0.02, current: current, total: total)
         let imported = try await MediaImporter.load(item)

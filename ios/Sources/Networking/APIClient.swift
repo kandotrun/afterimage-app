@@ -157,6 +157,38 @@ actor APIClient {
         return try await decode(request)
     }
 
+    func transcript(assetID: String) async throws -> AssetTranscript {
+        let request = try makeRequest(path: "/v1/assets/\(assetID)/transcript", method: "GET")
+        return try await decode(request)
+    }
+
+    func mcpEndpoint() throws -> URL {
+        try resolver.resolve("/mcp")
+    }
+
+    func mcpTokens() async throws -> [MCPToken] {
+        let request = try makeRequest(path: "/v1/mcp/tokens", method: "GET")
+        let response: MCPTokenListResponse = try await decode(request)
+        return response.items
+    }
+
+    func createMCPToken(name: String) async throws -> MCPTokenCreationResponse {
+        struct Body: Encodable { let name: String }
+        let request = try makeRequest(
+            path: "/v1/mcp/tokens",
+            method: "POST",
+            body: try encoder.encode(Body(name: name)),
+            contentType: "application/json"
+        )
+        return try await decode(request)
+    }
+
+    func revokeMCPToken(id: String) async throws {
+        let request = try makeRequest(path: "/v1/mcp/tokens/\(id)", method: "DELETE")
+        let (data, response) = try await session.data(for: request)
+        try validate(response: response, data: data)
+    }
+
     func deleteAsset(assetID: String) async throws {
         let request = try makeRequest(path: "/v1/assets/\(assetID)", method: "DELETE")
         let (data, response) = try await session.data(for: request)

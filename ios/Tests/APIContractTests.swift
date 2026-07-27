@@ -19,6 +19,9 @@ final class APIContractTests: XCTestCase {
               "status": "ready",
               "contentUrl": "/v1/assets/asset-1/content",
               "thumbnailUrl": null,
+              "transcriptionStatus": "completed",
+              "transcriptPreview": "海沿いを歩いた。風の音が強かった。",
+              "transcriptUrl": "/v1/assets/asset-1/transcript",
               "createdAt": "2026-07-27T01:03:00.000Z",
               "updatedAt": "2026-07-27T01:04:00.000Z"
             }
@@ -32,6 +35,9 @@ final class APIContractTests: XCTestCase {
         XCTAssertEqual(page.assets[0].mediaType, .video)
         XCTAssertNil(page.assets[0].thumbnailUrl)
         XCTAssertEqual(page.assets[0].durationMs, 4_200)
+        XCTAssertEqual(page.assets[0].transcriptionStatus, .completed)
+        XCTAssertEqual(page.assets[0].transcriptPreview, "海沿いを歩いた。風の音が強かった。")
+        XCTAssertEqual(page.assets[0].transcriptUrl, "/v1/assets/asset-1/transcript")
     }
 
     func testResolverKeepsQuerySeparateFromPath() throws {

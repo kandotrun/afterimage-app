@@ -12,6 +12,7 @@ import {
   getTranscript,
   cleanupSoniox,
 } from "./soniox";
+import { handleMcpRequest } from "./mcp";
 
 export type { AppleIdentity } from "./apple";
 
@@ -94,9 +95,21 @@ interface CleanupAssetRow {
   status: "uploading" | "failed";
 }
 
+interface McpTokenRow {
+  id: string;
+  name: string;
+  created_at: string;
+  expires_at: string;
+  last_used_at: string | null;
+}
+
 const appleAuthSchema = z.object({
   identityToken: z.string().min(10).max(16_384),
   displayName: z.string().trim().min(1).max(100).optional(),
+});
+
+const mcpTokenSchema = z.object({
+  name: z.string().trim().min(1).max(48),
 });
 
 const contentTypes = [
@@ -176,6 +189,16 @@ function userJson(user: UserRow) {
   };
 }
 
+function mcpTokenJson(token: McpTokenRow) {
+  return {
+    id: token.id,
+    name: token.name,
+    createdAt: token.created_at,
+    expiresAt: token.expires_at,
+    lastUsedAt: token.last_used_at,
+  };
+}
+
 function assetJson(asset: AssetRow) {
   return {
     id: asset.id,
@@ -191,6 +214,9 @@ function assetJson(asset: AssetRow) {
     contentUrl: asset.status === "ready" ? `/v1/assets/${asset.id}/content` : null,
     thumbnailUrl: asset.thumbnail_key ? `/v1/assets/${asset.id}/thumbnail` : null,
     transcriptionStatus: asset.transcription_status ?? null,
+    transcriptPreview: asset.transcription_status === "completed" && asset.transcript
+      ? asset.transcript.slice(0, 240)
+      : null,
     transcriptUrl: asset.transcription_status === "completed" ? `/v1/assets/${asset.id}/transcript` : null,
     createdAt: asset.created_at,
     updatedAt: asset.updated_at,
@@ -381,20 +407,17 @@ interface TranscriptionPollRow {
 export async function pollTranscriptions(bindings: Env, now = new Date()) {
   if (!bindings.SONIOX_API_KEY) return { processed: 0 };
   const nowIso = now.toISOString();
-  const staleProcessing = new Date(now.getTime() - 60 * 60 * 1000).toISOString();
 
-  // Pick up pending assets (not yet uploaded to Soniox) and stale processing ones.
+  // Start pending jobs and check every in-flight job on each five-minute tick.
+  // Soniox concurrency is released only after completed jobs are observed and cleaned up.
   const pending = await bindings.DB.prepare(
     `SELECT id, user_id, object_key, filename, content_type,
             transcription_status, soniox_file_id, soniox_transcription_id
        FROM assets
       WHERE kind = 'video' AND status = 'ready'
-        AND (
-          transcription_status = 'pending'
-          OR (transcription_status = 'processing' AND transcription_updated_at <= ?)
-        )
+        AND transcription_status IN ('pending', 'processing')
       ORDER BY transcription_updated_at ASC LIMIT 10`,
-  ).bind(staleProcessing).all<TranscriptionPollRow>();
+  ).all<TranscriptionPollRow>();
 
   let processed = 0;
   for (const asset of pending.results) {
@@ -503,6 +526,22 @@ export function createApp(overrides: Partial<AppDependencies> = {}) {
   const app = new Hono<AppEnvironment>();
 
   app.get("/health", (context) => context.json({ ok: true, service: "afterimage-api", version: 1 }));
+
+  app.get("/.well-known/mcp.json", (context) => context.json({
+    mcpServers: {
+      afterimage: {
+        url: new URL("/mcp", context.req.url).toString(),
+        transport: "streamable-http",
+        authentication: "Bearer personal access token",
+      },
+    },
+  }));
+
+  app.all("/mcp", (context) => handleMcpRequest(
+    context.req.raw,
+    context.env,
+    dependencies.now(),
+  ));
 
   app.post("/v1/auth/apple", async (context) => {
     const parsed = appleAuthSchema.safeParse(await parseJson(context));
@@ -613,6 +652,67 @@ export function createApp(overrides: Partial<AppDependencies> = {}) {
         displayName: auth.displayName,
       },
     });
+  });
+
+  api.get("/mcp/tokens", async (context) => {
+    const auth = context.get("auth");
+    const tokens = await context.env.DB.prepare(
+      `SELECT id, name, created_at, expires_at, last_used_at
+         FROM mcp_tokens
+        WHERE user_id = ? AND revoked_at IS NULL AND expires_at > ?
+        ORDER BY created_at DESC`,
+    ).bind(auth.userId, dependencies.now().toISOString()).all<McpTokenRow>();
+    return context.json({ items: tokens.results.map(mcpTokenJson) });
+  });
+
+  api.post("/mcp/tokens", async (context) => {
+    const parsed = mcpTokenSchema.safeParse(await parseJson(context));
+    if (!parsed.success) {
+      return errorResponse(context, 400, "invalid_mcp_token", "A token name between 1 and 48 characters is required.");
+    }
+    const auth = context.get("auth");
+    const now = dependencies.now();
+    const nowIso = now.toISOString();
+    const active = await context.env.DB.prepare(
+      "SELECT COUNT(*) AS count FROM mcp_tokens WHERE user_id = ? AND revoked_at IS NULL AND expires_at > ?",
+    ).bind(auth.userId, nowIso).first<{ count: number }>();
+    if ((active?.count ?? 0) >= 10) {
+      return errorResponse(context, 409, "mcp_token_limit", "Revoke an existing token before creating another.");
+    }
+
+    const id = crypto.randomUUID();
+    const token = `aft_mcp_${randomToken()}`;
+    const expiresAt = new Date(now.getTime() + 365 * 24 * 60 * 60 * 1000).toISOString();
+    await context.env.DB.prepare(
+      `INSERT INTO mcp_tokens (id, user_id, name, token_hash, created_at, expires_at)
+       VALUES (?, ?, ?, ?, ?, ?)`,
+    ).bind(id, auth.userId, parsed.data.name, await sha256Hex(token), nowIso, expiresAt).run();
+
+    return context.json({
+      item: mcpTokenJson({
+        id,
+        name: parsed.data.name,
+        created_at: nowIso,
+        expires_at: expiresAt,
+        last_used_at: null,
+      }),
+      token,
+    }, 201);
+  });
+
+  api.delete("/mcp/tokens/:id", async (context) => {
+    const result = await context.env.DB.prepare(
+      `UPDATE mcp_tokens SET revoked_at = ?
+        WHERE id = ? AND user_id = ? AND revoked_at IS NULL`,
+    ).bind(
+      dependencies.now().toISOString(),
+      context.req.param("id"),
+      context.get("auth").userId,
+    ).run();
+    if ((result.meta.changes ?? 0) !== 1) {
+      return errorResponse(context, 404, "mcp_token_not_found", "MCP token was not found.");
+    }
+    return new Response(null, { status: 204 });
   });
 
   api.delete("/auth/session", async (context) => {
@@ -1100,7 +1200,9 @@ export function createApp(overrides: Partial<AppDependencies> = {}) {
 
     const select = `SELECT id, user_id, kind, filename, content_type, byte_size, captured_at,
       duration_ms, width, height, status, object_key, thumbnail_key,
-      upload_mode, upload_id, part_size, created_at, updated_at FROM assets`;
+      upload_mode, upload_id, part_size, created_at, updated_at,
+      transcription_status, soniox_file_id, soniox_transcription_id,
+      transcript, transcript_language, transcript_error, transcription_updated_at FROM assets`;
     const statement = cursor
       ? context.env.DB.prepare(
           `${select} WHERE user_id = ? AND status IN ('uploading', 'ready')

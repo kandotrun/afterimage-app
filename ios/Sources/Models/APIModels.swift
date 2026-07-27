@@ -11,6 +11,14 @@ enum AssetStatus: String, Codable, Hashable, Sendable {
     case failed
 }
 
+enum TranscriptionStatus: String, Codable, Hashable, Sendable {
+    case pending
+    case processing
+    case completed
+    case failed
+    case skipped
+}
+
 struct UserProfile: Codable, Equatable, Sendable {
     let id: String
     let appleSubject: String
@@ -39,13 +47,14 @@ struct Asset: Codable, Identifiable, Hashable, Sendable {
     let updatedAt: Date
     let thumbnailUrl: String?
     let contentUrl: String?
-    let transcriptionStatus: String?
+    let transcriptionStatus: TranscriptionStatus?
+    let transcriptPreview: String?
     let transcriptUrl: String?
 
     private enum CodingKeys: String, CodingKey {
         case id, status, filename, contentType, byteSize, width, height, durationMs
         case capturedAt, createdAt, updatedAt, thumbnailUrl, contentUrl
-        case transcriptionStatus, transcriptUrl
+        case transcriptionStatus, transcriptPreview, transcriptUrl
         case mediaType = "kind"
     }
 }

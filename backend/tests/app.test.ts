@@ -1,6 +1,6 @@
 import { env } from "cloudflare:workers";
-import { beforeEach, describe, expect, it } from "vitest";
-import { cleanupExpiredState, createApp, type AppleIdentity } from "../src/app";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { cleanupExpiredState, createApp, pollTranscriptions, type AppleIdentity } from "../src/app";
 
 const NOW = new Date("2026-07-27T00:00:00.000Z");
 
@@ -190,10 +190,15 @@ function envWithRunFailureBeforeCommit(sqlFragment: string): Env {
 beforeEach(async () => {
   await env.DB.batch([
     env.DB.prepare("DELETE FROM upload_parts"),
+    env.DB.prepare("DELETE FROM mcp_tokens"),
     env.DB.prepare("DELETE FROM assets"),
     env.DB.prepare("DELETE FROM sessions"),
     env.DB.prepare("DELETE FROM users"),
   ]);
+});
+
+afterEach(() => {
+  vi.unstubAllGlobals();
 });
 
 describe("health and authentication", () => {
@@ -293,9 +298,29 @@ describe("asset upload and private timeline", () => {
     }, env);
     expect(complete.status).toBe(200);
 
+    await env.DB.prepare(
+      `UPDATE assets
+          SET transcription_status = 'completed', transcript = ?, transcript_language = 'ja'
+        WHERE id = ?`,
+    ).bind("夕方の海沿いを歩いた。風が気持ちよかった。", created.asset.id).run();
+
     const timeline = await app.request("/v1/assets", { headers: { authorization } }, env);
-    const timelineBody = await timeline.json<{ items: Array<{ id: string; status: string }> }>();
-    expect(timelineBody.items).toEqual([expect.objectContaining({ id: created.asset.id, status: "ready" })]);
+    const timelineBody = await timeline.json<{
+      items: Array<{
+        id: string;
+        status: string;
+        transcriptionStatus: string | null;
+        transcriptPreview: string | null;
+        transcriptUrl: string | null;
+      }>;
+    }>();
+    expect(timelineBody.items).toEqual([expect.objectContaining({
+      id: created.asset.id,
+      status: "ready",
+      transcriptionStatus: "completed",
+      transcriptPreview: "夕方の海沿いを歩いた。風が気持ちよかった。",
+      transcriptUrl: `/v1/assets/${created.asset.id}/transcript`,
+    })]);
 
     const media = await app.request(`/v1/assets/${created.asset.id}/content`, {
       headers: { authorization, range: "bytes=6-10" },
@@ -1438,5 +1463,231 @@ describe("asset upload and private timeline", () => {
     expect(secondCleanup).toMatchObject({ expiredSessions: 0, expiredGrants: 0, abandonedAssets: 1 });
     expect(await env.DB.prepare("SELECT id FROM assets WHERE id = ?").bind(abandoned.asset.id).first()).toBeNull();
     expect(await env.MEDIA.head(abandonedKey!.object_key)).toBeNull();
+  });
+});
+
+describe("scheduled transcription polling", () => {
+  it("checks a newly processing Soniox job on the next five-minute tick", async () => {
+    await signIn("transcription-poll-owner");
+    const user = await env.DB.prepare("SELECT id FROM users WHERE apple_subject = ?")
+      .bind("transcription-poll-owner").first<{ id: string }>();
+    expect(user).not.toBeNull();
+
+    await env.DB.prepare(
+      `INSERT INTO assets (
+        id, user_id, kind, filename, content_type, byte_size, captured_at,
+        status, object_key, upload_mode, created_at, updated_at,
+        transcription_status, soniox_file_id, soniox_transcription_id, transcription_updated_at
+      ) VALUES (?, ?, 'video', 'memory.mov', 'video/quicktime', 4, ?,
+        'ready', ?, 'single', ?, ?, 'processing', 'file-1', 'job-1', ?)`,
+    ).bind(
+      "poll-asset",
+      user!.id,
+      NOW.toISOString(),
+      `users/${user!.id}/assets/poll-asset/media`,
+      NOW.toISOString(),
+      NOW.toISOString(),
+      NOW.toISOString(),
+    ).run();
+
+    const sonioxFetch = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+      const url = String(input);
+      if (init?.method === "DELETE") return new Response(null, { status: 204 });
+      if (url.endsWith("/transcript")) {
+        return Response.json({ text: "今日の記憶を話した。", language: "ja" });
+      }
+      return Response.json({ status: "completed" });
+    });
+    vi.stubGlobal("fetch", sonioxFetch);
+
+    const result = await pollTranscriptions({ ...env, SONIOX_API_KEY: "test-key" } as Env, NOW);
+
+    expect(result.processed).toBe(1);
+    expect(sonioxFetch).toHaveBeenCalledWith(
+      "https://api.soniox.com/v1/transcriptions/job-1",
+      expect.objectContaining({ headers: expect.any(Headers) }),
+    );
+    expect(await env.DB.prepare(
+      "SELECT transcription_status, transcript, transcript_language FROM assets WHERE id = ?",
+    ).bind("poll-asset").first()).toMatchObject({
+      transcription_status: "completed",
+      transcript: "今日の記憶を話した。",
+      transcript_language: "ja",
+    });
+  });
+});
+
+describe("MCP personal access tokens", () => {
+  it("issues a hash-only token, lists metadata, and revokes it for MCP access", async () => {
+    const { app, authorization } = await signIn("mcp-token-owner");
+
+    const created = await app.request("/v1/mcp/tokens", {
+      method: "POST",
+      headers: { authorization, "content-type": "application/json" },
+      body: JSON.stringify({ name: "Hermes" }),
+    }, env);
+    expect(created.status).toBe(201);
+    const createdBody = await created.json<{
+      token: string;
+      item: { id: string; name: string; expiresAt: string; token?: string };
+    }>();
+    expect(createdBody.token).toMatch(/^aft_mcp_[A-Za-z0-9_-]{43}$/);
+    expect(createdBody.item).toMatchObject({ name: "Hermes" });
+    expect(createdBody.item).not.toHaveProperty("token");
+
+    const stored = await env.DB.prepare(
+      "SELECT token_hash, revoked_at FROM mcp_tokens WHERE id = ?",
+    ).bind(createdBody.item.id).first<{ token_hash: string; revoked_at: string | null }>();
+    expect(stored?.token_hash).toMatch(/^[a-f0-9]{64}$/);
+    expect(stored?.token_hash).not.toContain(createdBody.token);
+    expect(stored?.revoked_at).toBeNull();
+
+    const listed = await app.request("/v1/mcp/tokens", { headers: { authorization } }, env);
+    expect(listed.status).toBe(200);
+    const listedBody = await listed.json<{ items: Array<Record<string, unknown>> }>();
+    expect(listedBody.items).toHaveLength(1);
+    expect(listedBody.items[0]).toMatchObject({ id: createdBody.item.id, name: "Hermes" });
+    expect(JSON.stringify(listedBody)).not.toContain(createdBody.token);
+    expect(JSON.stringify(listedBody)).not.toContain(stored!.token_hash);
+
+    const other = await signIn("mcp-token-other");
+    const forbidden = await other.app.request(`/v1/mcp/tokens/${createdBody.item.id}`, {
+      method: "DELETE",
+      headers: { authorization: other.authorization },
+    }, env);
+    expect(forbidden.status).toBe(404);
+
+    const revoked = await app.request(`/v1/mcp/tokens/${createdBody.item.id}`, {
+      method: "DELETE",
+      headers: { authorization },
+    }, env);
+    expect(revoked.status).toBe(204);
+    expect(await env.DB.prepare("SELECT revoked_at FROM mcp_tokens WHERE id = ?")
+      .bind(createdBody.item.id).first<{ revoked_at: string }>()).toMatchObject({
+      revoked_at: NOW.toISOString(),
+    });
+
+    const mcp = await app.request("/mcp", {
+      method: "POST",
+      headers: {
+        authorization: `Bearer ${createdBody.token}`,
+        "content-type": "application/json",
+        accept: "application/json, text/event-stream",
+      },
+      body: JSON.stringify({
+        jsonrpc: "2.0",
+        id: 1,
+        method: "tools/list",
+        params: {},
+      }),
+    }, env);
+    expect(mcp.status).toBe(401);
+  });
+
+  it("exposes only the owner's completed transcriptions through read-only tools", async () => {
+    const owner = await signIn("mcp-tools-owner");
+    await signIn("mcp-tools-other");
+    const ownerUser = await env.DB.prepare("SELECT id FROM users WHERE apple_subject = ?")
+      .bind("mcp-tools-owner").first<{ id: string }>();
+    const otherUser = await env.DB.prepare("SELECT id FROM users WHERE apple_subject = ?")
+      .bind("mcp-tools-other").first<{ id: string }>();
+    const ownerAssetId = crypto.randomUUID();
+    const otherAssetId = crypto.randomUUID();
+    await env.DB.batch([
+      env.DB.prepare(
+        `INSERT INTO assets (
+          id, user_id, kind, filename, content_type, byte_size, captured_at, duration_ms,
+          status, object_key, upload_mode, created_at, updated_at,
+          transcription_status, transcript, transcript_language, transcription_updated_at
+        ) VALUES (?, ?, 'video', ?, 'video/mp4', 100, ?, 12000,
+          'ready', ?, 'single', ?, ?, 'completed', ?, 'ja', ?)`,
+      ).bind(
+        ownerAssetId,
+        ownerUser!.id,
+        "owner.mp4",
+        "2026-07-27T07:00:00.000Z",
+        `users/${ownerUser!.id}/assets/${ownerAssetId}/media`,
+        NOW.toISOString(),
+        NOW.toISOString(),
+        "海辺で今日の計画を話した。",
+        NOW.toISOString(),
+      ),
+      env.DB.prepare(
+        `INSERT INTO assets (
+          id, user_id, kind, filename, content_type, byte_size, captured_at, duration_ms,
+          status, object_key, upload_mode, created_at, updated_at,
+          transcription_status, transcript, transcript_language, transcription_updated_at
+        ) VALUES (?, ?, 'video', ?, 'video/mp4', 100, ?, 9000,
+          'ready', ?, 'single', ?, ?, 'completed', ?, 'ja', ?)`,
+      ).bind(
+        otherAssetId,
+        otherUser!.id,
+        "private.mp4",
+        "2026-07-27T06:00:00.000Z",
+        `users/${otherUser!.id}/assets/${otherAssetId}/media`,
+        NOW.toISOString(),
+        NOW.toISOString(),
+        "他人だけの秘密の記憶。",
+        NOW.toISOString(),
+      ),
+    ]);
+
+    const created = await owner.app.request("/v1/mcp/tokens", {
+      method: "POST",
+      headers: { authorization: owner.authorization, "content-type": "application/json" },
+      body: JSON.stringify({ name: "MCP tools test" }),
+    }, env);
+    const { token } = await created.json<{ token: string }>();
+
+    async function callMcp(id: number, method: string, params: Record<string, unknown>) {
+      const response = await owner.app.request("/mcp", {
+        method: "POST",
+        headers: {
+          authorization: `Bearer ${token}`,
+          "content-type": "application/json",
+          accept: "application/json, text/event-stream",
+        },
+        body: JSON.stringify({ jsonrpc: "2.0", id, method, params }),
+      }, env);
+      expect(response.status).toBe(200);
+      return response.json<any>();
+    }
+
+    const tools = await callMcp(1, "tools/list", {});
+    expect(tools.result.tools.map((tool: { name: string }) => tool.name)).toEqual([
+      "list_transcriptions",
+      "get_transcription",
+    ]);
+    expect(tools.result.tools).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        name: "list_transcriptions",
+        annotations: expect.objectContaining({ readOnlyHint: true, destructiveHint: false }),
+      }),
+    ]));
+
+    const listed = await callMcp(2, "tools/call", {
+      name: "list_transcriptions",
+      arguments: { query: "計画", limit: 10 },
+    });
+    expect(listed.result.structuredContent.items).toEqual([
+      expect.objectContaining({ id: ownerAssetId, filename: "owner.mp4" }),
+    ]);
+    expect(JSON.stringify(listed)).not.toContain("他人だけの秘密");
+
+    const ownDetail = await callMcp(3, "tools/call", {
+      name: "get_transcription",
+      arguments: { assetId: ownerAssetId },
+    });
+    expect(ownDetail.result.structuredContent).toMatchObject({
+      id: ownerAssetId,
+      transcript: "海辺で今日の計画を話した。",
+    });
+
+    const otherDetail = await callMcp(4, "tools/call", {
+      name: "get_transcription",
+      arguments: { assetId: otherAssetId },
+    });
+    expect(otherDetail.result).toMatchObject({ isError: true });
+    expect(JSON.stringify(otherDetail)).not.toContain("他人だけの秘密");
   });
 });
