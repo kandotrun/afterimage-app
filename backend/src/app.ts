@@ -5,6 +5,13 @@ import {
   verifyAppleIdentityToken as verifyAppleIdentityTokenAgainstApple,
   type AppleIdentity,
 } from "./apple";
+import {
+  uploadToSoniox,
+  createTranscription,
+  getTranscriptionStatus,
+  getTranscript,
+  cleanupSoniox,
+} from "./soniox";
 
 export type { AppleIdentity } from "./apple";
 
@@ -63,6 +70,13 @@ interface AssetRow {
   part_size: number | null;
   created_at: string;
   updated_at: string;
+  transcription_status: "pending" | "processing" | "completed" | "failed" | "skipped" | null;
+  soniox_file_id: string | null;
+  soniox_transcription_id: string | null;
+  transcript: string | null;
+  transcript_language: string | null;
+  transcript_error: string | null;
+  transcription_updated_at: string | null;
 }
 
 interface UploadPartRow {
@@ -176,6 +190,8 @@ function assetJson(asset: AssetRow) {
     status: asset.status,
     contentUrl: asset.status === "ready" ? `/v1/assets/${asset.id}/content` : null,
     thumbnailUrl: asset.thumbnail_key ? `/v1/assets/${asset.id}/thumbnail` : null,
+    transcriptionStatus: asset.transcription_status ?? null,
+    transcriptUrl: asset.transcription_status === "completed" ? `/v1/assets/${asset.id}/transcript` : null,
     createdAt: asset.created_at,
     updatedAt: asset.updated_at,
   };
@@ -185,7 +201,9 @@ async function findOwnedAsset(bindings: Env, assetId: string, userId: string): P
   return bindings.DB.prepare(
     `SELECT id, user_id, kind, filename, content_type, byte_size, captured_at,
             duration_ms, width, height, status, object_key, thumbnail_key,
-            upload_mode, upload_id, part_size, created_at, updated_at
+            upload_mode, upload_id, part_size, created_at, updated_at,
+            transcription_status, soniox_file_id, soniox_transcription_id,
+            transcript, transcript_language, transcript_error, transcription_updated_at
        FROM assets WHERE id = ? AND user_id = ?`,
   ).bind(assetId, userId).first<AssetRow>();
 }
@@ -343,6 +361,88 @@ function authMiddleware(now: () => Date): MiddlewareHandler<AppEnvironment> {
     });
     await next();
   };
+}
+
+interface TranscriptionPollRow {
+  id: string;
+  user_id: string;
+  object_key: string;
+  filename: string;
+  content_type: string;
+  transcription_status: string;
+  soniox_file_id: string | null;
+  soniox_transcription_id: string | null;
+}
+
+/**
+ * Poll pending/processing video assets and advance their Soniox transcription state.
+ * Called from the scheduled handler every 5 minutes.
+ */
+export async function pollTranscriptions(bindings: Env, now = new Date()) {
+  if (!bindings.SONIOX_API_KEY) return { processed: 0 };
+  const nowIso = now.toISOString();
+  const staleProcessing = new Date(now.getTime() - 60 * 60 * 1000).toISOString();
+
+  // Pick up pending assets (not yet uploaded to Soniox) and stale processing ones.
+  const pending = await bindings.DB.prepare(
+    `SELECT id, user_id, object_key, filename, content_type,
+            transcription_status, soniox_file_id, soniox_transcription_id
+       FROM assets
+      WHERE kind = 'video' AND status = 'ready'
+        AND (
+          transcription_status = 'pending'
+          OR (transcription_status = 'processing' AND transcription_updated_at <= ?)
+        )
+      ORDER BY transcription_updated_at ASC LIMIT 10`,
+  ).bind(staleProcessing).all<TranscriptionPollRow>();
+
+  let processed = 0;
+  for (const asset of pending.results) {
+    try {
+      if (asset.transcription_status === "pending" || !asset.soniox_transcription_id) {
+        // Upload media to Soniox and create transcription job.
+        const object = await bindings.MEDIA.get(asset.object_key);
+        if (!object) {
+          await bindings.DB.prepare(
+            "UPDATE assets SET transcription_status = 'failed', transcript_error = 'media_not_found', transcription_updated_at = ? WHERE id = ?",
+          ).bind(nowIso, asset.id).run();
+          continue;
+        }
+        const bytes = await object.arrayBuffer();
+        const fileId = await uploadToSoniox(bindings, bytes, asset.filename, asset.content_type);
+        const transcriptionId = await createTranscription(bindings, fileId);
+        await bindings.DB.prepare(
+          `UPDATE assets SET transcription_status = 'processing', soniox_file_id = ?, soniox_transcription_id = ?, transcription_updated_at = ?
+            WHERE id = ? AND transcription_status IN ('pending', 'processing')`,
+        ).bind(fileId, transcriptionId, nowIso, asset.id).run();
+        processed++;
+      } else {
+        // Check status of an in-flight Soniox transcription.
+        const status = await getTranscriptionStatus(bindings, asset.soniox_transcription_id);
+        if (status.status === "completed") {
+          const transcript = await getTranscript(bindings, asset.soniox_transcription_id);
+          await bindings.DB.prepare(
+            `UPDATE assets SET transcription_status = 'completed', transcript = ?, transcript_language = ?,
+              transcript_error = NULL, transcription_updated_at = ?
+              WHERE id = ? AND transcription_status = 'processing'`,
+          ).bind(transcript.text || "", transcript.language || null, nowIso, asset.id).run();
+          await cleanupSoniox(bindings, asset.soniox_transcription_id, asset.soniox_file_id);
+          processed++;
+        } else if (status.status === "error") {
+          await bindings.DB.prepare(
+            `UPDATE assets SET transcription_status = 'failed', transcript_error = ?, transcription_updated_at = ?
+              WHERE id = ? AND transcription_status = 'processing'`,
+          ).bind(status.error_message || "soniox_error", nowIso, asset.id).run();
+          await cleanupSoniox(bindings, asset.soniox_transcription_id, asset.soniox_file_id);
+          processed++;
+        }
+        // queued/processing: leave for next poll.
+      }
+    } catch (error) {
+      console.error(JSON.stringify({ event: "transcription_poll_error", assetId: asset.id, message: String(error) }));
+    }
+  }
+  return { processed };
 }
 
 export async function cleanupExpiredState(bindings: Env, now = new Date()) {
@@ -826,6 +926,16 @@ export function createApp(overrides: Partial<AppDependencies> = {}) {
     if (!completed) {
       return errorResponse(context, 409, "upload_conflict", "Asset was deleted during completion.");
     }
+    // Queue video assets for async transcription via Soniox.
+    if (completed.kind === "video" && context.env.SONIOX_API_KEY) {
+      try {
+        await context.env.DB.prepare(
+          "UPDATE assets SET transcription_status = 'pending', transcription_updated_at = ? WHERE id = ? AND transcription_status IS NULL",
+        ).bind(dependencies.now().toISOString(), completed.id).run();
+      } catch {
+        // Transcription is best-effort; the asset is already ready.
+      }
+    }
     try {
       await context.env.DB.prepare("DELETE FROM upload_parts WHERE asset_id = ?").bind(completed.id).run();
     } catch {
@@ -982,6 +1092,22 @@ export function createApp(overrides: Partial<AppDependencies> = {}) {
     const asset = await findOwnedAsset(context.env, context.req.param("assetId"), auth.userId);
     if (!asset || asset.status !== "ready") return errorResponse(context, 404, "asset_not_found", "Asset was not found.");
     return serveAssetBody(context, asset);
+  });
+
+  api.get("/assets/:assetId/transcript", async (context) => {
+    const auth = context.get("auth");
+    const asset = await findOwnedAsset(context.env, context.req.param("assetId"), auth.userId);
+    if (!asset) return errorResponse(context, 404, "asset_not_found", "Asset was not found.");
+    if (asset.transcription_status !== "completed" || !asset.transcript) {
+      return errorResponse(context, 404, "transcript_not_found", "Transcript is not available.");
+    }
+    return context.json({
+      assetId: asset.id,
+      status: asset.transcription_status,
+      language: asset.transcript_language,
+      text: asset.transcript,
+      updatedAt: asset.transcription_updated_at,
+    });
   });
 
   app.route("/v1", api);
