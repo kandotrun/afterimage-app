@@ -85,8 +85,8 @@ jobs:
         run: |
           KEYCHAIN="$HOME/actions-runner-afterimage/.ci/afterimage-ci.keychain-db"
           test -f "$KEYCHAIN"
-          security set-keychain-settings -lut 21600 "$KEYCHAIN"
           security unlock-keychain -p "$CI_KEYCHAIN_PASSWORD" "$KEYCHAIN"
+          security set-keychain-settings -lut 21600 "$KEYCHAIN"
           security default-keychain -d user -s "$KEYCHAIN"
           security list-keychains -d user -s "$KEYCHAIN"
           echo "path=$KEYCHAIN" >> "$GITHUB_OUTPUT"
