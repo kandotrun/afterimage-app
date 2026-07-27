@@ -121,7 +121,7 @@ actor MediaCompressor {
         do {
             let result = try await Task.detached(priority: .userInitiated) {
                 guard let source = CGImageSourceCreateWithURL(media.url as CFURL, nil) else {
-                    throw AfterimageError.compressionFailed("画像を読み込めませんでした。")
+                    throw AfterimageError.compressionFailed(L10n.string("compression.image_read_failed"))
                 }
                 let thumbnailOptions: [CFString: Any] = [
                     kCGImageSourceCreateThumbnailFromImageAlways: true,
@@ -130,7 +130,7 @@ actor MediaCompressor {
                     kCGImageSourceThumbnailMaxPixelSize: profile.maxPixelDimension,
                 ]
                 guard let image = CGImageSourceCreateThumbnailAtIndex(source, 0, thumbnailOptions as CFDictionary) else {
-                    throw AfterimageError.compressionFailed("画像を展開できませんでした。")
+                    throw AfterimageError.compressionFailed(L10n.string("compression.image_decode_failed"))
                 }
                 guard let destination = CGImageDestinationCreateWithURL(
                     outputURL as CFURL,
@@ -138,7 +138,7 @@ actor MediaCompressor {
                     1,
                     nil
                 ) else {
-                    throw AfterimageError.compressionFailed("HEIC出力を作成できませんでした。")
+                    throw AfterimageError.compressionFailed(L10n.string("compression.heic_output_failed"))
                 }
                 let outputOptions: [CFString: Any] = [
                     kCGImageDestinationLossyCompressionQuality: profile.quality,
@@ -146,7 +146,7 @@ actor MediaCompressor {
                 ]
                 CGImageDestinationAddImage(destination, image, outputOptions as CFDictionary)
                 guard CGImageDestinationFinalize(destination) else {
-                    throw AfterimageError.compressionFailed("HEIC変換を完了できませんでした。")
+                    throw AfterimageError.compressionFailed(L10n.string("compression.heic_finalize_failed"))
                 }
                 try Self.writeJPEGThumbnail(from: image, to: thumbnailURL)
                 return (image.width, image.height)
@@ -177,7 +177,7 @@ actor MediaCompressor {
     private func optimizeVideo(_ media: ImportedMedia, progress: @escaping ProgressHandler) async throws -> OptimizedMedia {
         let asset = AVURLAsset(url: media.url)
         guard let videoTrack = try await asset.loadTracks(withMediaType: .video).first else {
-            throw AfterimageError.compressionFailed("映像トラックが見つかりませんでした。")
+            throw AfterimageError.compressionFailed(L10n.string("compression.video_track_missing"))
         }
 
         let naturalSize = try await videoTrack.load(.naturalSize)
@@ -205,7 +205,7 @@ actor MediaCompressor {
         let videoOutput = AVAssetReaderTrackOutput(track: videoTrack, outputSettings: pixelSettings)
         videoOutput.alwaysCopiesSampleData = false
         guard reader.canAdd(videoOutput) else {
-            throw AfterimageError.compressionFailed("映像の読み込みを準備できませんでした。")
+            throw AfterimageError.compressionFailed(L10n.string("compression.video_reader_failed"))
         }
         reader.add(videoOutput)
 
@@ -235,7 +235,7 @@ actor MediaCompressor {
             ty: preferredTransform.ty * scaleY
         )
         guard writer.canAdd(videoInput) else {
-            throw AfterimageError.compressionFailed("HEVC圧縮を準備できませんでした。")
+            throw AfterimageError.compressionFailed(L10n.string("compression.hevc_setup_failed"))
         }
         writer.add(videoInput)
 
@@ -248,7 +248,7 @@ actor MediaCompressor {
             let input = AVAssetWriterInput(mediaType: .audio, outputSettings: nil, sourceFormatHint: formatHint)
             input.expectsMediaDataInRealTime = false
             guard reader.canAdd(output), writer.canAdd(input) else {
-                throw AfterimageError.compressionFailed("音声を無劣化のまま格納できない形式です。")
+                throw AfterimageError.compressionFailed(L10n.string("compression.audio_passthrough_unsupported"))
             }
             reader.add(output)
             writer.add(input)
@@ -256,11 +256,15 @@ actor MediaCompressor {
         }
 
         guard writer.startWriting() else {
-            throw AfterimageError.compressionFailed(writer.error?.localizedDescription ?? "出力を開始できませんでした。")
+            throw AfterimageError.compressionFailed(
+                writer.error?.localizedDescription ?? L10n.string("compression.writer_start_failed")
+            )
         }
         guard reader.startReading() else {
             writer.cancelWriting()
-            throw AfterimageError.compressionFailed(reader.error?.localizedDescription ?? "入力を開始できませんでした。")
+            throw AfterimageError.compressionFailed(
+                reader.error?.localizedDescription ?? L10n.string("compression.reader_start_failed")
+            )
         }
         writer.startSession(atSourceTime: .zero)
         let videoPipeline = MediaSamplePipeline(input: videoInput, output: videoOutput, session: ioSession)
@@ -304,7 +308,9 @@ actor MediaCompressor {
 
         guard writer.status == .completed else {
             try? FileManager.default.removeItem(at: outputURL)
-            throw AfterimageError.compressionFailed(writer.error?.localizedDescription ?? "動画変換を完了できませんでした。")
+            throw AfterimageError.compressionFailed(
+                writer.error?.localizedDescription ?? L10n.string("compression.video_finalize_failed")
+            )
         }
 
         do {
@@ -316,7 +322,7 @@ actor MediaCompressor {
             try Self.writeJPEGThumbnail(from: image, to: thumbnailURL)
         } catch {
             try? FileManager.default.removeItem(at: outputURL)
-            throw AfterimageError.compressionFailed("動画のプレビューを作成できませんでした。")
+            throw AfterimageError.compressionFailed(L10n.string("compression.video_preview_failed"))
         }
 
         progress(1)
@@ -359,7 +365,10 @@ actor MediaCompressor {
                         }
                         if pipeline.session.reader.status == .failed {
                             pipeline.input.markAsFinished()
-                            gate.resume(throwing: pipeline.session.reader.error ?? AfterimageError.compressionFailed("メディアを読み込めませんでした。"))
+                            gate.resume(
+                                throwing: pipeline.session.reader.error
+                                    ?? AfterimageError.compressionFailed(L10n.string("compression.media_read_failed"))
+                            )
                             return
                         }
                         guard let sampleBuffer = pipeline.output.copyNextSampleBuffer() else {
@@ -369,7 +378,10 @@ actor MediaCompressor {
                         }
                         guard pipeline.input.append(sampleBuffer) else {
                             pipeline.input.markAsFinished()
-                            gate.resume(throwing: pipeline.session.writer.error ?? AfterimageError.compressionFailed("メディアを書き込めませんでした。"))
+                            gate.resume(
+                                throwing: pipeline.session.writer.error
+                                    ?? AfterimageError.compressionFailed(L10n.string("compression.media_write_failed"))
+                            )
                             return
                         }
                         if let duration, duration.seconds > 0, let progress {
@@ -393,19 +405,19 @@ actor MediaCompressor {
     private static func fileSize(_ url: URL) throws -> Int64 {
         let values = try url.resourceValues(forKeys: [.fileSizeKey])
         guard let size = values.fileSize else {
-            throw AfterimageError.compressionFailed("ファイルサイズを確認できませんでした。")
+            throw AfterimageError.compressionFailed(L10n.string("compression.file_size_missing"))
         }
         return Int64(size)
     }
 
     private static func writeJPEGThumbnail(from image: CGImage, to url: URL) throws {
         guard let destination = CGImageDestinationCreateWithURL(url as CFURL, UTType.jpeg.identifier as CFString, 1, nil) else {
-            throw AfterimageError.compressionFailed("プレビュー出力を作成できませんでした。")
+            throw AfterimageError.compressionFailed(L10n.string("compression.preview_output_failed"))
         }
         let options: [CFString: Any] = [kCGImageDestinationLossyCompressionQuality: 0.78]
         CGImageDestinationAddImage(destination, image, options as CFDictionary)
         guard CGImageDestinationFinalize(destination) else {
-            throw AfterimageError.compressionFailed("プレビューを保存できませんでした。")
+            throw AfterimageError.compressionFailed(L10n.string("compression.preview_save_failed"))
         }
     }
 }

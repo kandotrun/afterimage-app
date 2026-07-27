@@ -226,7 +226,7 @@ final class VideoPlaybackController: ObservableObject {
             let expected = generation
             Task { await prepareAndPlay(resumingAt: resumeAt, generation: expected) }
         case .surface:
-            phase = .failed(message ?? "再生できませんでした。")
+            phase = .failed(message ?? L10n.string("playback.failed"))
         }
     }
 }

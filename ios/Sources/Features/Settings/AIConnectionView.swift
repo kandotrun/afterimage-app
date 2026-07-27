@@ -37,7 +37,7 @@ struct AIConnectionView: View {
 
                 Section("MCPサーバー") {
                     LabeledContent("URL") {
-                        Text(endpoint?.absoluteString ?? "確認中…")
+                        Text(endpoint?.absoluteString ?? L10n.string("common.checking"))
                             .font(.caption.monospaced())
                             .foregroundStyle(.secondary)
                             .textSelection(.enabled)
@@ -68,8 +68,11 @@ struct AIConnectionView: View {
                                     Text(token.name)
                                         .font(.body.weight(.semibold))
                                     Text(token.lastUsedAt.map {
-                                        "最終利用 \($0.formatted(.relative(presentation: .named)))"
-                                    } ?? "まだ利用されていません")
+                                        L10n.format(
+                                            "mcp.last_used",
+                                            $0.formatted(.relative(presentation: .named)) as NSString
+                                        )
+                                    } ?? L10n.string("mcp.never_used"))
                                     .font(.caption)
                                     .foregroundStyle(.secondary)
                                 }
@@ -82,7 +85,9 @@ struct AIConnectionView: View {
                                 }
                                 .buttonStyle(.borderless)
                                 .foregroundStyle(.red)
-                                .accessibilityLabel("\(token.name)の接続を解除")
+                                .accessibilityLabel(
+                                    L10n.format("accessibility.disconnect_agent", token.name as NSString)
+                                )
                             }
                         }
                     }
@@ -234,7 +239,10 @@ private struct MCPTokenRevealView: View {
                     .buttonStyle(.glassProminent)
 
                     Button {
-                        copy(configuration.agentSetupPrompt, message: "設定依頼文をコピーしました")
+                        copy(
+                            configuration.agentSetupPrompt,
+                            message: L10n.string("mcp.setup_prompt_copied")
+                        )
                     } label: {
                         Label("設定依頼文をコピー", systemImage: "doc.on.doc")
                             .frame(maxWidth: .infinity)
@@ -278,7 +286,9 @@ private struct MCPTokenRevealView: View {
                     .font(.caption.weight(.semibold))
                     .foregroundStyle(.secondary)
                 Spacer()
-                Button("コピー") { copy(text, message: "\(title)をコピーしました") }
+                Button("コピー") {
+                    copy(text, message: L10n.format("common.item_copied", title as NSString))
+                }
                     .font(.caption.weight(.semibold))
             }
             Text(text)

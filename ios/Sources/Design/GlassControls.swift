@@ -23,6 +23,11 @@ struct GlassProgressPill: View {
         .frame(height: 52)
         .glassEffect(.regular, in: .capsule)
         .accessibilityElement(children: .combine)
-        .accessibilityValue("\(Int(upload.progress * 100))パーセント")
+        .accessibilityValue(
+            L10n.format(
+                "accessibility.upload_progress",
+                upload.progress.formatted(.percent.precision(.fractionLength(0))) as NSString
+            )
+        )
     }
 }

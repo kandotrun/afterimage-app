@@ -58,15 +58,11 @@ struct MCPAgentConfiguration: Equatable, Sendable {
     }
 
     var agentSetupPrompt: String {
-        """
-        以下の認証付きAfterimage MCPをAIエージェントへ設定してください。
-
-        URL: \(endpoint.absoluteString)
-        Authorization: Bearer \(token)
-        Transport: Streamable HTTP
-
-        接続後に tools/list を実行し、list_transcriptions と get_transcription が利用できることを確認してください。tokenは秘密として扱い、ログや公開ファイルへ保存しないでください。
-        """
+        L10n.format(
+            "mcp.agent_setup_prompt",
+            endpoint.absoluteString as NSString,
+            token as NSString
+        )
     }
 
     private func quoted(_ value: String) -> String {

@@ -10,6 +10,7 @@
   "scripts": {
     "test": "npm --workspace backend test",
     "typecheck": "npm --workspace backend run typecheck",
-    "check": "npm run test && npm run typecheck && npm --workspace backend run deploy:dry"
+    "check:ios": "node scripts/verify-ios-contract.mjs && node scripts/verify-ios-localizations.mjs",
+    "check": "npm run check:ios && npm run test && npm run typecheck && npm --workspace backend run deploy:dry"
   }
 }

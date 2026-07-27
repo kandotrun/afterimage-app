@@ -109,7 +109,9 @@ struct VideoMemoryView: View {
                         .frame(width: 40, height: 40)
                 }
                 .buttonStyle(.glass)
-                .accessibilityLabel(controller.phase == .playing ? "一時停止" : "再生")
+                .accessibilityLabel(
+                    L10n.string(controller.phase == .playing ? "playback.pause" : "playback.play")
+                )
 
                 HStack(spacing: 10) {
                     Text(PlaybackClock.label(controller.position))

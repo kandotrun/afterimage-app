@@ -198,14 +198,19 @@ enum AfterimageError: LocalizedError, Sendable {
 
     var errorDescription: String? {
         switch self {
-        case .invalidConfiguration: "接続先の設定を確認できませんでした。"
-        case .invalidResponse: "サーバーから正しい応答を受け取れませんでした。"
-        case let .api(_, _, message): message
-        case .missingCredential: "Appleの認証情報を受け取れませんでした。"
-        case .unsupportedMedia: "この写真・動画形式にはまだ対応していません。"
-        case let .compressionFailed(reason): "軽量化できませんでした。元データは送信していません。\n\(reason)"
-        case .uploadPlanInvalid: "アップロードの準備に失敗しました。"
-        case .cancelled: "アップロードをキャンセルしました。"
+        case .invalidConfiguration: L10n.string("error.invalid_configuration")
+        case .invalidResponse: L10n.string("error.invalid_response")
+        case let .api(status, code, _):
+            if code == "http_error" {
+                L10n.format("error.http_status", Int64(status))
+            } else {
+                L10n.apiError(code: code)
+            }
+        case .missingCredential: L10n.string("error.missing_credential")
+        case .unsupportedMedia: L10n.string("error.unsupported_media")
+        case let .compressionFailed(reason): L10n.format("error.compression_failed", reason as NSString)
+        case .uploadPlanInvalid: L10n.string("error.upload_plan_invalid")
+        case .cancelled: L10n.string("error.cancelled")
         }
     }
 }

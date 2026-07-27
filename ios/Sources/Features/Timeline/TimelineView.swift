@@ -110,8 +110,8 @@ private struct MemoryDay: Identifiable {
     let assets: [Asset]
     var id: Date { day }
     var title: String {
-        if Calendar.autoupdatingCurrent.isDateInToday(day) { return "今日" }
-        if Calendar.autoupdatingCurrent.isDateInYesterday(day) { return "昨日" }
+        if Calendar.autoupdatingCurrent.isDateInToday(day) { return L10n.string("timeline.today") }
+        if Calendar.autoupdatingCurrent.isDateInYesterday(day) { return L10n.string("timeline.yesterday") }
         return day.formatted(.dateTime.year().month(.wide).day())
     }
 }
@@ -145,7 +145,12 @@ private struct MemoryTile: View {
             }
             .clipped()
             .contentShape(.rect)
-            .accessibilityLabel(asset.mediaType == .video ? "動画 \(asset.capturedAt.formatted())" : "写真 \(asset.capturedAt.formatted())")
+            .accessibilityLabel(
+                L10n.format(
+                    asset.mediaType == .video ? "accessibility.video_at" : "accessibility.photo_at",
+                    asset.capturedAt.formatted() as NSString
+                )
+            )
     }
 
     private static func duration(_ milliseconds: Int) -> String {

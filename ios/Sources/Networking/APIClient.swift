@@ -63,6 +63,11 @@ actor APIClient {
         bearerToken = token
     }
 
+    func backgroundUploadContext() throws -> BackgroundUploadContext {
+        guard let bearerToken else { throw AfterimageError.missingCredential }
+        return BackgroundUploadContext(baseURL: resolver.baseURL, bearerToken: bearerToken)
+    }
+
     func revokeSession() async throws {
         let request: URLRequest
         do {
@@ -242,7 +247,11 @@ actor APIClient {
             if let data, let envelope = try? decoder.decode(APIErrorEnvelope.self, from: data) {
                 throw AfterimageError.api(status: http.statusCode, code: envelope.error.code, message: envelope.error.message)
             }
-            throw AfterimageError.api(status: http.statusCode, code: "http_error", message: "通信に失敗しました（\(http.statusCode)）。")
+            throw AfterimageError.api(
+                status: http.statusCode,
+                code: "http_error",
+                message: L10n.format("error.http_status", Int64(http.statusCode))
+            )
         }
     }
 }

@@ -60,7 +60,11 @@ struct MemoryCardView: View {
             HStack(spacing: 8) {
                 Image(systemName: asset.mediaType == .video ? "waveform" : "camera.fill")
                     .foregroundStyle(.tint)
-                Text(asset.mediaType == .video ? "音のある記憶" : "一枚の記憶")
+                Text(
+                    L10n.string(
+                        asset.mediaType == .video ? "memory.kind.video" : "memory.kind.photo"
+                    )
+                )
                     .font(.caption.weight(.medium))
                     .foregroundStyle(.secondary)
                 Spacer()

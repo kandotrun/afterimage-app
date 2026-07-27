@@ -17,11 +17,11 @@ enum UploadStage: Equatable {
 
     var title: String {
         switch self {
-        case .importing: "記憶を受け取っています"
-        case .compressing(.video): "音をそのままに、動画を軽くしています"
-        case .compressing(.image): "写真をきれいに整えています"
-        case .uploading: "あなたのafterimageへ保存しています"
-        case .finishing: "あと少しです"
+        case .importing: L10n.string("upload.stage.importing")
+        case .compressing(.video): L10n.string("upload.stage.compressing_video")
+        case .compressing(.image): L10n.string("upload.stage.compressing_photo")
+        case .uploading: L10n.string("upload.stage.uploading")
+        case .finishing: L10n.string("upload.stage.finishing")
         }
     }
 }
@@ -43,7 +43,6 @@ final class AppModel: ObservableObject {
     @Published var notice: AppNotice?
 
     private let api: APIClient
-    private let uploader: MediaUploader
     private let compressor: MediaCompressor
     private let sessionStore: SessionStoring
     private let haptics: HapticEngine
@@ -58,7 +57,6 @@ final class AppModel: ObservableObject {
         haptics: HapticEngine = HapticEngine()
     ) {
         self.api = api
-        self.uploader = MediaUploader(api: api)
         self.sessionStore = sessionStore
         self.compressor = compressor
         self.haptics = haptics
@@ -86,6 +84,7 @@ final class AppModel: ObservableObject {
             guard let token = try sessionStore.load() else { return }
             await api.setBearerToken(token)
             isAuthenticated = true
+            await resumeBackgroundUploadIfNeeded()
             do {
                 try await refreshTimeline()
             } catch {
@@ -148,6 +147,7 @@ final class AppModel: ObservableObject {
     }
 
     func signOut() async {
+        BackgroundUploadManager.shared.cancelAll()
         uploadTask?.cancel()
         uploadTask = nil
         upload = nil
@@ -180,7 +180,9 @@ final class AppModel: ObservableObject {
     }
 
     func importItems(_ items: [PhotosPickerItem]) {
-        guard !items.isEmpty, uploadTask == nil else { return }
+        guard !items.isEmpty,
+              uploadTask == nil,
+              !BackgroundUploadManager.shared.hasPendingUpload else { return }
         haptics.play(.lift)
         uploadTask = Task { [weak self] in
             guard let self else { return }
@@ -202,6 +204,7 @@ final class AppModel: ObservableObject {
     }
 
     func cancelUpload() {
+        BackgroundUploadManager.shared.cancelAll()
         uploadTask?.cancel()
         haptics.play(.delete)
     }
@@ -261,20 +264,21 @@ final class AppModel: ObservableObject {
         let imported = try await MediaImporter.load(item)
         var optimized: OptimizedMedia?
         var remoteAssetID: String?
-        defer {
-            imported.removeTemporaryFile()
-        }
+        var activityID: String?
+        var didHandOff = false
+        defer { imported.removeTemporaryFile() }
 
         do {
             upload = UploadPresentation(stage: .compressing(imported.kind), progress: 0.04, current: current, total: total)
             optimized = try await compressor.optimize(imported) { [weak self] value in
                 Task { @MainActor in
-                    guard let self else { return }
-                    self.upload?.progress = 0.04 + value * 0.46
+                    self?.upload?.progress = 0.04 + value * 0.46
                 }
             }
             try Task.checkCancellation()
-            guard let optimized else { throw AfterimageError.compressionFailed("出力を確認できませんでした。") }
+            guard let optimized else {
+                throw AfterimageError.compressionFailed(L10n.string("compression.output_missing"))
+            }
 
             let created = try await api.createAsset(CreateAssetRequest(
                 mediaType: optimized.kind,
@@ -287,11 +291,10 @@ final class AppModel: ObservableObject {
                 capturedAt: optimized.capturedAt
             ))
             remoteAssetID = created.asset.id
+            let context = try await api.backgroundUploadContext()
 
-            // Hand off to background upload so it survives app suspension.
             upload = UploadPresentation(stage: .uploading, progress: 0.50, current: current, total: total)
-            let liveActivity = UploadLiveActivityManager.shared
-            liveActivity.start(
+            activityID = UploadLiveActivityManager.shared.start(
                 filename: optimized.filename,
                 stage: UploadStage.uploading.title,
                 current: current,
@@ -307,61 +310,97 @@ final class AppModel: ObservableObject {
                 byteSize: optimized.byteSize,
                 plan: created.upload,
                 completedParts: [],
-                isComplete: false
+                transferComplete: false
             )
 
             try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<Void, Error>) in
-                BackgroundUploadManager.shared.startUpload(
-                    items: [uploadItem],
-                    progress: { [weak self] _, progress, itemCurrent, itemTotal in
-                        Task { @MainActor in
-                            guard let self else { return }
-                            self.upload?.progress = 0.50 + progress * 0.44
-                            liveActivity.update(
-                                stage: UploadStage.uploading.title,
-                                progress: 0.50 + progress * 0.44,
-                                current: itemCurrent,
-                                total: itemTotal
-                            )
-                        }
-                    },
-                    completion: { [weak self] result in
-                        Task { @MainActor in
-                            guard let self else { return }
-                            switch result {
-                            case .success:
-                                // R2 transfer done — finalize via API.
-                                self.upload = UploadPresentation(stage: .finishing, progress: 0.96, current: current, total: total)
-                                liveActivity.update(stage: UploadStage.finishing.title, progress: 0.96, current: current, total: total)
-                                do {
-                                    _ = try await self.api.completeUpload(assetID: created.asset.id)
-                                    try? await self.api.uploadThumbnail(optimized.thumbnailURL, assetID: created.asset.id)
-                                    optimized.removeTemporaryFiles()
-                                    liveActivity.end()
+                do {
+                    try BackgroundUploadManager.shared.startUpload(
+                        items: [uploadItem],
+                        context: context,
+                        activityID: activityID,
+                        progress: { [weak self] _, progress, _, _ in
+                            Task { @MainActor in
+                                self?.upload?.progress = 0.50 + progress * 0.44
+                            }
+                        },
+                        completion: { result in
+                            Task { @MainActor [weak self] in
+                                guard let self else {
+                                    continuation.resume(throwing: AfterimageError.cancelled)
+                                    return
+                                }
+                                switch result {
+                                case .success:
                                     try? await self.refreshTimeline()
                                     self.haptics.play(.success)
                                     self.upload = nil
                                     self.uploadTask = nil
                                     continuation.resume()
-                                } catch {
-                                    liveActivity.cancel()
+                                case .failure(let error):
                                     continuation.resume(throwing: error)
                                 }
-                            case .failure(let error):
-                                liveActivity.cancel()
-                                continuation.resume(throwing: error)
                             }
                         }
-                    }
-                )
+                    )
+                    didHandOff = true
+                } catch {
+                    continuation.resume(throwing: error)
+                }
             }
         } catch {
-            UploadLiveActivityManager.shared.cancel()
-            if let remoteAssetID {
+            let wasCancelled: Bool
+            if error is CancellationError {
+                wasCancelled = true
+            } else if case .some(.cancelled) = error as? AfterimageError {
+                wasCancelled = true
+            } else {
+                wasCancelled = false
+            }
+
+            if !didHandOff {
+                optimized?.removeTemporaryFiles()
+                UploadLiveActivityManager.shared.cancel(activityID: activityID)
+            }
+            if let remoteAssetID, !didHandOff || wasCancelled {
                 try? await api.deleteAsset(assetID: remoteAssetID)
             }
-            if error is CancellationError { throw AfterimageError.cancelled }
+            if wasCancelled { throw AfterimageError.cancelled }
             throw error
+        }
+    }
+
+    private func resumeBackgroundUploadIfNeeded() async {
+        guard let context = try? await api.backgroundUploadContext() else { return }
+        let resumed = BackgroundUploadManager.shared.resumePendingUpload(
+            context: context,
+            progress: { [weak self] _, progress, current, total in
+                Task { @MainActor in
+                    guard let self else { return }
+                    self.upload = UploadPresentation(
+                        stage: .uploading,
+                        progress: 0.50 + progress * 0.44,
+                        current: current,
+                        total: total
+                    )
+                }
+            },
+            completion: { [weak self] result in
+                Task { @MainActor in
+                    guard let self else { return }
+                    self.upload = nil
+                    switch result {
+                    case .success:
+                        try? await self.refreshTimeline()
+                        self.haptics.play(.success)
+                    case .failure(let error):
+                        self.show(error: error)
+                    }
+                }
+            }
+        )
+        if resumed, upload == nil {
+            upload = UploadPresentation(stage: .uploading, progress: 0.50, current: 1, total: 1)
         }
     }
 
@@ -374,6 +413,6 @@ final class AppModel: ObservableObject {
 
     private func show(error: Error) {
         let message = (error as? LocalizedError)?.errorDescription ?? error.localizedDescription
-        notice = AppNotice(title: "うまくいきませんでした", message: message)
+        notice = AppNotice(title: L10n.string("error.generic_title"), message: message)
     }
 }
