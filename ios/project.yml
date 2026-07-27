@@ -1,6 +1,6 @@
 name: afterimage
 options:
-  bundleIdPrefix: com.kandotrun
+  bundleIdPrefix: com.2-38
   deploymentTarget:
     iOS: "26.0"
 settings:
@@ -24,7 +24,7 @@ targets:
       base:
         PRODUCT_NAME: afterimage
         PRODUCT_MODULE_NAME: afterimage
-        PRODUCT_BUNDLE_IDENTIFIER: com.kandotrun.afterimage
+        PRODUCT_BUNDLE_IDENTIFIER: com.2-38.hogehoge
         GENERATE_INFOPLIST_FILE: NO
         INFOPLIST_FILE: Resources/Info.plist
         CODE_SIGN_ENTITLEMENTS: Resources/afterimage.entitlements
@@ -40,7 +40,7 @@ targets:
       - target: afterimage
     settings:
       base:
-        PRODUCT_BUNDLE_IDENTIFIER: com.kandotrun.afterimage.tests
+        PRODUCT_BUNDLE_IDENTIFIER: com.2-38.hogehoge.tests
         GENERATE_INFOPLIST_FILE: YES
         TEST_HOST: "$(BUILT_PRODUCTS_DIR)/afterimage.app/$(BUNDLE_EXECUTABLE_FOLDER_PATH)/afterimage"
         BUNDLE_LOADER: "$(TEST_HOST)"

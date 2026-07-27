@@ -349,7 +349,7 @@ actor MediaCompressor {
             try await withCheckedThrowingContinuation { continuation in
                 let gate = ContinuationGate(continuation)
                 guard cancellation.install(gate) else { return }
-                let queue = DispatchQueue(label: "com.kandotrun.afterimage.media-pump.\(UUID().uuidString)")
+                let queue = DispatchQueue(label: "com.2-38.hogehoge.media-pump.\(UUID().uuidString)")
                 pipeline.input.requestMediaDataWhenReady(on: queue) { [pipeline] in
                     while pipeline.input.isReadyForMoreMediaData {
                         if pipeline.session.reader.status == .cancelled || pipeline.session.writer.status == .cancelled {

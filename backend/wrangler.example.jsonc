@@ -7,7 +7,7 @@
   "account_id": "<CLOUDFLARE_ACCOUNT_ID>",
   "vars": {
     "ENVIRONMENT": "production",
-    "APPLE_BUNDLE_ID": "com.kandotrun.afterimage",
+    "APPLE_BUNDLE_ID": "com.2-38.hogehoge",
     "SESSION_TTL_SECONDS": "2592000",
     "PLAYBACK_GRANT_TTL_SECONDS": "300",
     "SINGLE_UPLOAD_MAX_BYTES": "5242880",

@@ -11,7 +11,7 @@ final class KeychainSessionStore: SessionStoring, @unchecked Sendable {
     private let service: String
     private let account = "bearer-session"
 
-    init(service: String = "com.kandotrun.afterimage") {
+    init(service: String = "com.2-38.hogehoge") {
         self.service = service
     }
 
