@@ -13,7 +13,7 @@ concurrency:
 
 jobs:
   test:
-    runs-on: [self-hosted, macOS, ARM64, afterimage-ios]
+    runs-on: [self-hosted, macOS, ARM64, afterimage-ci]
     timeout-minutes: 35
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -50,7 +50,7 @@ jobs:
 
   deploy:
     needs: test
-    runs-on: [self-hosted, macOS, ARM64, afterimage-ios]
+    runs-on: [self-hosted, macOS, ARM64, afterimage-ci]
     timeout-minutes: 45
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -66,16 +66,22 @@ jobs:
       - name: Generate Xcode project
         working-directory: ios
         run: xcodegen generate
-      - name: Install App Store Connect API key
+      - name: Prepare temporary App Store Connect API key
+        id: asc_key
         env:
-          ASC_KEY_ID: ${{ secrets.ASC_KEY_ID }}
           ASC_PRIVATE_KEY: ${{ secrets.ASC_PRIVATE_KEY }}
         run: |
-          mkdir -p ~/.appstoreconnect/private_keys
-          printf '%s' "$ASC_PRIVATE_KEY" > ~/.appstoreconnect/private_keys/AuthKey_"$ASC_KEY_ID".p8
-          chmod 600 ~/.appstoreconnect/private_keys/AuthKey_"$ASC_KEY_ID".p8
+          KEY_DIR=$(mktemp -d "$RUNNER_TEMP/afterimage-asc.XXXXXX")
+          KEY_PATH="$KEY_DIR/AuthKey.p8"
+          printf '%s' "$ASC_PRIVATE_KEY" > "$KEY_PATH"
+          chmod 600 "$KEY_PATH"
+          echo "dir=$KEY_DIR" >> "$GITHUB_OUTPUT"
+          echo "path=$KEY_PATH" >> "$GITHUB_OUTPUT"
       - name: Archive
         working-directory: ios
+        env:
+          ASC_KEY_ID: ${{ secrets.ASC_KEY_ID }}
+          ASC_ISSUER_ID: ${{ secrets.ASC_ISSUER_ID }}
         run: |
           set -o pipefail
           xcodebuild archive \
@@ -84,6 +90,9 @@ jobs:
             -configuration Release \
             -archivePath build/afterimage.xcarchive \
             -allowProvisioningUpdates \
+            -authenticationKeyPath "${{ steps.asc_key.outputs.path }}" \
+            -authenticationKeyID "$ASC_KEY_ID" \
+            -authenticationKeyIssuerID "$ASC_ISSUER_ID" \
             CURRENT_PROJECT_VERSION=${{ github.run_number }} \
             | tee archive.log
       - name: Export and upload to TestFlight
@@ -98,6 +107,9 @@ jobs:
             -exportOptionsPlist ExportOptions.plist \
             -exportPath build/export \
             -allowProvisioningUpdates \
+            -authenticationKeyPath "${{ steps.asc_key.outputs.path }}" \
+            -authenticationKeyID "$ASC_KEY_ID" \
+            -authenticationKeyIssuerID "$ASC_ISSUER_ID" \
             | tee export.log
       - name: Verify upload
         working-directory: ios
@@ -107,3 +119,11 @@ jobs:
             grep -qi 'upload' export.log || { echo "ERROR: no upload evidence in export.log"; exit 1; }
           fi
           echo "TestFlight upload completed (build ${{ github.run_number }})"
+      - name: Remove temporary App Store Connect API key
+        if: always()
+        env:
+          KEY_DIR: ${{ steps.asc_key.outputs.dir }}
+        run: |
+          if [ -n "$KEY_DIR" ]; then
+            rm -rf "$KEY_DIR"
+          fi
