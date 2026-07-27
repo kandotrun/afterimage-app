@@ -32,9 +32,14 @@ final class VideoPlaybackController: ObservableObject {
     private var resumeAfterScrub = false
     private var timeObserver: Any?
     private var cancellables: Set<AnyCancellable> = []
+    /// Invalidates in-flight prepareAndPlay work: bumped by activate() and
+    /// deactivate(), checked after every suspension point so an orphaned grant
+    /// refresh can never restart playback on a page that was deactivated.
+    private var generation = 0
 
     func activate(loadGrant: @escaping @MainActor () async throws -> ResolvedPlaybackGrant) async {
         self.loadGrant = loadGrant
+        generation += 1
         if timeObserver == nil {
             timeObserver = player.addPeriodicTimeObserver(
                 forInterval: CMTime(seconds: 0.25, preferredTimescale: 600),
@@ -46,10 +51,12 @@ final class VideoPlaybackController: ObservableObject {
                 }
             }
         }
-        await prepareAndPlay(resumingAt: 0)
+        await prepareAndPlay(resumingAt: 0, generation: generation)
     }
 
     func deactivate() {
+        generation += 1
+        loadGrant = nil
         cancellables.removeAll()
         if let timeObserver {
             player.removeTimeObserver(timeObserver)
@@ -70,15 +77,23 @@ final class VideoPlaybackController: ObservableObject {
 
     func togglePlayPause() {
         switch phase {
-        case .playing: player.pause()
-        case .paused: play()
-        case .ended: replay()
-        case .idle, .loading, .failed: break
+        case .playing:
+            player.pause()
+        case .loading:
+            // A stalled/buffering video must still respond to pause.
+            player.pause()
+            phase = .paused
+        case .paused:
+            play()
+        case .ended:
+            replay()
+        case .idle, .failed:
+            break
         }
     }
 
     func scrubBegan() {
-        resumeAfterScrub = phase == .playing
+        resumeAfterScrub = phase == .playing || phase == .loading
         isScrubbing = true
         player.pause()
     }
@@ -93,7 +108,7 @@ final class VideoPlaybackController: ObservableObject {
             toleranceBefore: .zero,
             toleranceAfter: .zero
         )
-        if phase == .ended { phase = .paused }
+        if phase == .ended || phase == .loading { phase = .paused }
         isScrubbing = false
         if resumeAfterScrub { play() }
         resumeAfterScrub = false
@@ -105,7 +120,8 @@ final class VideoPlaybackController: ObservableObject {
             player.play()
         case .refresh:
             let resumeAt = position
-            Task { await prepareAndPlay(resumingAt: resumeAt) }
+            let expected = generation
+            Task { await prepareAndPlay(resumingAt: resumeAt, generation: expected) }
         }
     }
 
@@ -116,14 +132,17 @@ final class VideoPlaybackController: ObservableObject {
         play()
     }
 
-    private func prepareAndPlay(resumingAt: TimeInterval) async {
+    private func prepareAndPlay(resumingAt: TimeInterval, generation expected: Int) async {
+        guard expected == generation else { return }
         phase = .loading
         do {
             if recoveryPolicy.grantAction(now: Date(), expiresAt: grant?.expiresAt) == .refresh {
                 guard let loadGrant else { return }
-                grant = try await loadGrant()
+                let fresh = try await loadGrant()
+                guard expected == generation else { return }
+                grant = fresh
             }
-            guard let grant else { return }
+            guard expected == generation, let grant else { return }
             try audioSession.activate()
             let item = AVPlayerItem(url: grant.url)
             observe(item: item)
@@ -138,6 +157,9 @@ final class VideoPlaybackController: ObservableObject {
             }
             player.play()
         } catch {
+            // A cancelled or superseded activation must not surface as failure UI.
+            guard expected == generation, !Task.isCancelled else { return }
+            if error is CancellationError || (error as? URLError)?.code == .cancelled { return }
             phase = .failed((error as? LocalizedError)?.errorDescription ?? error.localizedDescription)
         }
     }
@@ -201,7 +223,8 @@ final class VideoPlaybackController: ObservableObject {
             retriesUsed += 1
             grant = nil
             let resumeAt = position
-            Task { await prepareAndPlay(resumingAt: resumeAt) }
+            let expected = generation
+            Task { await prepareAndPlay(resumingAt: resumeAt, generation: expected) }
         case .surface:
             phase = .failed(message ?? "再生できませんでした。")
         }
