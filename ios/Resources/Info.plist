@@ -27,7 +27,7 @@
     <key>ITSAppUsesNonExemptEncryption</key>
     <false/>
     <key>AFTERIMAGE_API_BASE_URL</key>
-    <string>https://afterimage-api.softbank.workers.dev</string>
+    <string>https://afterimage.2-38.com</string>
     <key>NSAppTransportSecurity</key>
     <dict>
         <key>NSAllowsLocalNetworking</key>
