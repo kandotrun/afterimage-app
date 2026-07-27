@@ -70,8 +70,11 @@ struct MemoryDetailView: View {
         }
         .onChange(of: model.assets) { _, assets in
             guard currentAsset == nil else { return }
-            if let fallback = assets.first?.id {
-                selectedAssetID = fallback
+            // A background refresh can drop the current asset from the first
+            // page. Fall back to the memory this screen was opened with rather
+            // than teleporting to the newest one; dismiss if that is gone too.
+            if assets.contains(where: { $0.id == asset.id }) {
+                selectedAssetID = asset.id
             } else {
                 dismiss()
             }
@@ -88,12 +91,14 @@ struct MemoryDetailView: View {
         let remaining = model.assets.filter { $0.id != target.id }
         let nextID = MemoryPagerPolicy.selectionAfterDeletion(of: index, count: model.assets.count)
             .flatMap { remaining.indices.contains($0) ? remaining[$0].id : nil }
+        // Move selection before the row disappears so the assets onChange
+        // fallback never has to guess a page.
+        if let nextID { selectedAssetID = nextID }
         Task {
-            guard await model.delete(target) else { return }
-            if let nextID {
-                selectedAssetID = nextID
-            } else {
-                dismiss()
+            if await model.delete(target) {
+                if nextID == nil { dismiss() }
+            } else if model.assets.contains(where: { $0.id == target.id }) {
+                selectedAssetID = target.id
             }
         }
     }
