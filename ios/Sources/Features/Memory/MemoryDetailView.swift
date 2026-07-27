@@ -12,6 +12,7 @@ struct MemoryDetailView: View {
     @State private var isLoading = true
     @State private var loadError: String?
     @State private var confirmDelete = false
+    private let playbackAudioSession = PlaybackAudioSession()
 
     var body: some View {
         ZStack {
@@ -55,7 +56,10 @@ struct MemoryDetailView: View {
             }
         }
         .task(id: asset.id) { await load() }
-        .onDisappear { player?.pause() }
+        .onDisappear {
+            player?.pause()
+            playbackAudioSession.deactivate()
+        }
         .confirmationDialog("このafterimageを削除しますか？", isPresented: $confirmDelete, titleVisibility: .visible) {
             Button("削除", role: .destructive) {
                 Task {
@@ -85,6 +89,7 @@ struct MemoryDetailView: View {
         loadError = nil
         do {
             if asset.mediaType == .video {
+                try playbackAudioSession.activate()
                 let url = try await model.playbackURL(for: asset)
                 player = AVPlayer(url: url)
             } else {
@@ -93,6 +98,9 @@ struct MemoryDetailView: View {
                 image = loaded
             }
         } catch {
+            if asset.mediaType == .video {
+                playbackAudioSession.deactivate()
+            }
             loadError = error.localizedDescription
         }
         isLoading = false
