@@ -18,7 +18,7 @@ permissions:
 
 jobs:
   test:
-    runs-on: [self-hosted, macOS, ARM64, afterimage-ios]
+    runs-on: [self-hosted, macOS, ARM64, afterimage-ci]
     timeout-minutes: 35
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
