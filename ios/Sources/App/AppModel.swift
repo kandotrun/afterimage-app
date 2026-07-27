@@ -231,6 +231,14 @@ final class AppModel: ObservableObject {
         try await api.playbackURL(assetID: asset.id)
     }
 
+    func playbackGrant(for asset: Asset) async throws -> ResolvedPlaybackGrant {
+        try await api.playbackGrant(assetID: asset.id)
+    }
+
+    func transcript(for asset: Asset) async throws -> TranscriptResponse {
+        try await api.transcript(assetID: asset.id)
+    }
+
     private func process(item: PhotosPickerItem, current: Int, total: Int) async throws {
         upload = UploadPresentation(stage: .importing, progress: 0.02, current: current, total: total)
         let imported = try await MediaImporter.load(item)

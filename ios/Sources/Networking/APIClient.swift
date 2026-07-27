@@ -152,6 +152,17 @@ actor APIClient {
         return try resolver.resolve(grant.url)
     }
 
+    func playbackGrant(assetID: String) async throws -> ResolvedPlaybackGrant {
+        let request = try makeRequest(path: "/v1/assets/\(assetID)/playback", method: "POST")
+        let grant: PlaybackGrant = try await decode(request)
+        return ResolvedPlaybackGrant(url: try resolver.resolve(grant.url), expiresAt: grant.expiresAt)
+    }
+
+    func transcript(assetID: String) async throws -> TranscriptResponse {
+        let request = try makeRequest(path: "/v1/assets/\(assetID)/transcript", method: "GET")
+        return try await decode(request)
+    }
+
     func deleteAsset(assetID: String) async throws {
         let request = try makeRequest(path: "/v1/assets/\(assetID)", method: "DELETE")
         let (data, response) = try await session.data(for: request)
