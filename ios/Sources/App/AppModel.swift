@@ -74,7 +74,7 @@ final class AppModel: ObservableObject {
         }
         #endif
         let configured = Bundle.main.object(forInfoDictionaryKey: "AFTERIMAGE_API_BASE_URL") as? String
-        let baseURL = configured.flatMap(URL.init(string:)) ?? URL(string: "http://127.0.0.1:8787")!
+        let baseURL = configured.flatMap(URL.init(string:)) ?? URL(string: "https://afterimage.2-38.com")!
         return AppModel(api: APIClient(baseURL: baseURL))
     }
 
@@ -136,6 +136,21 @@ final class AppModel: ObservableObject {
 
         do {
             let response = try await api.signIn(identityToken: identityToken, displayName: displayName)
+            try sessionStore.save(response.token)
+            await api.setBearerToken(response.token)
+            isAuthenticated = true
+            haptics.play(.success)
+            try await refreshTimeline()
+        } catch {
+            haptics.play(.failure)
+            show(error: error)
+        }
+    }
+
+    /// Development login without Apple verification (sideloaded builds).
+    func devSignIn() async {
+        do {
+            let response = try await api.devSignIn()
             try sessionStore.save(response.token)
             await api.setBearerToken(response.token)
             isAuthenticated = true

@@ -550,6 +550,38 @@ export function createApp(overrides: Partial<AppDependencies> = {}) {
     return context.json({ token: sessionToken, expiresAt, user: userJson(user) });
   });
 
+  // Development login: issues a session without Apple verification.
+  // Intended for sideloaded builds where the Sign in with Apple entitlement is unavailable.
+  app.post("/v1/auth/dev", async (context) => {
+    const now = dependencies.now();
+    const nowIso = now.toISOString();
+    const devSubject = "dev-kan";
+    const proposedUserId = crypto.randomUUID();
+    await context.env.DB.prepare(
+      `INSERT INTO users (id, apple_subject, email, display_name, created_at, updated_at)
+       VALUES (?, ?, ?, ?, ?, ?)
+       ON CONFLICT(apple_subject) DO UPDATE SET updated_at = excluded.updated_at`,
+    ).bind(proposedUserId, devSubject, "kan@2-38.com", "Kan", nowIso, nowIso).run();
+    const user = await context.env.DB.prepare(
+      "SELECT id, apple_subject, email, display_name FROM users WHERE apple_subject = ?",
+    ).bind(devSubject).first<UserRow>();
+    if (!user) throw new Error("failed to persist dev user");
+
+    const sessionToken = randomToken();
+    const sessionTtlSeconds = integerBinding(
+      context.env.SESSION_TTL_SECONDS,
+      2_592_000,
+      300,
+      31_536_000,
+    );
+    const expiresAt = new Date(now.getTime() + sessionTtlSeconds * 1000).toISOString();
+    await context.env.DB.prepare(
+      "INSERT INTO sessions (id, user_id, token_hash, expires_at, created_at) VALUES (?, ?, ?, ?, ?)",
+    ).bind(crypto.randomUUID(), user.id, await sha256Hex(sessionToken), expiresAt, nowIso).run();
+
+    return context.json({ token: sessionToken, expiresAt, user: userJson(user) });
+  });
+
   app.get("/v1/media/:token", async (context) => {
     const token = context.req.param("token");
     if (!/^[A-Za-z0-9_-]{32,256}$/.test(token)) {
