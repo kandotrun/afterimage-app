@@ -19,7 +19,10 @@ struct TimelineView: View {
     var body: some View {
         NavigationStack {
             MemoryBackdrop {
-                ScrollView {
+                GeometryReader { proxy in
+                    let layout = TimelineGridLayout(containerWidth: proxy.size.width)
+
+                    ScrollView {
                     if sections.isEmpty && !model.isLoadingTimeline {
                         EmptyTimelineView()
                             .padding(.top, 120)
@@ -28,16 +31,13 @@ struct TimelineView: View {
                             ForEach(sections) { section in
                                 Section {
                                     LazyVGrid(
-                                        columns: [
-                                            GridItem(.flexible(), spacing: 2),
-                                            GridItem(.flexible(), spacing: 2),
-                                            GridItem(.flexible(), spacing: 2),
-                                        ],
-                                        spacing: 2
+                                        columns: layout.columns,
+                                        spacing: layout.spacing
                                     ) {
                                         ForEach(section.assets) { asset in
                                             NavigationLink(value: asset) {
                                                 MemoryTile(asset: asset)
+                                                    .frame(width: layout.cellLength, height: layout.cellLength)
                                             }
                                             .buttonStyle(.plain)
                                             .matchedTransitionSource(id: asset.id, in: zoomTransition)
@@ -56,8 +56,9 @@ struct TimelineView: View {
                         }
                         .padding(.bottom, 100)
                     }
+                    }
+                    .refreshable { try? await model.refreshTimeline() }
                 }
-                .refreshable { try? await model.refreshTimeline() }
             }
             .navigationTitle("ライブラリ")
             .navigationDestination(for: Asset.self) { asset in
