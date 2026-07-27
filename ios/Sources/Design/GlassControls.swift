@@ -12,7 +12,7 @@ struct GlassProgressPill: View {
                 Text(upload.stage.title)
                     .font(.caption.weight(.semibold))
                     .lineLimit(1)
-                if upload.total > 1 {
+                if upload.total > 1 && upload.current > 0 {
                     Text("\(upload.current) / \(upload.total)")
                         .font(.caption2)
                         .foregroundStyle(.secondary)
