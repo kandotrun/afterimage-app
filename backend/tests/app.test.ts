@@ -218,6 +218,19 @@ describe("health and authentication", () => {
     });
   });
 
+  it("does not expose development sign-in in production", async () => {
+    const response = await makeApp().request("/v1/auth/dev", { method: "POST" }, {
+      ...env,
+      ENVIRONMENT: "production",
+    });
+    expect(response.status).toBe(404);
+  });
+
+  it("allows development sign-in outside production", async () => {
+    const response = await makeApp().request("/v1/auth/dev", { method: "POST" }, env);
+    expect(response.status).toBe(200);
+  });
+
   it("revokes the current bearer session on logout", async () => {
     const { app, authorization } = await signIn();
     const logout = await app.request("/v1/auth/session", {

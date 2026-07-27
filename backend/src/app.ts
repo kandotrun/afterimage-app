@@ -551,8 +551,10 @@ export function createApp(overrides: Partial<AppDependencies> = {}) {
   });
 
   // Development login: issues a session without Apple verification.
-  // Intended for sideloaded builds where the Sign in with Apple entitlement is unavailable.
+  // Never expose this route in production.
   app.post("/v1/auth/dev", async (context) => {
+    if (context.env.ENVIRONMENT === "production") return context.notFound();
+
     const now = dependencies.now();
     const nowIso = now.toISOString();
     const devSubject = "dev-kan";
