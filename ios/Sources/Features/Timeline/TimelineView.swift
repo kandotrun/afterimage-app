@@ -212,34 +212,80 @@ private struct UploadDock: View {
     @Binding var selection: [PhotosPickerItem]
 
     var body: some View {
-        GlassEffectContainer(spacing: 14) {
-            HStack(spacing: 10) {
-                if let upload = model.upload {
-                    GlassProgressPill(upload: upload)
+        VStack(alignment: .trailing, spacing: 9) {
+            if let summary = model.importSelectionSummary {
+                ImportSelectionSummaryView(summary: summary)
+                    .transition(.move(edge: .bottom).combined(with: .opacity))
+            } else if model.upload == nil {
+                VStack(alignment: .trailing, spacing: 2) {
+                    Label {
+                        Text(verbatim: L10n.string("upload.duplicates.hint_title"))
+                    } icon: {
+                        Image(systemName: "checkmark.circle")
+                    }
+                    .font(.caption.weight(.semibold))
+                    Text(verbatim: L10n.string("upload.duplicates.hint_detail"))
+                        .font(.caption2)
+                }
+                .foregroundStyle(.secondary)
+                .padding(.trailing, 8)
+                .accessibilityElement(children: .combine)
+            }
 
-                    Button(role: .cancel) { model.cancelUpload() } label: {
-                        Image(systemName: "xmark")
-                            .frame(width: 32, height: 32)
+            GlassEffectContainer(spacing: 14) {
+                HStack(spacing: 10) {
+                    if let upload = model.upload {
+                        GlassProgressPill(upload: upload)
+
+                        Button(role: .cancel) { model.cancelUpload() } label: {
+                            Image(systemName: "xmark")
+                                .frame(width: 32, height: 32)
+                        }
+                        .buttonStyle(.glass)
+                        .accessibilityLabel("キャンセル")
+                    } else {
+                        PhotosPicker(
+                            selection: $selection,
+                            maxSelectionCount: 12,
+                            matching: .any(of: [.images, .videos]),
+                            preferredItemEncoding: .current
+                        ) {
+                            Label("追加", systemImage: "plus")
+                                .font(.headline)
+                                .frame(minWidth: 82, minHeight: 44)
+                        }
+                        .buttonStyle(.glassProminent)
+                        .accessibilityLabel("写真や動画を追加")
+                        .accessibilityHint(L10n.string("accessibility.upload_picker_duplicate_hint"))
                     }
-                    .buttonStyle(.glass)
-                    .accessibilityLabel("キャンセル")
-                } else {
-                    PhotosPicker(
-                        selection: $selection,
-                        maxSelectionCount: 12,
-                        matching: .any(of: [.images, .videos]),
-                        preferredItemEncoding: .current
-                    ) {
-                        Label("追加", systemImage: "plus")
-                            .font(.headline)
-                            .frame(minWidth: 82, minHeight: 44)
-                    }
-                    .buttonStyle(.glassProminent)
-                    .accessibilityLabel("写真や動画を追加")
                 }
             }
-            .animation(.snappy(duration: 0.3), value: model.upload)
         }
+        .animation(.snappy(duration: 0.3), value: model.upload)
+        .animation(.snappy(duration: 0.3), value: model.importSelectionSummary)
         .frame(maxWidth: .infinity, alignment: .trailing)
+    }
+}
+
+private struct ImportSelectionSummaryView: View {
+    let summary: ImportSelectionSummary
+
+    var body: some View {
+        VStack(alignment: .trailing, spacing: 3) {
+            Label {
+                Text(verbatim: summary.title)
+            } icon: {
+                Image(systemName: "checkmark.circle.fill")
+            }
+            .font(.caption.weight(.semibold))
+            Text(verbatim: summary.detail)
+                .font(.caption2)
+                .foregroundStyle(.secondary)
+        }
+        .multilineTextAlignment(.trailing)
+        .padding(.horizontal, 14)
+        .padding(.vertical, 10)
+        .glassEffect(.regular, in: RoundedRectangle(cornerRadius: 16, style: .continuous))
+        .accessibilityElement(children: .combine)
     }
 }
