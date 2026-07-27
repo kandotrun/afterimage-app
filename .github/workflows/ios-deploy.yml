@@ -3,6 +3,7 @@ name: ios-deploy
 on:
   push:
     branches: [main]
+  workflow_dispatch:
 
 permissions:
   contents: read
@@ -77,6 +78,18 @@ jobs:
           chmod 600 "$KEY_PATH"
           echo "dir=$KEY_DIR" >> "$GITHUB_OUTPUT"
           echo "path=$KEY_PATH" >> "$GITHUB_OUTPUT"
+      - name: Configure isolated signing keychain
+        id: signing_keychain
+        env:
+          CI_KEYCHAIN_PASSWORD: ${{ secrets.AFTERIMAGE_CI_KEYCHAIN_PASSWORD }}
+        run: |
+          KEYCHAIN="$HOME/actions-runner-afterimage/.ci/afterimage-ci.keychain-db"
+          test -f "$KEYCHAIN"
+          security set-keychain-settings -lut 21600 "$KEYCHAIN"
+          security unlock-keychain -p "$CI_KEYCHAIN_PASSWORD" "$KEYCHAIN"
+          security default-keychain -d user -s "$KEYCHAIN"
+          security list-keychains -d user -s "$KEYCHAIN"
+          echo "path=$KEYCHAIN" >> "$GITHUB_OUTPUT"
       - name: Archive
         working-directory: ios
         env:
@@ -93,6 +106,7 @@ jobs:
             -authenticationKeyPath "${{ steps.asc_key.outputs.path }}" \
             -authenticationKeyID "$ASC_KEY_ID" \
             -authenticationKeyIssuerID "$ASC_ISSUER_ID" \
+            OTHER_CODE_SIGN_FLAGS="--keychain ${{ steps.signing_keychain.outputs.path }}" \
             CURRENT_PROJECT_VERSION=${{ github.run_number }} \
             | tee archive.log
       - name: Export and upload to TestFlight
@@ -126,4 +140,15 @@ jobs:
         run: |
           if [ -n "$KEY_DIR" ]; then
             rm -rf "$KEY_DIR"
+          fi
+      - name: Restore login keychain
+        if: always()
+        env:
+          CI_KEYCHAIN: ${{ steps.signing_keychain.outputs.path }}
+        run: |
+          LOGIN_KEYCHAIN="$HOME/Library/Keychains/login.keychain-db"
+          security default-keychain -d user -s "$LOGIN_KEYCHAIN"
+          security list-keychains -d user -s "$LOGIN_KEYCHAIN"
+          if [ -n "$CI_KEYCHAIN" ]; then
+            security lock-keychain "$CI_KEYCHAIN" 2>/dev/null || true
           fi
