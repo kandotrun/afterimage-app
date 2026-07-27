@@ -227,10 +227,6 @@ final class AppModel: ObservableObject {
         try await api.contentData(assetID: asset.id)
     }
 
-    func playbackURL(for asset: Asset) async throws -> URL {
-        try await api.playbackURL(assetID: asset.id)
-    }
-
     func playbackGrant(for asset: Asset) async throws -> ResolvedPlaybackGrant {
         try await api.playbackGrant(assetID: asset.id)
     }

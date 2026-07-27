@@ -146,12 +146,6 @@ actor APIClient {
         return try await rawData(request)
     }
 
-    func playbackURL(assetID: String) async throws -> URL {
-        let request = try makeRequest(path: "/v1/assets/\(assetID)/playback", method: "POST")
-        let grant: PlaybackGrant = try await decode(request)
-        return try resolver.resolve(grant.url)
-    }
-
     func playbackGrant(assetID: String) async throws -> ResolvedPlaybackGrant {
         let request = try makeRequest(path: "/v1/assets/\(assetID)/playback", method: "POST")
         let grant: PlaybackGrant = try await decode(request)
