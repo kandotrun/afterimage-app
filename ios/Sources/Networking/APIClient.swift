@@ -98,6 +98,20 @@ actor APIClient {
         return try await decode(request)
     }
 
+    func existingSourceFingerprints(
+        for candidates: [ExistingAssetCandidate]
+    ) async throws -> Set<String> {
+        guard !candidates.isEmpty else { return [] }
+        let request = try makeRequest(
+            path: "/v1/assets/existing",
+            method: "POST",
+            body: try encoder.encode(ExistingAssetsRequest(items: candidates)),
+            contentType: "application/json"
+        )
+        let response: ExistingAssetsResponse = try await decode(request)
+        return Set(response.existingSourceFingerprints)
+    }
+
     func createAsset(_ payload: CreateAssetRequest) async throws -> CreateAssetResponse {
         let request = try makeRequest(
             path: "/v1/assets",
