@@ -335,10 +335,8 @@ final class AppModel: ObservableObject {
                                 liveActivity.update(stage: UploadStage.finishing.title, progress: 0.96, current: current, total: total)
                                 do {
                                     _ = try await self.api.completeUpload(assetID: created.asset.id)
-                                    if let thumbURL = optimized?.thumbnailURL {
-                                        try? await self.api.uploadThumbnail(thumbURL, assetID: created.asset.id)
-                                    }
-                                    optimized?.removeTemporaryFiles()
+                                    try? await self.api.uploadThumbnail(optimized.thumbnailURL, assetID: created.asset.id)
+                                    optimized.removeTemporaryFiles()
                                     liveActivity.end()
                                     try? await self.refreshTimeline()
                                     self.haptics.play(.success)
