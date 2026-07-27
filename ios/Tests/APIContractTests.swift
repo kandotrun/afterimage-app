@@ -69,7 +69,7 @@ final class APIContractTests: XCTestCase {
         }
         """.data(using: .utf8)!
         let asset = try JSONDecoder.afterimage.decode(Asset.self, from: json)
-        XCTAssertEqual(asset.transcriptionStatus, "completed")
+        XCTAssertEqual(asset.transcriptionStatus, .completed)
         XCTAssertEqual(asset.transcriptUrl, "/v1/assets/asset-2/transcript")
     }
 
