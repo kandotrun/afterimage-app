@@ -76,6 +76,7 @@ final class AppModel: ObservableObject {
     private let sessionStore: SessionStoring
     private let haptics: HapticEngine
     private let weatherRecorder: WeatherKitDailyWeatherRecorder
+    private let postReminderScheduler: DailyPostReminderScheduler
     private var nextCursor: String?
     private var didBootstrap = false
     private var uploadTask: Task<Void, Never>?
@@ -86,13 +87,15 @@ final class AppModel: ObservableObject {
         sessionStore: SessionStoring = KeychainSessionStore(),
         compressor: MediaCompressor = MediaCompressor(),
         haptics: HapticEngine = HapticEngine(),
-        weatherRecorder: WeatherKitDailyWeatherRecorder = WeatherKitDailyWeatherRecorder()
+        weatherRecorder: WeatherKitDailyWeatherRecorder = WeatherKitDailyWeatherRecorder(),
+        postReminderScheduler: DailyPostReminderScheduler = DailyPostReminderScheduler()
     ) {
         self.api = api
         self.sessionStore = sessionStore
         self.compressor = compressor
         self.haptics = haptics
         self.weatherRecorder = weatherRecorder
+        self.postReminderScheduler = postReminderScheduler
     }
 
     static func live() -> AppModel {
@@ -126,7 +129,7 @@ final class AppModel: ObservableObject {
                 try await refreshTimeline()
             } catch {
                 if (error as? AfterimageError)?.invalidatesSession == true {
-                    clearLocalSession()
+                    await clearLocalSession()
                     await api.setBearerToken(nil)
                 } else {
                     show(error: error)
@@ -189,7 +192,7 @@ final class AppModel: ObservableObject {
         uploadTask = nil
         upload = nil
         importSelectionSummary = nil
-        clearLocalSession()
+        await clearLocalSession()
         try? await api.revokeSession()
         haptics.play(.selection)
     }
@@ -199,9 +202,13 @@ final class AppModel: ObservableObject {
         isLoadingTimeline = true
         defer { isLoadingTimeline = false }
         let page = try await api.timeline()
-        assets = page.assets.filter { $0.status == .ready }
+        let readyAssets = page.assets.filter { $0.status == .ready }
+        assets = readyAssets
         nextCursor = page.nextCursor
         await loadDailyWeather(for: assets)
+        await postReminderScheduler.refresh(
+            observedLastPostedAt: readyAssets.map(\.createdAt).max()
+        )
     }
 
     func loadMoreIfNeeded(after asset: Asset) async {
@@ -509,6 +516,7 @@ final class AppModel: ObservableObject {
                                 }
                                 switch result {
                                 case .success:
+                                    await self.postReminderScheduler.recordPost()
                                     try? await self.refreshTimeline()
                                     self.haptics.play(.success)
                                     continuation.resume()
@@ -566,6 +574,7 @@ final class AppModel: ObservableObject {
                     self.upload = nil
                     switch result {
                     case .success:
+                        await self.postReminderScheduler.recordPost()
                         try? await self.refreshTimeline()
                         self.haptics.play(.success)
                     case .failure(let error):
@@ -585,12 +594,13 @@ final class AppModel: ObservableObject {
             : nil
     }
 
-    private func clearLocalSession() {
+    private func clearLocalSession() async {
         try? sessionStore.clear()
         assets = []
         dailyWeather = [:]
         nextCursor = nil
         isAuthenticated = false
+        await postReminderScheduler.clear()
     }
 
     private func show(error: Error) {
