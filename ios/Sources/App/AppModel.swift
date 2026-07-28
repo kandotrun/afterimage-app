@@ -96,6 +96,10 @@ final class AppModel: ObservableObject {
     }
 
     static func live() -> AppModel {
+        do {
+            try CameraTemporaryFileStore.purgeOrphans()
+        } catch {
+        }
         #if DEBUG
         let arguments = ProcessInfo.processInfo.arguments
         if let index = arguments.firstIndex(of: "-afterimageApiBase"),
@@ -276,8 +280,15 @@ final class AppModel: ObservableObject {
                     for (position, index) in plan.uploadIndexes.enumerated() {
                         if Task.isCancelled { break }
                         do {
+                            self.upload = UploadPresentation(
+                                stage: .importing,
+                                progress: 0.02,
+                                current: position + 1,
+                                total: plan.uploadIndexes.count
+                            )
+                            let media = try await MediaImporter.load(items[index])
                             try await self.process(
-                                item: items[index],
+                                media: media,
                                 identity: identities[index],
                                 current: position + 1,
                                 total: plan.uploadIndexes.count
@@ -308,6 +319,38 @@ final class AppModel: ObservableObject {
             self.upload = nil
             self.uploadTask = nil
         }
+    }
+
+    @discardableResult
+    func importCapturedMedia(_ media: ImportedMedia) -> Bool {
+        guard CameraIngestPolicy.canAccept(
+            hasUploadTask: uploadTask != nil,
+            hasPendingBackgroundUpload: BackgroundUploadManager.shared.hasPendingUpload
+        ) else {
+            return false
+        }
+        haptics.play(.lift)
+        importSelectionSummary = nil
+        upload = UploadPresentation(stage: .importing, progress: 0.02, current: 1, total: 1)
+        uploadTask = Task { [weak self] in
+            guard let self else { return }
+            do {
+                try await self.process(
+                    media: media,
+                    identity: nil,
+                    current: 1,
+                    total: 1
+                )
+            } catch {
+                if !Task.isCancelled {
+                    self.haptics.play(.failure)
+                    self.show(error: error)
+                }
+            }
+            self.upload = nil
+            self.uploadTask = nil
+        }
+        return true
     }
 
     func cancelUpload() {
@@ -389,22 +432,20 @@ final class AppModel: ObservableObject {
     }
 
     private func process(
-        item: PhotosPickerItem,
+        media: ImportedMedia,
         identity: ImportIdentity?,
         current: Int,
         total: Int
     ) async throws {
-        upload = UploadPresentation(stage: .importing, progress: 0.02, current: current, total: total)
-        let imported = try await MediaImporter.load(item)
         var optimized: OptimizedMedia?
         var remoteAssetID: String?
         var activityID: String?
         var didHandOff = false
-        defer { imported.removeTemporaryFile() }
+        defer { media.removeTemporaryFile() }
 
         do {
-            upload = UploadPresentation(stage: .compressing(imported.kind), progress: 0.04, current: current, total: total)
-            optimized = try await compressor.optimize(imported) { [weak self] value in
+            upload = UploadPresentation(stage: .compressing(media.kind), progress: 0.04, current: current, total: total)
+            optimized = try await compressor.optimize(media) { [weak self] value in
                 Task { @MainActor in
                     self?.upload?.progress = 0.04 + value * 0.46
                 }

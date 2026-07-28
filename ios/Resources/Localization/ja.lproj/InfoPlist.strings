@@ -1,3 +1,5 @@
 "CFBundleDisplayName" = "afterimage";
+"NSCameraUsageDescription" = "afterimageの動画をアプリ内で撮影するためにカメラを使用します。";
+"NSMicrophoneUsageDescription" = "撮影する動画に音声を記録するためにマイクを使用します。";
 "NSPhotoLibraryUsageDescription" = "動画を、あなたの記憶としてafterimageへ保存します。";
 "NSLocationWhenInUseUsageDescription" = "その日の天気を記録するため、アプリ使用中の現在地を一度だけ利用します。正確な位置は保存しません。";

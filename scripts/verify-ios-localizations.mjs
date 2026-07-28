@@ -46,7 +46,7 @@ const swiftFiles = readdirSync(sourceRoot, { recursive: true, withFileTypes: tru
   .map((entry) => path.join(entry.parentPath, entry.name));
 const japaneseLiteral = /"((?:\\.|[^"\\])*)"/g;
 const japaneseCharacters = /[ぁ-んァ-ヶ一-龠々ー]/;
-const semanticKey = /"((?:upload|compression|error|api|accessibility|timeline|memory|playback|mcp|common)\.[a-z0-9_.]+)"/g;
+const semanticKey = /"((?:upload|compression|error|api|accessibility|timeline|memory|playback|mcp|common|camera)\.[a-z0-9_.]+)"/g;
 for (const file of swiftFiles) {
   const source = readFileSync(file, "utf8");
   for (const match of source.matchAll(japaneseLiteral)) {
@@ -78,13 +78,24 @@ for (const locale of locales) {
   const locationUsageDescription = mainInfo.match(
     /"NSLocationWhenInUseUsageDescription"\s*=\s*"([^"\n]+)";/,
   )?.[1];
+  const cameraUsageDescription = mainInfo.match(
+    /"NSCameraUsageDescription"\s*=\s*"([^"\n]+)";/,
+  )?.[1];
+  const microphoneUsageDescription = mainInfo.match(
+    /"NSMicrophoneUsageDescription"\s*=\s*"([^"\n]+)";/,
+  )?.[1];
   assert.ok(usageDescription, `${locale} photo library usage copy must exist`);
   assert.ok(locationUsageDescription, `${locale} location usage copy must exist`);
+  assert.ok(cameraUsageDescription, `${locale} camera usage copy must exist`);
+  assert.ok(microphoneUsageDescription, `${locale} microphone usage copy must exist`);
   const duplicateDetail =
     catalog.strings["upload.duplicates.all_detail"].localizations[locale].stringUnit.value;
+  const cameraLibrarySource =
+    catalog.strings["camera.source.library"].localizations[locale].stringUnit.value;
   for (const [surface, value] of [
     ["photo library usage", usageDescription],
     ["all-duplicates detail", duplicateDetail],
+    ["camera library source", cameraLibrarySource],
   ]) {
     assert.match(value, mediaTerms[locale].video, `${locale} ${surface} must mention videos`);
     assert.doesNotMatch(value, mediaTerms[locale].photo, `${locale} ${surface} must not mention photos`);

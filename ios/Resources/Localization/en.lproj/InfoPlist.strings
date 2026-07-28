@@ -1,3 +1,5 @@
 "CFBundleDisplayName" = "afterimage";
+"NSCameraUsageDescription" = "Allow camera access to record afterimage videos in the app.";
+"NSMicrophoneUsageDescription" = "Allow microphone access to record audio with your videos.";
 "NSPhotoLibraryUsageDescription" = "Allow access to save selected videos as private memories in afterimage.";
 "NSLocationWhenInUseUsageDescription" = "Allow one-time access to your location while using the app to record the day’s weather. Your precise location is not stored.";

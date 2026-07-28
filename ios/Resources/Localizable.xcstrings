@@ -1,6 +1,47 @@
 {
   "sourceLanguage": "ja",
   "strings": {
+    "camera.action.cancel": {"localizations":{"ja":{"stringUnit":{"state":"translated","value":"キャンセル"}},"en":{"stringUnit":{"state":"translated","value":"Cancel"}},"zh-Hans":{"stringUnit":{"state":"translated","value":"取消"}},"ko":{"stringUnit":{"state":"translated","value":"취소"}}}},
+    "camera.action.close": {"localizations":{"ja":{"stringUnit":{"state":"translated","value":"閉じる"}},"en":{"stringUnit":{"state":"translated","value":"Close"}},"zh-Hans":{"stringUnit":{"state":"translated","value":"关闭"}},"ko":{"stringUnit":{"state":"translated","value":"닫기"}}}},
+    "camera.action.open_settings": {"localizations":{"ja":{"stringUnit":{"state":"translated","value":"設定を開く"}},"en":{"stringUnit":{"state":"translated","value":"Open Settings"}},"zh-Hans":{"stringUnit":{"state":"translated","value":"打开设置"}},"ko":{"stringUnit":{"state":"translated","value":"설정 열기"}}}},
+    "camera.action.record": {"localizations":{"ja":{"stringUnit":{"state":"translated","value":"撮影開始"}},"en":{"stringUnit":{"state":"translated","value":"Record"}},"zh-Hans":{"stringUnit":{"state":"translated","value":"开始录制"}},"ko":{"stringUnit":{"state":"translated","value":"촬영 시작"}}}},
+    "camera.action.record_without_audio": {"localizations":{"ja":{"stringUnit":{"state":"translated","value":"音声なしで撮影"}},"en":{"stringUnit":{"state":"translated","value":"Record Without Audio"}},"zh-Hans":{"stringUnit":{"state":"translated","value":"无声录制"}},"ko":{"stringUnit":{"state":"translated","value":"소리 없이 촬영"}}}},
+    "camera.action.retake": {"localizations":{"ja":{"stringUnit":{"state":"translated","value":"撮り直す"}},"en":{"stringUnit":{"state":"translated","value":"Retake"}},"zh-Hans":{"stringUnit":{"state":"translated","value":"重新拍摄"}},"ko":{"stringUnit":{"state":"translated","value":"다시 촬영"}}}},
+    "camera.action.retry": {"localizations":{"ja":{"stringUnit":{"state":"translated","value":"再試行"}},"en":{"stringUnit":{"state":"translated","value":"Try Again"}},"zh-Hans":{"stringUnit":{"state":"translated","value":"重试"}},"ko":{"stringUnit":{"state":"translated","value":"다시 시도"}}}},
+    "camera.action.stop": {"localizations":{"ja":{"stringUnit":{"state":"translated","value":"撮影停止"}},"en":{"stringUnit":{"state":"translated","value":"Stop"}},"zh-Hans":{"stringUnit":{"state":"translated","value":"停止录制"}},"ko":{"stringUnit":{"state":"translated","value":"촬영 중지"}}}},
+    "camera.action.switch_camera": {"localizations":{"ja":{"stringUnit":{"state":"translated","value":"カメラを切り替える"}},"en":{"stringUnit":{"state":"translated","value":"Switch Camera"}},"zh-Hans":{"stringUnit":{"state":"translated","value":"切换摄像头"}},"ko":{"stringUnit":{"state":"translated","value":"카메라 전환"}}}},
+    "camera.action.use_video": {"localizations":{"ja":{"stringUnit":{"state":"translated","value":"この動画を使う"}},"en":{"stringUnit":{"state":"translated","value":"Use Video"}},"zh-Hans":{"stringUnit":{"state":"translated","value":"使用此视频"}},"ko":{"stringUnit":{"state":"translated","value":"이 동영상 사용"}}}},
+    "camera.discard.confirm": {"localizations":{"ja":{"stringUnit":{"state":"translated","value":"破棄する"}},"en":{"stringUnit":{"state":"translated","value":"Discard"}},"zh-Hans":{"stringUnit":{"state":"translated","value":"丢弃"}},"ko":{"stringUnit":{"state":"translated","value":"폐기"}}}},
+    "camera.discard.message": {"localizations":{"ja":{"stringUnit":{"state":"translated","value":"撮影中の内容は保存されません。"}},"en":{"stringUnit":{"state":"translated","value":"The current recording will not be saved."}},"zh-Hans":{"stringUnit":{"state":"translated","value":"当前拍摄内容不会保存。"}},"ko":{"stringUnit":{"state":"translated","value":"현재 촬영 내용은 저장되지 않습니다."}}}},
+    "camera.discard.title": {"localizations":{"ja":{"stringUnit":{"state":"translated","value":"この動画を破棄しますか？"}},"en":{"stringUnit":{"state":"translated","value":"Discard this video?"}},"zh-Hans":{"stringUnit":{"state":"translated","value":"要丢弃此视频吗？"}},"ko":{"stringUnit":{"state":"translated","value":"이 동영상을 폐기할까요?"}}}},
+    "camera.error.configuration": {"localizations":{"ja":{"stringUnit":{"state":"translated","value":"カメラを準備できませんでした"}},"en":{"stringUnit":{"state":"translated","value":"The camera could not be prepared"}},"zh-Hans":{"stringUnit":{"state":"translated","value":"无法准备摄像头"}},"ko":{"stringUnit":{"state":"translated","value":"카메라를 준비할 수 없습니다"}}}},
+    "camera.error.insufficient_storage": {"localizations":{"ja":{"stringUnit":{"state":"translated","value":"空き容量が不足しています"}},"en":{"stringUnit":{"state":"translated","value":"Not Enough Storage"}},"zh-Hans":{"stringUnit":{"state":"translated","value":"储存空间不足"}},"ko":{"stringUnit":{"state":"translated","value":"저장 공간이 부족합니다"}}}},
+    "camera.error.insufficient_storage_message": {"localizations":{"ja":{"stringUnit":{"state":"translated","value":"端末の空き容量を増やしてから再試行してください。"}},"en":{"stringUnit":{"state":"translated","value":"Free up storage on this device, then try again."}},"zh-Hans":{"stringUnit":{"state":"translated","value":"请释放设备储存空间后重试。"}},"ko":{"stringUnit":{"state":"translated","value":"기기의 저장 공간을 확보한 후 다시 시도하세요."}}}},
+    "camera.error.recording": {"localizations":{"ja":{"stringUnit":{"state":"translated","value":"動画を撮影できませんでした"}},"en":{"stringUnit":{"state":"translated","value":"The video could not be recorded"}},"zh-Hans":{"stringUnit":{"state":"translated","value":"无法录制视频"}},"ko":{"stringUnit":{"state":"translated","value":"동영상을 촬영할 수 없습니다"}}}},
+    "camera.error.retry_message": {"localizations":{"ja":{"stringUnit":{"state":"translated","value":"もう一度カメラを準備してください。"}},"en":{"stringUnit":{"state":"translated","value":"Try preparing the camera again."}},"zh-Hans":{"stringUnit":{"state":"translated","value":"请尝试重新准备摄像头。"}},"ko":{"stringUnit":{"state":"translated","value":"카메라 준비를 다시 시도하세요."}}}},
+    "camera.error.unavailable": {"localizations":{"ja":{"stringUnit":{"state":"translated","value":"利用できるカメラがありません"}},"en":{"stringUnit":{"state":"translated","value":"No camera is available"}},"zh-Hans":{"stringUnit":{"state":"translated","value":"没有可用的摄像头"}},"ko":{"stringUnit":{"state":"translated","value":"사용할 수 있는 카메라가 없습니다"}}}},
+    "camera.accessibility.announcement.capture_failed": {"localizations":{"ja":{"stringUnit":{"state":"translated","value":"撮影に失敗しました"}},"en":{"stringUnit":{"state":"translated","value":"Capture failed"}},"zh-Hans":{"stringUnit":{"state":"translated","value":"拍摄失败"}},"ko":{"stringUnit":{"state":"translated","value":"촬영에 실패했습니다"}}}},
+    "camera.accessibility.announcement.recording_started": {"localizations":{"ja":{"stringUnit":{"state":"translated","value":"撮影を開始しました"}},"en":{"stringUnit":{"state":"translated","value":"Recording started"}},"zh-Hans":{"stringUnit":{"state":"translated","value":"已开始录制"}},"ko":{"stringUnit":{"state":"translated","value":"촬영을 시작했습니다"}}}},
+    "camera.accessibility.announcement.recording_stopped": {"localizations":{"ja":{"stringUnit":{"state":"translated","value":"撮影を停止しました"}},"en":{"stringUnit":{"state":"translated","value":"Recording stopped"}},"zh-Hans":{"stringUnit":{"state":"translated","value":"已停止录制"}},"ko":{"stringUnit":{"state":"translated","value":"촬영을 중지했습니다"}}}},
+    "camera.accessibility.announcement.review_ready": {"localizations":{"ja":{"stringUnit":{"state":"translated","value":"撮影した動画を確認できます"}},"en":{"stringUnit":{"state":"translated","value":"The recorded video is ready to review"}},"zh-Hans":{"stringUnit":{"state":"translated","value":"可以查看录制的视频了"}},"ko":{"stringUnit":{"state":"translated","value":"촬영한 동영상을 확인할 수 있습니다"}}}},
+    "camera.accessibility.announcement.silent_recording_started": {"localizations":{"ja":{"stringUnit":{"state":"translated","value":"音声なしで撮影を開始しました"}},"en":{"stringUnit":{"state":"translated","value":"Recording started without audio"}},"zh-Hans":{"stringUnit":{"state":"translated","value":"已开始无声录制"}},"ko":{"stringUnit":{"state":"translated","value":"소리 없이 촬영을 시작했습니다"}}}},
+    "camera.accessibility.state.finalizing": {"localizations":{"ja":{"stringUnit":{"state":"translated","value":"動画を仕上げています"}},"en":{"stringUnit":{"state":"translated","value":"Finishing video"}},"zh-Hans":{"stringUnit":{"state":"translated","value":"正在完成视频"}},"ko":{"stringUnit":{"state":"translated","value":"동영상을 마무리하는 중"}}}},
+    "camera.accessibility.state.ready": {"localizations":{"ja":{"stringUnit":{"state":"translated","value":"撮影できます"}},"en":{"stringUnit":{"state":"translated","value":"Ready to record"}},"zh-Hans":{"stringUnit":{"state":"translated","value":"可以录制"}},"ko":{"stringUnit":{"state":"translated","value":"촬영 준비 완료"}}}},
+    "camera.accessibility.state.ready_no_audio": {"localizations":{"ja":{"stringUnit":{"state":"translated","value":"音声なしで撮影できます"}},"en":{"stringUnit":{"state":"translated","value":"Ready to record without audio"}},"zh-Hans":{"stringUnit":{"state":"translated","value":"可以无声录制"}},"ko":{"stringUnit":{"state":"translated","value":"소리 없이 촬영 준비 완료"}}}},
+    "camera.accessibility.state.recording": {"localizations":{"ja":{"stringUnit":{"state":"translated","value":"撮影中"}},"en":{"stringUnit":{"state":"translated","value":"Recording"}},"zh-Hans":{"stringUnit":{"state":"translated","value":"正在录制"}},"ko":{"stringUnit":{"state":"translated","value":"촬영 중"}}}},
+    "camera.accessibility.state.recording_no_audio": {"localizations":{"ja":{"stringUnit":{"state":"translated","value":"音声なしで撮影中"}},"en":{"stringUnit":{"state":"translated","value":"Recording without audio"}},"zh-Hans":{"stringUnit":{"state":"translated","value":"正在无声录制"}},"ko":{"stringUnit":{"state":"translated","value":"소리 없이 촬영 중"}}}},
+    "camera.microphone.message": {"localizations":{"ja":{"stringUnit":{"state":"translated","value":"マイクへのアクセスが許可されていません。音声なしの動画として撮影できます。"}},"en":{"stringUnit":{"state":"translated","value":"Microphone access is not allowed. You can continue with a silent video."}},"zh-Hans":{"stringUnit":{"state":"translated","value":"麦克风访问未获允许。你可以继续录制无声视频。"}},"ko":{"stringUnit":{"state":"translated","value":"마이크 접근이 허용되지 않았습니다. 소리 없는 동영상으로 계속 촬영할 수 있습니다."}}}},
+    "camera.microphone.title": {"localizations":{"ja":{"stringUnit":{"state":"translated","value":"音声なしで撮影しますか？"}},"en":{"stringUnit":{"state":"translated","value":"Record without audio?"}},"zh-Hans":{"stringUnit":{"state":"translated","value":"要无声录制吗？"}},"ko":{"stringUnit":{"state":"translated","value":"소리 없이 촬영할까요?"}}}},
+    "camera.permission.message": {"localizations":{"ja":{"stringUnit":{"state":"translated","value":"設定からカメラへのアクセスを許可してください。"}},"en":{"stringUnit":{"state":"translated","value":"Allow camera access in Settings to record video."}},"zh-Hans":{"stringUnit":{"state":"translated","value":"请在“设置”中允许摄像头访问以录制视频。"}},"ko":{"stringUnit":{"state":"translated","value":"동영상을 촬영하려면 설정에서 카메라 접근을 허용하세요."}}}},
+    "camera.permission.title": {"localizations":{"ja":{"stringUnit":{"state":"translated","value":"カメラを使用できません"}},"en":{"stringUnit":{"state":"translated","value":"Camera Access Needed"}},"zh-Hans":{"stringUnit":{"state":"translated","value":"需要摄像头访问权限"}},"ko":{"stringUnit":{"state":"translated","value":"카메라 접근 권한 필요"}}}},
+    "camera.source.library": {"localizations":{"ja":{"stringUnit":{"state":"translated","value":"ライブラリから動画を選ぶ"}},"en":{"stringUnit":{"state":"translated","value":"Choose Video from Library"}},"zh-Hans":{"stringUnit":{"state":"translated","value":"从媒体库选择视频"}},"ko":{"stringUnit":{"state":"translated","value":"보관함에서 동영상 선택"}}}},
+    "camera.source.record": {"localizations":{"ja":{"stringUnit":{"state":"translated","value":"アプリで撮影"}},"en":{"stringUnit":{"state":"translated","value":"Record in App"}},"zh-Hans":{"stringUnit":{"state":"translated","value":"在 App 内拍摄"}},"ko":{"stringUnit":{"state":"translated","value":"앱에서 촬영"}}}},
+    "camera.status.configuring": {"localizations":{"ja":{"stringUnit":{"state":"translated","value":"カメラを準備しています…"}},"en":{"stringUnit":{"state":"translated","value":"Preparing camera…"}},"zh-Hans":{"stringUnit":{"state":"translated","value":"正在准备摄像头…"}},"ko":{"stringUnit":{"state":"translated","value":"카메라를 준비하는 중…"}}}},
+    "camera.status.finalizing": {"localizations":{"ja":{"stringUnit":{"state":"translated","value":"動画を仕上げています…"}},"en":{"stringUnit":{"state":"translated","value":"Finishing video…"}},"zh-Hans":{"stringUnit":{"state":"translated","value":"正在完成视频…"}},"ko":{"stringUnit":{"state":"translated","value":"동영상을 마무리하는 중…"}}}},
+    "camera.status.interrupted": {"localizations":{"ja":{"stringUnit":{"state":"translated","value":"カメラが一時停止しました"}},"en":{"stringUnit":{"state":"translated","value":"Camera Paused"}},"zh-Hans":{"stringUnit":{"state":"translated","value":"摄像头已暂停"}},"ko":{"stringUnit":{"state":"translated","value":"카메라가 일시 정지되었습니다"}}}},
+    "camera.status.no_audio": {"localizations":{"ja":{"stringUnit":{"state":"translated","value":"音声なし"}},"en":{"stringUnit":{"state":"translated","value":"No Audio"}},"zh-Hans":{"stringUnit":{"state":"translated","value":"无声音"}},"ko":{"stringUnit":{"state":"translated","value":"소리 없음"}}}},
+    "camera.upload_busy.message": {"localizations":{"ja":{"stringUnit":{"state":"translated","value":"現在のアップロードが完了してから、この動画を使ってください。"}},"en":{"stringUnit":{"state":"translated","value":"Wait for the current upload to finish before using this video."}},"zh-Hans":{"stringUnit":{"state":"translated","value":"请等待当前上传完成后再使用此视频。"}},"ko":{"stringUnit":{"state":"translated","value":"현재 업로드가 끝난 후 이 동영상을 사용하세요."}}}},
+    "camera.upload_busy.title": {"localizations":{"ja":{"stringUnit":{"state":"translated","value":"アップロード中です"}},"en":{"stringUnit":{"state":"translated","value":"Upload in Progress"}},"zh-Hans":{"stringUnit":{"state":"translated","value":"正在上传"}},"ko":{"stringUnit":{"state":"translated","value":"업로드 중"}}}},
     "capture.location.accessibility": {
       "localizations": {
         "ja": {
@@ -3221,30 +3262,30 @@
         }
       }
     },
-    "下の＋から動画を選ぶと、\n音を変えずに軽くして保存します。": {
+    "下の＋から撮影するか動画を選ぶと、\n音を変えずに軽くして保存します。": {
       "localizations": {
         "ja": {
           "stringUnit": {
             "state": "translated",
-            "value": "下の＋から動画を選ぶと、\n音を変えずに軽くして保存します。"
+            "value": "下の＋から撮影するか動画を選ぶと、\n音を変えずに軽くして保存します。"
           }
         },
         "en": {
           "stringUnit": {
             "state": "translated",
-            "value": "Choose a video with the + button below.\nWe’ll optimize it while preserving the original audio."
+            "value": "Record or choose a video with the + button below.\nWe’ll optimize it while preserving the original audio."
           }
         },
         "zh-Hans": {
           "stringUnit": {
             "state": "translated",
-            "value": "通过下方的 + 选择视频。\n我们会在保留原始音频的同时压缩并保存。"
+            "value": "通过下方的 + 拍摄或选择视频。\n我们会在保留原始音频的同时压缩并保存。"
           }
         },
         "ko": {
           "stringUnit": {
             "state": "translated",
-            "value": "아래 + 버튼에서 동영상을 선택하세요.\n소리는 그대로 유지하면서 용량을 줄여 저장합니다."
+            "value": "아래 + 버튼에서 동영상을 촬영하거나 선택하세요.\n소리는 그대로 유지하면서 용량을 줄여 저장합니다."
           }
         }
       }

@@ -8,6 +8,7 @@ struct TimelineView: View {
     @State private var pendingOpen: Asset?
     @State private var pendingDay: DailyPlaybackRoute?
     @State private var isShowingAIConnection = false
+    @State private var cameraRoute: CameraRoute?
     @Namespace private var zoomTransition
 
     private var sections: [MemoryDay] {
@@ -105,8 +106,14 @@ struct TimelineView: View {
             .sheet(isPresented: $isShowingAIConnection) {
                 AIConnectionView()
             }
+            .fullScreenCover(item: $cameraRoute) { _ in
+                CameraCaptureView()
+            }
             .safeAreaInset(edge: .bottom) {
-                UploadDock(selection: $selection)
+                UploadDock(
+                    selection: $selection,
+                    recordVideo: { cameraRoute = .capture }
+                )
                     .padding(.horizontal, 14)
                     .padding(.bottom, 6)
             }
@@ -117,6 +124,12 @@ struct TimelineView: View {
             }
         }
     }
+}
+
+private enum CameraRoute: Identifiable {
+    case capture
+
+    var id: String { "capture" }
 }
 
 private struct MemoryDay: Identifiable {
@@ -175,7 +188,7 @@ private struct EmptyTimelineView: View {
                 .foregroundStyle(.secondary)
             Text("最初のafterimageを残そう")
                 .font(.title3.weight(.semibold))
-            Text("下の＋から動画を選ぶと、\n音を変えずに軽くして保存します。")
+            Text("下の＋から撮影するか動画を選ぶと、\n音を変えずに軽くして保存します。")
                 .font(.subheadline)
                 .foregroundStyle(.secondary)
                 .multilineTextAlignment(.center)
@@ -189,6 +202,7 @@ private struct EmptyTimelineView: View {
 private struct UploadDock: View {
     @EnvironmentObject private var model: AppModel
     @Binding var selection: [PhotosPickerItem]
+    let recordVideo: () -> Void
 
     var body: some View {
         VStack(alignment: .trailing, spacing: 9) {
@@ -209,13 +223,26 @@ private struct UploadDock: View {
                         .buttonStyle(.glass)
                         .accessibilityLabel("キャンセル")
                     } else {
-                        PhotosPicker(
-                            selection: $selection,
-                            maxSelectionCount: 12,
-                            matching: .videos,
-                            preferredItemEncoding: .current,
-                            photoLibrary: .shared()
-                        ) {
+                        Menu {
+                            Button(
+                                L10n.string("camera.source.record"),
+                                systemImage: "video.badge.plus"
+                            ) {
+                                recordVideo()
+                            }
+                            PhotosPicker(
+                                selection: $selection,
+                                maxSelectionCount: 12,
+                                matching: .videos,
+                                preferredItemEncoding: .current,
+                                photoLibrary: .shared()
+                            ) {
+                                Label(
+                                    L10n.string("camera.source.library"),
+                                    systemImage: "photo.on.rectangle"
+                                )
+                            }
+                        } label: {
                             Image(systemName: "plus")
                                 .font(.headline)
                                 .frame(width: 44, height: 44)

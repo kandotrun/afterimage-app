@@ -33,6 +33,8 @@ assert.match(project, /PRODUCT_NAME:\s*afterimage/);
 assert.match(project, /IPHONEOS_DEPLOYMENT_TARGET:\s*["']?26\.0/);
 assert.match(project, /path:\s*Resources\/PrivacyInfo\.xcprivacy\s*\n\s+buildPhase:\s*resources/);
 assert.match(info, /<key>NSLocationWhenInUseUsageDescription<\/key>/);
+assert.match(info, /<key>NSCameraUsageDescription<\/key>/);
+assert.match(info, /<key>NSMicrophoneUsageDescription<\/key>/);
 assert.match(entitlements, /<key>com\.apple\.developer\.weatherkit<\/key>\s*<true\/>/);
 assert.match(weatherBadge, /\.symbolRenderingMode\(\.hierarchical\)/);
 assert.match(weatherBadge, /\.tint\(\.secondary\)/);
@@ -96,8 +98,8 @@ assert.match(
 );
 assert.match(
   timeline,
-  /PhotosPicker\([\s\S]*?photoLibrary:\s*\.shared\(\)[\s\S]*?\)\s*\{\s*Image\(systemName:\s*"plus"\)[\s\S]*?\}\s*\.buttonStyle\(\.glassProminent\)\s*\.buttonBorderShape\(\.circle\)/,
-  "upload picker must be an icon-only circular prominent glass button",
+  /Menu\s*\{[\s\S]*?PhotosPicker\([\s\S]*?photoLibrary:\s*\.shared\(\)[\s\S]*?\}\s*\}\s*label:\s*\{\s*Image\(systemName:\s*"plus"\)[\s\S]*?\}\s*\.buttonStyle\(\.glassProminent\)\s*\.buttonBorderShape\(\.circle\)/,
+  "upload source menu must be an icon-only circular prominent glass button",
 );
 assert.doesNotMatch(
   mediaImporter,
@@ -138,6 +140,9 @@ for (const symbol of [
   "/v1/auth/session",
   "CLLocationUpdate.liveUpdates",
   "WeatherService.shared",
+  "AVCaptureMovieFileOutput",
+  "AVCaptureVideoPreviewLayer",
+  "AVCaptureDevice.RotationCoordinator",
 ]) {
   assert.ok(swift.includes(symbol), `missing iOS contract symbol: ${symbol}`);
 }
