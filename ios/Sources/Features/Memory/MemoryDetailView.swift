@@ -68,12 +68,17 @@ struct MemoryDetailView: View {
                             Button {
                                 updateAgentAccess(!currentAsset.agentAccessEnabled)
                             } label: {
-                                Label(
-                                    "AIエージェントに共有",
-                                    systemImage: currentAsset.agentAccessEnabled
-                                        ? "checkmark.circle.fill"
-                                        : "circle"
-                                )
+                                Label {
+                                    Text("AIエージェントに共有")
+                                        .lineLimit(1)
+                                        .minimumScaleFactor(0.8)
+                                } icon: {
+                                    Image(
+                                        systemName: currentAsset.agentAccessEnabled
+                                            ? "checkmark.circle.fill"
+                                            : "circle"
+                                    )
+                                }
                             }
                             .disabled(isUpdatingAgentAccess)
                             .accessibilityValue(currentAsset.agentAccessEnabled ? "オン" : "オフ")

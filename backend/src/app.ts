@@ -96,6 +96,7 @@ interface AssetRow {
   transcript_error: string | null;
   transcription_updated_at: string | null;
   agent_access_enabled: 0 | 1;
+  video_analysis_status?: "queued" | "processing" | "completed" | "failed" | null;
 }
 
 interface MediaBodyRow {
@@ -284,6 +285,28 @@ function mcpTokenJson(token: McpTokenRow) {
   };
 }
 
+function ownerVideoAnalysisStatusSql(): string {
+  return `CASE
+    WHEN assets.kind <> 'video' OR assets.agent_access_enabled = 0 THEN NULL
+    WHEN EXISTS (
+      SELECT 1 FROM video_analyses va WHERE va.asset_id = assets.id
+    ) THEN 'completed'
+    WHEN EXISTS (
+      SELECT 1 FROM gpu_jobs j
+       WHERE j.asset_id = assets.id AND j.kind = 'analysis' AND j.status = 'leased'
+    ) THEN 'processing'
+    WHEN EXISTS (
+      SELECT 1 FROM gpu_jobs j
+       WHERE j.asset_id = assets.id AND j.kind = 'analysis' AND j.status = 'queued'
+    ) THEN 'queued'
+    WHEN EXISTS (
+      SELECT 1 FROM gpu_jobs j
+       WHERE j.asset_id = assets.id AND j.kind = 'analysis' AND j.status = 'failed'
+    ) THEN 'failed'
+    ELSE NULL
+  END AS video_analysis_status`;
+}
+
 function assetJson(asset: AssetRow) {
   return {
     id: asset.id,
@@ -307,6 +330,7 @@ function assetJson(asset: AssetRow) {
       : null,
     transcriptUrl: asset.transcription_status === "completed" ? `/v1/assets/${asset.id}/transcript` : null,
     agentAccessEnabled: asset.agent_access_enabled === 1,
+    videoAnalysisStatus: asset.video_analysis_status ?? null,
     createdAt: asset.created_at,
     updatedAt: asset.updated_at,
   };
@@ -319,7 +343,7 @@ async function findOwnedAsset(bindings: Env, assetId: string, userId: string): P
             upload_mode, upload_id, part_size, created_at, updated_at,
             transcription_status, soniox_file_id, soniox_transcription_id,
             transcript, transcript_language, transcript_error, transcription_updated_at,
-            agent_access_enabled
+            agent_access_enabled, ${ownerVideoAnalysisStatusSql()}
        FROM assets WHERE id = ? AND user_id = ?`,
   ).bind(assetId, userId).first<AssetRow>();
 }
@@ -872,11 +896,6 @@ export function createApp(overrides: Partial<AppDependencies> = {}) {
     }
     const now = dependencies.now();
     const updatedAt = now.toISOString();
-    const derivatives = parsed.data.enabled
-      ? { results: [] as Array<{ object_key: string | null }> }
-      : await context.env.DB.prepare(
-          "SELECT object_key FROM media_derivatives WHERE asset_id = ? AND object_key IS NOT NULL",
-        ).bind(assetId).all<{ object_key: string | null }>();
     const statements = [
       context.env.DB.prepare(
         `UPDATE assets SET agent_access_enabled = ?, updated_at = ?
@@ -900,8 +919,8 @@ export function createApp(overrides: Partial<AppDependencies> = {}) {
     if (parsed.data.enabled) {
       await queueVideoAnalysis(context.env, assetId, now);
     } else {
-      const keys = derivatives.results.flatMap((row) => row.object_key ? [row.object_key] : []);
-      if (keys.length > 0) await context.env.MEDIA.delete(keys);
+      const keep = new Set([asset.object_key, ...(asset.thumbnail_key ? [asset.thumbnail_key] : [])]);
+      await deleteAssetPrefixObjects(context.env, auth.userId, assetId, keep);
     }
     const result = await findOwnedAsset(context.env, assetId, auth.userId);
     if (!result) return errorResponse(context, 404, "asset_not_found", "Asset was not found.");
@@ -1345,7 +1364,10 @@ export function createApp(overrides: Partial<AppDependencies> = {}) {
     } catch {
       // Orphan attempt cleanup is best-effort and can be retried by an idempotent completion call.
     }
-    return context.json({ asset: assetJson(completed) });
+    const responseAsset = completed.kind === "video"
+      ? await findOwnedAsset(context.env, completed.id, auth.userId) ?? completed
+      : completed;
+    return context.json({ asset: assetJson(responseAsset) });
   });
 
   api.post("/assets/:assetId/playback", async (context) => {
@@ -1629,7 +1651,7 @@ export function createApp(overrides: Partial<AppDependencies> = {}) {
       upload_mode, upload_id, part_size, created_at, updated_at,
       transcription_status, soniox_file_id, soniox_transcription_id,
       transcript, transcript_language, transcript_error, transcription_updated_at,
-      agent_access_enabled FROM assets`;
+      agent_access_enabled, ${ownerVideoAnalysisStatusSql()} FROM assets`;
     const result = await context.env.DB.prepare(
       `${select} WHERE ${rangeWhere}
        ORDER BY julianday(captured_at) ASC, id ASC LIMIT ?`,
@@ -1683,7 +1705,7 @@ export function createApp(overrides: Partial<AppDependencies> = {}) {
       upload_mode, upload_id, part_size, created_at, updated_at,
       transcription_status, soniox_file_id, soniox_transcription_id,
       transcript, transcript_language, transcript_error, transcription_updated_at,
-      agent_access_enabled FROM assets`;
+      agent_access_enabled, ${ownerVideoAnalysisStatusSql()} FROM assets`;
     const statement = cursor
       ? context.env.DB.prepare(
           `${select} WHERE user_id = ? AND status IN ('uploading', 'ready')

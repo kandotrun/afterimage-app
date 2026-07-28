@@ -516,9 +516,9 @@ git commit -m "feat(worker): add private Mage-VL pull worker"
 
 **Files:**
 - No repository secret files
-- Remote install root: `/home/tsuqrea/afterimage-mage-vl`
-- Remote data root: `/home/tsuqrea/afterimage-mage-vl-data`
-- Remote credential: `/home/tsuqrea/.config/afterimage-mage-vl/worker-token`
+- Remote install root: `<home>/afterimage-mage-vl`
+- Remote data root: `/srv/afterimage-mage-vl/data`
+- Remote credential: `/srv/afterimage-mage-vl/secrets/worker-token`
 
 - [ ] **Step 6.1: Record pre-install state**
 

@@ -68,6 +68,10 @@ Daily summaries require `QWENCLOUD_TOKEN_PLAN_API_KEY`. Keep it out of Git: use
 `npx wrangler secret put QWENCLOUD_TOKEN_PLAN_API_KEY --config wrangler.jsonc`.
 The endpoint and pinned model are non-secret vars in the Wrangler configs.
 
+Mage-VL processing requires migration `0010_agent_video_access.sql`, the
+matching backend deployment, and a production `MAGE_WORKER_TOKEN_HASH` secret.
+Keep the pull worker disabled until all three are in place.
+
 The seed script prints a bearer token for the DEBUG-only launch arguments
 `-afterimageApiBase <url> -afterimageDevSession <token>` (plus
 `-afterimageOpenFirst` to auto-open the first memory). These hooks are

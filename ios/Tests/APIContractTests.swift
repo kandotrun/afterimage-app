@@ -23,6 +23,7 @@ final class APIContractTests: XCTestCase {
               "transcriptionStatus": "completed",
               "transcriptPreview": "海沿いを歩いた。風の音が強かった。",
               "transcriptUrl": "/v1/assets/asset-1/transcript",
+              "videoAnalysisStatus": "completed",
               "createdAt": "2026-07-27T01:03:00.000Z",
               "updatedAt": "2026-07-27T01:04:00.000Z"
             }
@@ -38,6 +39,7 @@ final class APIContractTests: XCTestCase {
         XCTAssertEqual(page.assets[0].durationMs, 4_200)
         XCTAssertEqual(page.assets[0].location, CaptureLocation(latitude: 34.3853, longitude: 132.4553))
         XCTAssertEqual(page.assets[0].transcriptionStatus, .completed)
+        XCTAssertEqual(page.assets[0].videoAnalysisStatus, .completed)
         XCTAssertEqual(page.assets[0].transcriptPreview, "海沿いを歩いた。風の音が強かった。")
         XCTAssertEqual(page.assets[0].transcriptUrl, "/v1/assets/asset-1/transcript")
     }
@@ -96,6 +98,7 @@ final class APIContractTests: XCTestCase {
         """.data(using: .utf8)!
         let asset = try JSONDecoder.afterimage.decode(Asset.self, from: json)
         XCTAssertNil(asset.transcriptionStatus)
+        XCTAssertNil(asset.videoAnalysisStatus)
         XCTAssertNil(asset.transcriptUrl)
         XCTAssertNil(asset.location)
         XCTAssertTrue(asset.agentAccessEnabled)

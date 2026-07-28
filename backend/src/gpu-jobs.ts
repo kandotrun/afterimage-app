@@ -114,7 +114,7 @@ function errorResponse(
 async function validLease(
   context: Context<GpuEnvironment>,
   jobId: string,
-  leaseToken: string,
+  leaseTokenHash: string,
   nowIso: string,
 ) {
   return context.env.DB.prepare(
@@ -123,7 +123,7 @@ async function validLease(
       WHERE j.id = ? AND j.status = 'leased' AND j.lease_token_hash = ?
         AND j.lease_expires_at > ? AND a.kind = 'video' AND a.status = 'ready'
         AND a.agent_access_enabled = 1`,
-  ).bind(jobId, await sha256Hex(leaseToken), nowIso).first<{
+  ).bind(jobId, leaseTokenHash, nowIso).first<{
     id: string;
     asset_id: string;
     kind: "analysis" | "frame" | "clip";
@@ -157,6 +157,7 @@ export function createGpuJobRoutes(dependencies: GpuJobDependencies) {
     const nowIso = now.toISOString();
     const leaseExpiresAt = new Date(now.getTime() + leaseDurationMs).toISOString();
     const leaseToken = randomToken();
+    const leaseTokenHash = await sha256Hex(leaseToken);
     const row = await context.env.DB.prepare(
       `UPDATE gpu_jobs
           SET status = 'leased', lease_token_hash = ?, lease_expires_at = ?,
@@ -175,7 +176,7 @@ export function createGpuJobRoutes(dependencies: GpuJobDependencies) {
         )
       RETURNING id, asset_id, kind, request_json, attempt_count`,
     ).bind(
-      await sha256Hex(leaseToken),
+      leaseTokenHash,
       leaseExpiresAt,
       nowIso,
       nowIso,
@@ -195,19 +196,35 @@ export function createGpuJobRoutes(dependencies: GpuJobDependencies) {
 
     const mediaToken = randomToken();
     const mediaExpiresAt = new Date(now.getTime() + mediaGrantDurationMs).toISOString();
-    await context.env.DB.prepare(
+    const granted = await context.env.DB.prepare(
       `INSERT INTO media_grants (
         id, asset_id, user_id, token_hash, expires_at, created_at, purpose
-      ) VALUES (?, ?, ?, ?, ?, ?, 'worker')`,
+      )
+      SELECT ?, a.id, a.user_id, ?, ?, ?, 'worker'
+        FROM assets a JOIN gpu_jobs j ON j.asset_id = a.id
+       WHERE a.id = ? AND a.kind = 'video' AND a.status = 'ready'
+         AND a.agent_access_enabled = 1
+         AND j.id = ? AND j.status = 'leased' AND j.lease_token_hash = ?
+         AND j.lease_expires_at > ?`,
     ).bind(
       crypto.randomUUID(),
-      asset.id,
-      asset.user_id,
       await sha256Hex(mediaToken),
       mediaExpiresAt,
       nowIso,
+      asset.id,
+      row.id,
+      leaseTokenHash,
+      nowIso,
     ).run();
+    if ((granted.meta.changes ?? 0) !== 1) {
+      await context.env.DB.prepare(
+        "DELETE FROM gpu_jobs WHERE id = ? AND status = 'leased' AND lease_token_hash = ?",
+      ).bind(row.id, leaseTokenHash).run();
+      return new Response(null, { status: 204 });
+    }
 
+    const mediaUrl = new URL(`/v1/media/${mediaToken}`, context.req.url);
+    if (String(context.env.ENVIRONMENT) === "production") mediaUrl.protocol = "https:";
     return context.json({
       job: {
         id: row.id,
@@ -224,7 +241,7 @@ export function createGpuJobRoutes(dependencies: GpuJobDependencies) {
           capturedAt: asset.captured_at,
         },
         media: {
-          url: new URL(`/v1/media/${mediaToken}`, context.req.url).toString(),
+          url: mediaUrl.toString(),
           expiresAt: mediaExpiresAt,
         },
         analysis: row.kind === "analysis" ? {
@@ -242,12 +259,23 @@ export function createGpuJobRoutes(dependencies: GpuJobDependencies) {
     if (!parsed.success) return errorResponse(context, 400, "invalid_heartbeat", "Heartbeat is invalid.");
     const now = dependencies.now();
     const nowIso = now.toISOString();
-    const lease = await validLease(context, context.req.param("jobId"), parsed.data.leaseToken, nowIso);
+    const leaseTokenHash = await sha256Hex(parsed.data.leaseToken);
+    const lease = await validLease(context, context.req.param("jobId"), leaseTokenHash, nowIso);
     if (!lease) return errorResponse(context, 404, "gpu_job_not_found", "GPU job was not found.");
     const leaseExpiresAt = new Date(now.getTime() + leaseDurationMs).toISOString();
-    await context.env.DB.prepare(
-      "UPDATE gpu_jobs SET lease_expires_at = ?, updated_at = ? WHERE id = ?",
-    ).bind(leaseExpiresAt, nowIso, lease.id).run();
+    const updated = await context.env.DB.prepare(
+      `UPDATE gpu_jobs
+          SET lease_expires_at = ?, updated_at = ?
+        WHERE id = ? AND status = 'leased' AND lease_token_hash = ?
+          AND lease_expires_at > ?
+          AND EXISTS (
+            SELECT 1 FROM assets a
+             WHERE a.id = gpu_jobs.asset_id AND a.kind = 'video'
+               AND a.status = 'ready' AND a.agent_access_enabled = 1
+          )
+      RETURNING id`,
+    ).bind(leaseExpiresAt, nowIso, lease.id, leaseTokenHash, nowIso).first<{ id: string }>();
+    if (!updated) return errorResponse(context, 404, "gpu_job_not_found", "GPU job was not found.");
     return context.json({ status: "leased", leaseExpiresAt });
   });
 
@@ -255,23 +283,43 @@ export function createGpuJobRoutes(dependencies: GpuJobDependencies) {
     const parsed = analysisSchema.safeParse(await parseJson(context));
     if (!parsed.success) return errorResponse(context, 400, "invalid_analysis", "Analysis result is invalid.");
     const nowIso = dependencies.now().toISOString();
-    const lease = await validLease(context, context.req.param("jobId"), parsed.data.leaseToken, nowIso);
+    const jobId = context.req.param("jobId");
+    const leaseTokenHash = await sha256Hex(parsed.data.leaseToken);
+    const lease = await validLease(context, jobId, leaseTokenHash, nowIso);
     if (!lease) return errorResponse(context, 404, "gpu_job_not_found", "GPU job was not found.");
     const durationMs = lease.duration_ms;
     const inBounds = [...parsed.data.analyzedRanges, ...parsed.data.segments]
       .every((range) => durationMs === null || range.endMs <= durationMs);
     if (!inBounds) return errorResponse(context, 400, "invalid_analysis", "Analysis ranges are invalid.");
 
-    await context.env.DB.batch([
-      context.env.DB.prepare("DELETE FROM video_analyses WHERE asset_id = ?").bind(lease.asset_id),
+    const results = await context.env.DB.batch([
+      context.env.DB.prepare(
+        `DELETE FROM video_analyses
+          WHERE asset_id = ?
+            AND EXISTS (
+              SELECT 1 FROM gpu_jobs j JOIN assets a ON a.id = j.asset_id
+               WHERE j.id = ? AND j.asset_id = ? AND j.status = 'leased'
+                 AND j.lease_token_hash = ? AND j.lease_expires_at > ?
+                 AND a.kind = 'video' AND a.status = 'ready'
+                 AND a.agent_access_enabled = 1
+            )`,
+      ).bind(lease.asset_id, jobId, lease.asset_id, leaseTokenHash, nowIso),
       context.env.DB.prepare(
         `INSERT INTO video_analyses (
           asset_id, job_id, model_id, model_revision, backend, coverage_mode,
           summary, created_at, updated_at
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+        )
+        SELECT ?, ?, ?, ?, ?, ?, ?, ?, ?
+         WHERE EXISTS (
+           SELECT 1 FROM gpu_jobs j JOIN assets a ON a.id = j.asset_id
+            WHERE j.id = ? AND j.asset_id = ? AND j.status = 'leased'
+              AND j.lease_token_hash = ? AND j.lease_expires_at > ?
+              AND a.kind = 'video' AND a.status = 'ready'
+              AND a.agent_access_enabled = 1
+         )`,
       ).bind(
         lease.asset_id,
-        context.req.param("jobId"),
+        jobId,
         parsed.data.modelId,
         parsed.data.modelRevision,
         parsed.data.backend,
@@ -279,19 +327,74 @@ export function createGpuJobRoutes(dependencies: GpuJobDependencies) {
         parsed.data.summary,
         nowIso,
         nowIso,
+        jobId,
+        lease.asset_id,
+        leaseTokenHash,
+        nowIso,
       ),
       ...parsed.data.analyzedRanges.map((range, position) => context.env.DB.prepare(
         `INSERT INTO video_analysis_ranges (
           analysis_asset_id, position, start_ms, end_ms
-        ) VALUES (?, ?, ?, ?)`,
-      ).bind(lease.asset_id, position, range.startMs, range.endMs)),
+        )
+        SELECT ?, ?, ?, ?
+         WHERE EXISTS (
+           SELECT 1
+             FROM video_analyses va
+             JOIN gpu_jobs j ON j.id = va.job_id
+             JOIN assets a ON a.id = j.asset_id
+            WHERE va.asset_id = ? AND va.job_id = ?
+              AND j.status = 'leased' AND j.lease_token_hash = ?
+              AND j.lease_expires_at > ? AND a.agent_access_enabled = 1
+         )`,
+      ).bind(
+        lease.asset_id,
+        position,
+        range.startMs,
+        range.endMs,
+        lease.asset_id,
+        jobId,
+        leaseTokenHash,
+        nowIso,
+      )),
       ...parsed.data.segments.map((segment, position) => context.env.DB.prepare(
         `INSERT INTO video_analysis_segments (
           analysis_asset_id, position, start_ms, end_ms, caption
-        ) VALUES (?, ?, ?, ?, ?)`,
-      ).bind(lease.asset_id, position, segment.startMs, segment.endMs, segment.caption)),
-      context.env.DB.prepare("DELETE FROM gpu_jobs WHERE id = ?").bind(context.req.param("jobId")),
+        )
+        SELECT ?, ?, ?, ?, ?
+         WHERE EXISTS (
+           SELECT 1
+             FROM video_analyses va
+             JOIN gpu_jobs j ON j.id = va.job_id
+             JOIN assets a ON a.id = j.asset_id
+            WHERE va.asset_id = ? AND va.job_id = ?
+              AND j.status = 'leased' AND j.lease_token_hash = ?
+              AND j.lease_expires_at > ? AND a.agent_access_enabled = 1
+         )`,
+      ).bind(
+        lease.asset_id,
+        position,
+        segment.startMs,
+        segment.endMs,
+        segment.caption,
+        lease.asset_id,
+        jobId,
+        leaseTokenHash,
+        nowIso,
+      )),
+      context.env.DB.prepare(
+        `DELETE FROM gpu_jobs
+          WHERE id = ? AND asset_id = ? AND status = 'leased'
+            AND lease_token_hash = ? AND lease_expires_at > ?
+            AND EXISTS (
+              SELECT 1 FROM assets a
+               WHERE a.id = gpu_jobs.asset_id AND a.kind = 'video'
+                 AND a.status = 'ready' AND a.agent_access_enabled = 1
+            )`,
+      ).bind(jobId, lease.asset_id, leaseTokenHash, nowIso),
     ]);
+    if ((results.at(-1)?.meta.changes ?? 0) !== 1) {
+      return errorResponse(context, 404, "gpu_job_not_found", "GPU job was not found.");
+    }
     return context.json({ status: "completed" });
   });
 
@@ -301,7 +404,9 @@ export function createGpuJobRoutes(dependencies: GpuJobDependencies) {
       return errorResponse(context, 400, "invalid_derivative", "Derivative lease token is invalid.");
     }
     const nowIso = dependencies.now().toISOString();
-    const lease = await validLease(context, context.req.param("jobId"), leaseToken, nowIso);
+    const jobId = context.req.param("jobId");
+    const leaseTokenHash = await sha256Hex(leaseToken);
+    const lease = await validLease(context, jobId, leaseTokenHash, nowIso);
     if (!lease || lease.kind === "analysis") {
       return errorResponse(context, 404, "gpu_job_not_found", "GPU job was not found.");
     }
@@ -341,23 +446,41 @@ export function createGpuJobRoutes(dependencies: GpuJobDependencies) {
       await context.env.MEDIA.delete(objectKey);
       return errorResponse(context, 400, "size_mismatch", "Derivative size differs from metadata.");
     }
-    const [updated] = await context.env.DB.batch([
+    const [updated, deleted] = await context.env.DB.batch([
       context.env.DB.prepare(
         `UPDATE media_derivatives
             SET status = 'ready', object_key = ?, content_type = ?, byte_size = ?, updated_at = ?
-          WHERE id = ? AND job_id = ? AND asset_id = ? AND status = 'queued'`,
+          WHERE id = ? AND job_id = ? AND asset_id = ? AND status = 'queued'
+            AND EXISTS (
+            SELECT 1 FROM gpu_jobs j JOIN assets a ON a.id = j.asset_id
+             WHERE j.id = media_derivatives.job_id AND j.asset_id = media_derivatives.asset_id
+               AND j.status = 'leased' AND j.lease_token_hash = ?
+               AND j.lease_expires_at > ? AND a.kind = 'video'
+               AND a.status = 'ready' AND a.agent_access_enabled = 1
+          )`,
       ).bind(
         objectKey,
         expectedType,
         contentLength,
         nowIso,
         derivative.id,
-        context.req.param("jobId"),
+        jobId,
         lease.asset_id,
+        leaseTokenHash,
+        nowIso,
       ),
-      context.env.DB.prepare("DELETE FROM gpu_jobs WHERE id = ?").bind(context.req.param("jobId")),
+      context.env.DB.prepare(
+        `DELETE FROM gpu_jobs
+          WHERE id = ? AND asset_id = ? AND status = 'leased'
+            AND lease_token_hash = ? AND lease_expires_at > ?
+            AND EXISTS (
+              SELECT 1 FROM assets a
+               WHERE a.id = gpu_jobs.asset_id AND a.kind = 'video'
+                 AND a.status = 'ready' AND a.agent_access_enabled = 1
+            )`,
+      ).bind(jobId, lease.asset_id, leaseTokenHash, nowIso),
     ]);
-    if ((updated?.meta.changes ?? 0) !== 1) {
+    if ((updated?.meta.changes ?? 0) !== 1 || (deleted?.meta.changes ?? 0) !== 1) {
       await context.env.MEDIA.delete(objectKey);
       return errorResponse(context, 404, "gpu_job_not_found", "GPU job was not found.");
     }
@@ -369,25 +492,64 @@ export function createGpuJobRoutes(dependencies: GpuJobDependencies) {
     if (!parsed.success) return errorResponse(context, 400, "invalid_failure", "Failure report is invalid.");
     const now = dependencies.now();
     const nowIso = now.toISOString();
-    const lease = await validLease(context, context.req.param("jobId"), parsed.data.leaseToken, nowIso);
+    const jobId = context.req.param("jobId");
+    const leaseTokenHash = await sha256Hex(parsed.data.leaseToken);
+    const lease = await validLease(context, jobId, leaseTokenHash, nowIso);
     if (!lease) return errorResponse(context, 404, "gpu_job_not_found", "GPU job was not found.");
     const retryDelayMs = lease.attempt_count === 1 ? 60_000 : 5 * 60_000;
     if (lease.attempt_count >= 3) {
-      await context.env.DB.prepare(
-        `UPDATE gpu_jobs
-            SET status = 'failed', error_code = ?, lease_token_hash = NULL,
-                lease_expires_at = NULL, updated_at = ?
-          WHERE id = ?`,
-      ).bind(parsed.data.code, nowIso, lease.id).run();
+      const [updated] = await context.env.DB.batch([
+        context.env.DB.prepare(
+          `UPDATE gpu_jobs
+              SET status = 'failed', error_code = ?, lease_token_hash = NULL,
+                  lease_expires_at = NULL, updated_at = ?
+            WHERE id = ? AND status = 'leased' AND lease_token_hash = ?
+              AND lease_expires_at > ?
+              AND EXISTS (
+                SELECT 1 FROM assets a
+                 WHERE a.id = gpu_jobs.asset_id AND a.kind = 'video'
+                   AND a.status = 'ready' AND a.agent_access_enabled = 1
+              )`,
+        ).bind(parsed.data.code, nowIso, lease.id, leaseTokenHash, nowIso),
+        context.env.DB.prepare(
+          `UPDATE media_derivatives
+              SET status = 'failed', error_code = ?, updated_at = ?
+            WHERE job_id = ? AND status = 'queued'
+              AND EXISTS (
+                SELECT 1 FROM gpu_jobs j
+                 WHERE j.id = media_derivatives.job_id AND j.status = 'failed'
+                   AND j.error_code = ? AND j.updated_at = ?
+              )`,
+        ).bind(parsed.data.code, nowIso, jobId, parsed.data.code, nowIso),
+      ]);
+      if ((updated?.meta.changes ?? 0) !== 1) {
+        return errorResponse(context, 404, "gpu_job_not_found", "GPU job was not found.");
+      }
       return context.json({ status: "failed" });
     }
     const availableAt = new Date(now.getTime() + retryDelayMs).toISOString();
-    await context.env.DB.prepare(
+    const updated = await context.env.DB.prepare(
       `UPDATE gpu_jobs
           SET status = 'queued', error_code = ?, available_at = ?,
               lease_token_hash = NULL, lease_expires_at = NULL, updated_at = ?
-        WHERE id = ?`,
-    ).bind(parsed.data.code, availableAt, nowIso, lease.id).run();
+        WHERE id = ? AND status = 'leased' AND lease_token_hash = ?
+          AND lease_expires_at > ?
+          AND EXISTS (
+            SELECT 1 FROM assets a
+             WHERE a.id = gpu_jobs.asset_id AND a.kind = 'video'
+               AND a.status = 'ready' AND a.agent_access_enabled = 1
+          )`,
+    ).bind(
+      parsed.data.code,
+      availableAt,
+      nowIso,
+      lease.id,
+      leaseTokenHash,
+      nowIso,
+    ).run();
+    if ((updated.meta.changes ?? 0) !== 1) {
+      return errorResponse(context, 404, "gpu_job_not_found", "GPU job was not found.");
+    }
     return context.json({ status: "queued", availableAt });
   });
 

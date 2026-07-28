@@ -19,6 +19,13 @@ enum TranscriptionStatus: String, Codable, Hashable, Sendable {
     case skipped
 }
 
+enum VideoAnalysisStatus: String, Codable, Hashable, Sendable {
+    case queued
+    case processing
+    case completed
+    case failed
+}
+
 struct UserProfile: Codable, Equatable, Sendable {
     let id: String
     let appleSubject: String
@@ -49,6 +56,7 @@ struct Asset: Codable, Identifiable, Hashable, Sendable {
     let thumbnailUrl: String?
     let contentUrl: String?
     var agentAccessEnabled: Bool = true
+    var videoAnalysisStatus: VideoAnalysisStatus? = nil
     let transcriptionStatus: TranscriptionStatus?
     let transcriptPreview: String?
     let transcriptUrl: String?
@@ -56,7 +64,7 @@ struct Asset: Codable, Identifiable, Hashable, Sendable {
     private enum CodingKeys: String, CodingKey {
         case id, status, filename, contentType, byteSize, width, height, durationMs
         case capturedAt, location, createdAt, updatedAt, thumbnailUrl, contentUrl
-        case agentAccessEnabled, transcriptionStatus, transcriptPreview, transcriptUrl
+        case agentAccessEnabled, videoAnalysisStatus, transcriptionStatus, transcriptPreview, transcriptUrl
         case mediaType = "kind"
     }
 }
@@ -84,6 +92,7 @@ extension Asset {
         thumbnailUrl = try values.decodeIfPresent(String.self, forKey: .thumbnailUrl)
         contentUrl = try values.decodeIfPresent(String.self, forKey: .contentUrl)
         agentAccessEnabled = try values.decodeIfPresent(Bool.self, forKey: .agentAccessEnabled) ?? true
+        videoAnalysisStatus = try values.decodeIfPresent(VideoAnalysisStatus.self, forKey: .videoAnalysisStatus)
         transcriptionStatus = try values.decodeIfPresent(TranscriptionStatus.self, forKey: .transcriptionStatus)
         transcriptPreview = try values.decodeIfPresent(String.self, forKey: .transcriptPreview)
         transcriptUrl = try values.decodeIfPresent(String.self, forKey: .transcriptUrl)

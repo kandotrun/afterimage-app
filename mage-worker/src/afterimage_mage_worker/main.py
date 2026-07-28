@@ -6,7 +6,6 @@ import random
 import signal
 import socket
 import threading
-import time
 
 from .client import APIError, WorkerClient
 from .runtime import MageRuntime
@@ -74,7 +73,6 @@ def main() -> int:
         print(json.dumps({"event": "job_finished", "kind": lease.kind}), flush=True)
         if args.once:
             return 0
-        time.sleep(0)
     return 0
 
 

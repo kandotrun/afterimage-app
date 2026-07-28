@@ -30,11 +30,11 @@ The test extra does not install Torch, Transformers, or download the model.
 ## DGX Spark layout
 
 ```text
-/home/tsuqrea/afterimage-mage-vl
-/home/tsuqrea/afterimage-mage-vl-data
-/home/tsuqrea/.cache/afterimage-mage-vl
-/home/tsuqrea/.config/afterimage-mage-vl/worker-token
-/home/tsuqrea/.config/afterimage-mage-vl/worker.env
+<home>/afterimage-mage-vl
+/srv/afterimage-mage-vl/data
+/srv/afterimage-mage-vl/models
+/srv/afterimage-mage-vl/secrets/worker-token
+<home>/.config/afterimage-mage-vl/worker.env
 ```
 
 The token file must contain one `aft_worker_...` token and have mode `0600`.
@@ -44,25 +44,25 @@ worker name:
 ```text
 AFTERIMAGE_API_BASE_URL=https://api.example.com
 AFTERIMAGE_WORKER_ID=dgx-spark
-AFTERIMAGE_MODEL_CACHE=/home/tsuqrea/.cache/afterimage-mage-vl
-AFTERIMAGE_DATA_ROOT=/home/tsuqrea/afterimage-mage-vl-data
-AFTERIMAGE_TOKEN_FILE_HOST=/home/tsuqrea/.config/afterimage-mage-vl/worker-token
+AFTERIMAGE_MODEL_CACHE=/srv/afterimage-mage-vl/models
+AFTERIMAGE_DATA_ROOT=/srv/afterimage-mage-vl/data
+AFTERIMAGE_TOKEN_FILE_HOST=/srv/afterimage-mage-vl/secrets/worker-token
 ```
 
-Build and install the user service:
+From the `mage-worker` checkout, build and install the user service:
 
 ```bash
 install -d -m 0750 \
-  /home/tsuqrea/afterimage-mage-vl-data/jobs \
-  /home/tsuqrea/afterimage-mage-vl-data/tmp/cache/torch/kernels \
-  /home/tsuqrea/afterimage-mage-vl-data/tmp/home \
-  /home/tsuqrea/.cache/afterimage-mage-vl \
-  /home/tsuqrea/.config/afterimage-mage-vl
-cd /home/tsuqrea/afterimage-mage-vl
+  /srv/afterimage-mage-vl/data/jobs \
+  /srv/afterimage-mage-vl/data/tmp/cache/torch/kernels \
+  /srv/afterimage-mage-vl/data/tmp/home \
+  /srv/afterimage-mage-vl/models \
+  /srv/afterimage-mage-vl/secrets \
+  ~/.config/systemd/user
 docker compose config
 docker compose build
 install -Dm644 deploy/afterimage-mage-vl.service \
-  /home/tsuqrea/.config/systemd/user/afterimage-mage-vl.service
+  ~/.config/systemd/user/afterimage-mage-vl.service
 systemctl --user daemon-reload
 ```
 
