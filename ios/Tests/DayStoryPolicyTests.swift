@@ -22,11 +22,17 @@ final class DayStoryPolicyTests: XCTestCase {
         )
     }
 
-    func testStripExcludesHeroAndKeepsOrder() {
+    func testStripIncludesHeroAndKeepsTimelineOrder() {
         let story = DayStoryPolicy.story(for: [
             makeAsset(id: "p1"), makeAsset(id: "v1", kind: .video), makeAsset(id: "p2"),
         ])
-        XCTAssertEqual(story?.strip.map(\.id), ["p1", "p2"])
+        XCTAssertEqual(story?.strip.map(\.id), ["p1", "v1", "p2"])
+    }
+
+    func testPhotoOnlyDayKeepsHeroOutOfStrip() {
+        let story = DayStoryPolicy.story(for: [makeAsset(id: "p1"), makeAsset(id: "p2")])
+        XCTAssertEqual(story?.hero.id, "p1")
+        XCTAssertEqual(story?.strip.map(\.id), ["p2"])
     }
 
     func testEmptyDayHasNoStory() {

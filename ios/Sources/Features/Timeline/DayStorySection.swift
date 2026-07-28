@@ -1,7 +1,5 @@
 import SwiftUI
 
-/// One day of the lifelog: date heading, generated summary, hero memory,
-/// and the remaining moments as a small strip.
 struct DayStorySection: View {
     @EnvironmentObject private var model: AppModel
     @State private var dailySummary: DailySummaryResponse?
@@ -111,6 +109,10 @@ struct DayStorySection: View {
 }
 
 private struct DayStoryHero: View {
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    @EnvironmentObject private var model: AppModel
+    @StateObject private var preview = DayPreviewPlaybackController()
+
     let asset: Asset
     let playbackVideos: [Asset]
 
@@ -120,11 +122,21 @@ private struct DayStoryHero: View {
         }
     }
 
+    private var previewRequestID: String {
+        "\(reduceMotion)|\(playbackVideos.map(\.id).joined(separator: ","))"
+    }
+
     var body: some View {
         Color(.tertiarySystemFill)
             .aspectRatio(4.0 / 3.0, contentMode: .fit)
             .overlay {
                 AuthenticatedThumbnail(asset: asset)
+            }
+            .overlay {
+                if !playbackVideos.isEmpty && !reduceMotion {
+                    DayPreviewPlayerLayerView(player: preview.player)
+                        .allowsHitTesting(false)
+                }
             }
             .overlay {
                 LinearGradient(
@@ -176,5 +188,17 @@ private struct DayStoryHero: View {
             }
             .clipShape(.rect(cornerRadius: 24, style: .continuous))
             .contentShape(.rect(cornerRadius: 24, style: .continuous))
+            .task(id: previewRequestID) {
+                guard !playbackVideos.isEmpty, !reduceMotion else {
+                    preview.deactivate()
+                    return
+                }
+                await preview.activate(assets: playbackVideos) { video in
+                    try await model.playbackGrant(for: video)
+                }
+            }
+            .onDisappear {
+                preview.deactivate()
+            }
     }
 }
