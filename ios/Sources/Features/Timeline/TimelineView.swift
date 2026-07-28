@@ -49,7 +49,7 @@ struct TimelineView: View {
                 .refreshable { try? await model.refreshTimeline() }
             }
             .task { await model.recordTodayWeather() }
-            .navigationTitle("ライブラリ")
+            .navigationTitle(L10n.string("timeline.title"))
             .navigationDestination(for: DailyPlaybackRoute.self) { route in
                 DailyPlaybackView(day: route.day)
             }

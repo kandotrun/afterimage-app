@@ -22,7 +22,7 @@ final class AIConnectionNavigationUITests: XCTestCase {
         ]
         app.launch()
 
-        XCTAssertTrue(app.navigationBars["ライブラリ"].waitForExistence(timeout: 10))
+        XCTAssertTrue(app.navigationBars["記録"].waitForExistence(timeout: 10))
 
         let sessionAlert = app.alerts["うまくいきませんでした"]
         if sessionAlert.waitForExistence(timeout: 3) {
