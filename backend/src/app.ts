@@ -135,6 +135,12 @@ interface CleanupAssetRow {
   status: "uploading" | "failed";
 }
 
+interface CleanupDerivativeRow {
+  id: string;
+  job_id: string;
+  object_key: string | null;
+}
+
 interface McpTokenRow {
   id: string;
   name: string;
@@ -576,6 +582,23 @@ export async function cleanupExpiredState(bindings: Env, now = new Date()) {
     bindings.DB.prepare("DELETE FROM sessions WHERE expires_at <= ?").bind(nowIso),
     bindings.DB.prepare("DELETE FROM media_grants WHERE expires_at <= ?").bind(nowIso),
   ]);
+  const derivatives = await bindings.DB.prepare(
+    `SELECT id, job_id, object_key
+       FROM media_derivatives
+      WHERE expires_at <= ?
+      ORDER BY expires_at ASC, id ASC LIMIT 100`,
+  ).bind(nowIso).all<CleanupDerivativeRow>();
+  let expiredDerivatives = 0;
+  for (const derivative of derivatives.results) {
+    if (derivative.object_key) await bindings.MEDIA.delete(derivative.object_key);
+    const [deleted] = await bindings.DB.batch([
+      bindings.DB.prepare(
+        "DELETE FROM media_derivatives WHERE id = ? AND expires_at <= ?",
+      ).bind(derivative.id, nowIso),
+      bindings.DB.prepare("DELETE FROM gpu_jobs WHERE id = ?").bind(derivative.job_id),
+    ]);
+    expiredDerivatives += deleted?.meta.changes ?? 0;
+  }
   const candidates = await bindings.DB.prepare(
     `SELECT id, user_id, object_key, thumbnail_key, upload_mode, upload_id, status
        FROM assets
@@ -614,6 +637,7 @@ export async function cleanupExpiredState(bindings: Env, now = new Date()) {
   return {
     expiredSessions: expiredSessions?.meta.changes ?? 0,
     expiredGrants: expiredGrants?.meta.changes ?? 0,
+    expiredDerivatives,
     quarantinedAssets,
     abandonedAssets,
   };

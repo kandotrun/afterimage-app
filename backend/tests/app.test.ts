@@ -1617,6 +1617,8 @@ describe("asset upload and private timeline", () => {
 
     const user = await env.DB.prepare("SELECT id FROM users WHERE apple_subject = ?")
       .bind("cleanup-owner").first<{ id: string }>();
+    const derivativeKey = `users/${user!.id}/assets/${ready.asset.id}/derivatives/expired.jpg`;
+    await env.MEDIA.put(derivativeKey, "expired derivative");
     await env.DB.batch([
       env.DB.prepare(
         "INSERT INTO sessions (id, user_id, token_hash, expires_at, created_at) VALUES (?, ?, ?, ?, ?)",
@@ -1624,6 +1626,19 @@ describe("asset upload and private timeline", () => {
       env.DB.prepare(
         "INSERT INTO media_grants (id, asset_id, user_id, token_hash, expires_at, created_at) VALUES (?, ?, ?, ?, ?, ?)",
       ).bind("expired-grant", ready.asset.id, user!.id, "expired-grant-hash", "2026-07-26T00:00:00.000Z", "2026-07-25T00:00:00.000Z"),
+      env.DB.prepare(
+        `INSERT INTO gpu_jobs (
+          id, asset_id, kind, status, request_json, priority, attempt_count,
+          available_at, created_at, updated_at
+        ) VALUES ('expired-derivative-job', ?, 'frame', 'queued', '{}', 0, 0, ?, ?, ?)`,
+      ).bind(ready.asset.id, NOW.toISOString(), NOW.toISOString(), NOW.toISOString()),
+      env.DB.prepare(
+        `INSERT INTO media_derivatives (
+          id, asset_id, job_id, kind, start_ms, end_ms, status, object_key,
+          content_type, byte_size, expires_at, created_at, updated_at
+        ) VALUES ('expired-derivative', ?, 'expired-derivative-job', 'frame', 0, 0,
+          'ready', ?, 'image/jpeg', 18, '2026-07-26T00:00:00.000Z', ?, ?)`,
+      ).bind(ready.asset.id, derivativeKey, NOW.toISOString(), NOW.toISOString()),
     ]);
 
     const firstCleanup = await cleanupExpiredState(env, NOW);
@@ -1631,11 +1646,15 @@ describe("asset upload and private timeline", () => {
     expect(firstCleanup).toMatchObject({
       expiredSessions: 1,
       expiredGrants: 1,
+      expiredDerivatives: 1,
       quarantinedAssets: 1,
       abandonedAssets: 0,
     });
     expect(await env.DB.prepare("SELECT id FROM sessions WHERE id = 'expired-session'").first()).toBeNull();
     expect(await env.DB.prepare("SELECT id FROM media_grants WHERE id = 'expired-grant'").first()).toBeNull();
+    expect(await env.DB.prepare("SELECT id FROM media_derivatives WHERE id = 'expired-derivative'").first()).toBeNull();
+    expect(await env.DB.prepare("SELECT id FROM gpu_jobs WHERE id = 'expired-derivative-job'").first()).toBeNull();
+    expect(await env.MEDIA.head(derivativeKey)).toBeNull();
     expect(await env.DB.prepare("SELECT status FROM assets WHERE id = ?").bind(abandoned.asset.id).first())
       .toMatchObject({ status: "failed" });
     expect(await env.MEDIA.head(abandonedKey!.object_key)).not.toBeNull();
