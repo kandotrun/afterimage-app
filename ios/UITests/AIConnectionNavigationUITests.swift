@@ -4,6 +4,16 @@ import XCTest
 final class AIConnectionNavigationUITests: XCTestCase {
     func testAccountMenuOpensAIConnection() {
         let app = XCUIApplication()
+        addUIInterruptionMonitor(withDescription: "Location Permission") { alert in
+            for title in ["許可しない", "Don’t Allow", "Don't Allow"] {
+                let button = alert.buttons[title]
+                if button.exists {
+                    button.tap()
+                    return true
+                }
+            }
+            return false
+        }
         app.launchArguments = [
             "-AppleLanguages", "(ja)",
             "-AppleLocale", "ja_JP",
