@@ -134,5 +134,14 @@ def test_analysis_skips_unrelated_json_before_contract() -> None:
     assert result.summary == "keys on desk"
 
 
+def test_analysis_accepts_plain_visual_summary() -> None:
+    result = parse_analysis(
+        "Keys are visible on a desk next to a notebook.",
+        duration_ms=4000,
+    )
+    assert result.summary == "Keys are visible on a desk next to a notebook."
+    assert result.segments == ()
+
+
 def test_failure_code_serializes_to_api_value() -> None:
     assert FailureCode.OUTPUT_INVALID.value == "output_invalid"
