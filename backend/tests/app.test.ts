@@ -250,6 +250,108 @@ describe("health and authentication", () => {
 });
 
 describe("asset upload and private timeline", () => {
+  it("stores capture time and optional GPS coordinates and returns them on the timeline", async () => {
+    const { app, authorization } = await signIn("capture-metadata-owner");
+    const create = await app.request("/v1/assets", {
+      method: "POST",
+      headers: { authorization, "content-type": "application/json" },
+      body: JSON.stringify({
+        kind: "video",
+        filename: "hiroshima.mov",
+        contentType: "video/quicktime",
+        byteSize: 11,
+        capturedAt: "2024-04-05T06:07:08.000Z",
+        durationMs: 1_200,
+        width: 1_920,
+        height: 1_080,
+        location: { latitude: 34.3853, longitude: 132.4553 },
+      }),
+    }, env);
+
+    expect(create.status).toBe(201);
+    const created = await create.json<{
+      asset: {
+        id: string;
+        capturedAt: string;
+        createdAt: string;
+        location: { latitude: number; longitude: number } | null;
+      };
+    }>();
+    expect(created.asset).toMatchObject({
+      capturedAt: "2024-04-05T06:07:08.000Z",
+      createdAt: NOW.toISOString(),
+      location: { latitude: 34.3853, longitude: 132.4553 },
+    });
+
+    const stored = await env.DB.prepare(
+      "SELECT captured_at, latitude, longitude FROM assets WHERE id = ?",
+    ).bind(created.asset.id).first<{
+      captured_at: string;
+      latitude: number | null;
+      longitude: number | null;
+    }>();
+    expect(stored).toEqual({
+      captured_at: "2024-04-05T06:07:08.000Z",
+      latitude: 34.3853,
+      longitude: 132.4553,
+    });
+
+    const timeline = await app.request("/v1/assets", { headers: { authorization } }, env);
+    expect(timeline.status).toBe(200);
+    await expect(timeline.json()).resolves.toMatchObject({
+      items: [{
+        id: created.asset.id,
+        capturedAt: "2024-04-05T06:07:08.000Z",
+        location: { latitude: 34.3853, longitude: 132.4553 },
+      }],
+    });
+  });
+
+  it("returns a null location when the source has no GPS metadata", async () => {
+    const { app, authorization } = await signIn("capture-without-location-owner");
+    const response = await app.request("/v1/assets", {
+      method: "POST",
+      headers: { authorization, "content-type": "application/json" },
+      body: JSON.stringify({
+        kind: "photo",
+        filename: "without-gps.heic",
+        contentType: "image/heic",
+        byteSize: 4,
+        capturedAt: "2024-04-05T06:07:08.000Z",
+        width: 1_024,
+        height: 768,
+      }),
+    }, env);
+
+    expect(response.status).toBe(201);
+    await expect(response.json()).resolves.toMatchObject({ asset: { location: null } });
+  });
+
+  it.each([
+    { latitude: 90.0001, longitude: 0 },
+    { latitude: -90.0001, longitude: 0 },
+    { latitude: 0, longitude: 180.0001 },
+    { latitude: 0, longitude: -180.0001 },
+    { latitude: 34.3853 },
+  ])("rejects invalid or incomplete GPS coordinates: %o", async (location) => {
+    const { app, authorization } = await signIn("invalid-location-owner");
+    const response = await app.request("/v1/assets", {
+      method: "POST",
+      headers: { authorization, "content-type": "application/json" },
+      body: JSON.stringify({
+        kind: "photo",
+        filename: "invalid-location.heic",
+        contentType: "image/heic",
+        byteSize: 4,
+        capturedAt: "2024-04-05T06:07:08.000Z",
+        location,
+      }),
+    }, env);
+
+    expect(response.status).toBe(400);
+    await expect(response.json()).resolves.toMatchObject({ error: { code: "invalid_asset" } });
+  });
+
   it("streams a small upload into private R2 and supports authenticated Range playback", async () => {
     const { app, authorization } = await signIn();
     const create = await app.request("/v1/assets", {

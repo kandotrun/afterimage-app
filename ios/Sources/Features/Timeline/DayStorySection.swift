@@ -39,6 +39,10 @@ struct DayStorySection: View {
                 )
             }
 
+            if let location = story.hero.location {
+                CaptureLocationChip(location: location)
+            }
+
             if !story.strip.isEmpty {
                 ScrollView(.horizontal, showsIndicators: false) {
                     LazyHStack(spacing: 8) {
@@ -97,7 +101,7 @@ private struct DayStoryHero: View {
             .overlay(alignment: .bottom) {
                 Group {
                     if playbackVideos.isEmpty {
-                        HStack {
+                        HStack(alignment: .bottom) {
                             Text(asset.capturedAt.formatted(.dateTime.hour().minute()))
                                 .font(.caption.weight(.semibold))
                             Spacer()

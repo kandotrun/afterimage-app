@@ -35,6 +35,23 @@ struct MemoryDetailView: View {
                 }
             }
             .tabViewStyle(.page(indexDisplayMode: .never))
+
+            if chromeVisible,
+               let location = MemoryPagerPolicy.visibleLocation(
+                   currentAsset: currentAsset,
+                   openedAsset: asset
+               ) {
+                VStack {
+                    HStack {
+                        CaptureLocationChip(location: location)
+                        Spacer()
+                    }
+                    Spacer()
+                }
+                .padding(.horizontal, 16)
+                .padding(.top, 12)
+                .transition(.opacity)
+            }
         }
         .navigationTitle(title)
         .navigationBarTitleDisplayMode(.inline)
