@@ -64,18 +64,20 @@ struct MemoryDetailView: View {
                 Menu {
                     if let currentAsset {
                         Text(Self.fileSize(currentAsset.byteSize))
-                        Button {
-                            updateAgentAccess(!currentAsset.agentAccessEnabled)
-                        } label: {
-                            Label(
-                                "AIエージェントに共有",
-                                systemImage: currentAsset.agentAccessEnabled
-                                    ? "checkmark.circle.fill"
-                                    : "circle"
-                            )
+                        if currentAsset.canShareWithAgent {
+                            Button {
+                                updateAgentAccess(!currentAsset.agentAccessEnabled)
+                            } label: {
+                                Label(
+                                    "AIエージェントに共有",
+                                    systemImage: currentAsset.agentAccessEnabled
+                                        ? "checkmark.circle.fill"
+                                        : "circle"
+                                )
+                            }
+                            .disabled(isUpdatingAgentAccess)
+                            .accessibilityValue(currentAsset.agentAccessEnabled ? "オン" : "オフ")
                         }
-                        .disabled(isUpdatingAgentAccess)
-                        .accessibilityValue(currentAsset.agentAccessEnabled ? "オン" : "オフ")
                         Button("削除", systemImage: "trash", role: .destructive) {
                             confirmDelete = true
                         }

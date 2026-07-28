@@ -62,6 +62,10 @@ struct Asset: Codable, Identifiable, Hashable, Sendable {
 }
 
 extension Asset {
+    var canShareWithAgent: Bool {
+        mediaType == .video
+    }
+
     init(from decoder: Decoder) throws {
         let values = try decoder.container(keyedBy: CodingKeys.self)
         id = try values.decode(String.self, forKey: .id)
