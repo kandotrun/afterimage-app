@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
 import { readFileSync, readdirSync } from "node:fs";
+import { inflateSync } from "node:zlib";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 
@@ -143,6 +144,107 @@ for (const symbol of [
 
 assert.ok(!swift.includes("AVEncoderBitRateKey"), "audio must never be re-encoded");
 
+
+function paeth(left, up, upLeft) {
+  const estimate = left + up - upLeft;
+  const leftDistance = Math.abs(estimate - left);
+  const upDistance = Math.abs(estimate - up);
+  const diagonalDistance = Math.abs(estimate - upLeft);
+  if (leftDistance <= upDistance && leftDistance <= diagonalDistance) return left;
+  if (upDistance <= diagonalDistance) return up;
+  return upLeft;
+}
+
+function decodeOneBitPng(png) {
+  const width = png.readUInt32BE(16);
+  const height = png.readUInt32BE(20);
+  const bitDepth = png[24];
+  const colorType = png[25];
+  assert.equal(bitDepth, 1, "app icon must use 1-bit pixels");
+  assert.equal(colorType, 3, "app icon must use indexed color");
+
+  const compressed = [];
+  let offset = 8;
+  while (offset < png.length) {
+    const length = png.readUInt32BE(offset);
+    const type = png.subarray(offset + 4, offset + 8).toString("ascii");
+    if (type === "IDAT") compressed.push(png.subarray(offset + 8, offset + 8 + length));
+    offset += 12 + length;
+  }
+
+  const rowBytes = Math.ceil(width * bitDepth / 8);
+  const encoded = inflateSync(Buffer.concat(compressed));
+  assert.equal(encoded.length, height * (rowBytes + 1));
+  const rows = Buffer.alloc(height * rowBytes);
+
+  for (let y = 0; y < height; y += 1) {
+    const sourceOffset = y * (rowBytes + 1);
+    const rowOffset = y * rowBytes;
+    const filter = encoded[sourceOffset];
+    for (let x = 0; x < rowBytes; x += 1) {
+      const value = encoded[sourceOffset + 1 + x];
+      const left = x > 0 ? rows[rowOffset + x - 1] : 0;
+      const up = y > 0 ? rows[rowOffset - rowBytes + x] : 0;
+      const upLeft = y > 0 && x > 0 ? rows[rowOffset - rowBytes + x - 1] : 0;
+      const predictor = [
+        0,
+        left,
+        up,
+        Math.floor((left + up) / 2),
+        paeth(left, up, upLeft),
+      ][filter];
+      assert.notEqual(predictor, undefined, "unsupported PNG filter");
+      rows[rowOffset + x] = (value + predictor) & 0xff;
+    }
+  }
+
+  const pixels = new Uint8Array(width * height);
+  for (let y = 0; y < height; y += 1) {
+    for (let x = 0; x < width; x += 1) {
+      const byte = rows[y * rowBytes + (x >> 3)];
+      pixels[y * width + x] = (byte >> (7 - (x & 7))) & 1;
+    }
+  }
+  return { width, height, pixels };
+}
+
+function foregroundComponentCount({ width, height, pixels }) {
+  const background = pixels[0];
+  const visited = new Uint8Array(pixels.length);
+  const queue = new Int32Array(pixels.length);
+  let components = 0;
+
+  for (let origin = 0; origin < pixels.length; origin += 1) {
+    if (pixels[origin] === background || visited[origin]) continue;
+    components += 1;
+    let head = 0;
+    let tail = 0;
+    queue[tail] = origin;
+    tail += 1;
+    visited[origin] = 1;
+    while (head < tail) {
+      const index = queue[head];
+      head += 1;
+      const x = index % width;
+      const y = Math.floor(index / width);
+      for (let yOffset = -1; yOffset <= 1; yOffset += 1) {
+        for (let xOffset = -1; xOffset <= 1; xOffset += 1) {
+          if (xOffset === 0 && yOffset === 0) continue;
+          const nextX = x + xOffset;
+          const nextY = y + yOffset;
+          if (nextX < 0 || nextX >= width || nextY < 0 || nextY >= height) continue;
+          const neighbor = nextY * width + nextX;
+          if (visited[neighbor] || pixels[neighbor] === background) continue;
+          visited[neighbor] = 1;
+          queue[tail] = neighbor;
+          tail += 1;
+        }
+      }
+    }
+  }
+  return components;
+}
+
 const pngSignature = Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]);
 assert.ok(appIcon.subarray(0, 8).equals(pngSignature), "app icon must be a PNG");
 assert.equal(appIcon.readUInt32BE(16), 1024, "app icon width must be 1024 px");
@@ -154,6 +256,11 @@ assert.equal(
   appIcon.readUInt32BE(paletteOffset - 4) / 3,
   2,
   "app icon must contain exactly two flat colors",
+);
+assert.equal(
+  foregroundComponentCount(decodeOneBitPng(appIcon)),
+  3,
+  "app icon mark must contain two slashes and one connected A",
 );
 assert.match(appIconContents, /"filename"\s*:\s*"AppIcon-1024\.png"/);
 assert.match(brandMarkContents, /"filename"\s*:\s*"BrandMark@3x\.png"/);
