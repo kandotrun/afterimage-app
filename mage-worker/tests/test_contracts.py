@@ -143,5 +143,18 @@ def test_analysis_accepts_plain_visual_summary() -> None:
     assert result.segments == ()
 
 
+@pytest.mark.parametrize(
+    "value",
+    [
+        json.dumps({"summary": "keys on desk"}),
+        json.dumps({"segments": []}),
+        "Metadata: " + json.dumps({"confidence": "high"}),
+    ],
+)
+def test_analysis_rejects_json_without_complete_contract(value: str) -> None:
+    with pytest.raises(ContractError, match="analysis_output_fields_invalid"):
+        parse_analysis(value, duration_ms=4000)
+
+
 def test_failure_code_serializes_to_api_value() -> None:
     assert FailureCode.OUTPUT_INVALID.value == "output_invalid"

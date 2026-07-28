@@ -230,7 +230,9 @@ def _json_objects(value: str) -> Iterator[dict[str, object]]:
 def parse_analysis(value: str, duration_ms: int) -> AnalysisResult:
     required_fields = {"summary", "segments"}
     payload: dict[str, object] | None = None
+    found_json = False
     for decoded in _json_objects(value):
+        found_json = True
         candidates = [decoded]
         while candidates:
             candidate = candidates.pop()
@@ -244,6 +246,8 @@ def parse_analysis(value: str, duration_ms: int) -> AnalysisResult:
         if payload is not None:
             break
     if payload is None:
+        if found_json:
+            raise ContractError("analysis_output_fields_invalid")
         return AnalysisResult(summary=_string(value, "summary"), segments=())
     summary = _string(payload["summary"], "summary")
     raw_segments = payload["segments"]
