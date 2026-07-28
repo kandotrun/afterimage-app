@@ -95,6 +95,9 @@ private struct MemoryDay: Identifiable {
     var title: String {
         if Calendar.autoupdatingCurrent.isDateInToday(day) { return L10n.string("timeline.today") }
         if Calendar.autoupdatingCurrent.isDateInYesterday(day) { return L10n.string("timeline.yesterday") }
+        if Calendar.autoupdatingCurrent.isDate(day, equalTo: .now, toGranularity: .year) {
+            return day.formatted(.dateTime.month(.wide).day().weekday(.wide))
+        }
         return day.formatted(.dateTime.year().month(.wide).day().weekday(.wide))
     }
 }
