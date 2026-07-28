@@ -26,6 +26,11 @@ final class AgentVideoSharingUITests: XCTestCase {
         ]
         app.launch()
 
+        let initialItems = try await timeline(token: token).items
+        let videoIndex = try XCTUnwrap(initialItems.firstIndex { $0.kind == "video" })
+        for _ in 0..<videoIndex {
+            app.swipeLeft()
+        }
         try await waitForVideoAgentAccess(true, token: token)
         let moreButton = app.descendants(matching: .any)
             .matching(identifier: "その他")
