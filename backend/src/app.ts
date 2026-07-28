@@ -94,6 +94,7 @@ interface AssetRow {
   transcript_language: string | null;
   transcript_error: string | null;
   transcription_updated_at: string | null;
+  agent_access_enabled: 0 | 1;
 }
 
 interface DailySummaryCacheRow {
@@ -142,6 +143,10 @@ const appleAuthSchema = z.object({
 const mcpTokenSchema = z.object({
   name: z.string().trim().min(1).max(48),
 });
+
+const agentAccessSchema = z.object({
+  enabled: z.boolean(),
+}).strict();
 
 const contentTypes = [
   "image/heic",
@@ -287,6 +292,7 @@ function assetJson(asset: AssetRow) {
       ? asset.transcript.slice(0, 240)
       : null,
     transcriptUrl: asset.transcription_status === "completed" ? `/v1/assets/${asset.id}/transcript` : null,
+    agentAccessEnabled: asset.agent_access_enabled === 1,
     createdAt: asset.created_at,
     updatedAt: asset.updated_at,
   };
@@ -298,7 +304,8 @@ async function findOwnedAsset(bindings: Env, assetId: string, userId: string): P
             latitude, longitude, duration_ms, width, height, status, object_key, thumbnail_key,
             upload_mode, upload_id, part_size, created_at, updated_at,
             transcription_status, soniox_file_id, soniox_transcription_id,
-            transcript, transcript_language, transcript_error, transcription_updated_at
+            transcript, transcript_language, transcript_error, transcription_updated_at,
+            agent_access_enabled
        FROM assets WHERE id = ? AND user_id = ?`,
   ).bind(assetId, userId).first<AssetRow>();
 }
@@ -701,7 +708,8 @@ export function createApp(overrides: Partial<AppDependencies> = {}) {
     const asset = await context.env.DB.prepare(
       `SELECT a.id, a.user_id, a.kind, a.filename, a.content_type, a.byte_size, a.captured_at,
               a.latitude, a.longitude, a.duration_ms, a.width, a.height, a.status, a.object_key, a.thumbnail_key,
-              a.upload_mode, a.upload_id, a.part_size, a.created_at, a.updated_at
+              a.upload_mode, a.upload_id, a.part_size, a.created_at, a.updated_at,
+              a.agent_access_enabled
          FROM media_grants g JOIN assets a ON a.id = g.asset_id AND a.user_id = g.user_id
         WHERE g.token_hash = ? AND g.expires_at > ? AND a.status = 'ready'`,
     ).bind(await sha256Hex(token), dependencies.now().toISOString()).first<AssetRow>();
@@ -789,6 +797,30 @@ export function createApp(overrides: Partial<AppDependencies> = {}) {
   api.delete("/auth/session", async (context) => {
     await context.env.DB.prepare("DELETE FROM sessions WHERE id = ?").bind(context.get("auth").sessionId).run();
     return new Response(null, { status: 204 });
+  });
+
+  api.patch("/assets/:assetId/agent-access", async (context) => {
+    const parsed = agentAccessSchema.safeParse(await parseJson(context));
+    if (!parsed.success) {
+      return errorResponse(context, 400, "invalid_agent_access", "Agent access setting is invalid.");
+    }
+    const auth = context.get("auth");
+    const assetId = context.req.param("assetId");
+    const asset = await findOwnedAsset(context.env, assetId, auth.userId);
+    if (!asset || asset.kind !== "video" || asset.status !== "ready") {
+      return errorResponse(context, 404, "asset_not_found", "Asset was not found.");
+    }
+    const updatedAt = dependencies.now().toISOString();
+    const updated = await context.env.DB.prepare(
+      `UPDATE assets SET agent_access_enabled = ?, updated_at = ?
+        WHERE id = ? AND user_id = ? AND kind = 'video' AND status = 'ready'`,
+    ).bind(parsed.data.enabled ? 1 : 0, updatedAt, assetId, auth.userId).run();
+    if ((updated.meta.changes ?? 0) !== 1) {
+      return errorResponse(context, 404, "asset_not_found", "Asset was not found.");
+    }
+    const result = await findOwnedAsset(context.env, assetId, auth.userId);
+    if (!result) return errorResponse(context, 404, "asset_not_found", "Asset was not found.");
+    return context.json({ asset: assetJson(result) });
   });
 
   api.post("/assets/existing", async (context) => {
@@ -1499,7 +1531,8 @@ export function createApp(overrides: Partial<AppDependencies> = {}) {
       latitude, longitude, duration_ms, width, height, status, object_key, thumbnail_key,
       upload_mode, upload_id, part_size, created_at, updated_at,
       transcription_status, soniox_file_id, soniox_transcription_id,
-      transcript, transcript_language, transcript_error, transcription_updated_at FROM assets`;
+      transcript, transcript_language, transcript_error, transcription_updated_at,
+      agent_access_enabled FROM assets`;
     const result = await context.env.DB.prepare(
       `${select} WHERE ${rangeWhere}
        ORDER BY julianday(captured_at) ASC, id ASC LIMIT ?`,
@@ -1552,7 +1585,8 @@ export function createApp(overrides: Partial<AppDependencies> = {}) {
       latitude, longitude, duration_ms, width, height, status, object_key, thumbnail_key,
       upload_mode, upload_id, part_size, created_at, updated_at,
       transcription_status, soniox_file_id, soniox_transcription_id,
-      transcript, transcript_language, transcript_error, transcription_updated_at FROM assets`;
+      transcript, transcript_language, transcript_error, transcription_updated_at,
+      agent_access_enabled FROM assets`;
     const statement = cursor
       ? context.env.DB.prepare(
           `${select} WHERE user_id = ? AND status IN ('uploading', 'ready')

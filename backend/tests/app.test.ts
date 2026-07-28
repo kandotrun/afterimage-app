@@ -1878,6 +1878,105 @@ describe("MCP personal access tokens", () => {
   });
 });
 
+describe("agent access privacy boundary", () => {
+  async function createReadyVideo(subject: string) {
+    const owner = await signIn(subject);
+    const created = await owner.app.request("/v1/assets", {
+      method: "POST",
+      headers: { authorization: owner.authorization, "content-type": "application/json" },
+      body: JSON.stringify({
+        kind: "video",
+        filename: `${subject}.mov`,
+        contentType: "video/quicktime",
+        byteSize: 5,
+        capturedAt: "2026-07-27T00:00:00.000Z",
+        durationMs: 2_000,
+        width: 1_920,
+        height: 1_080,
+      }),
+    }, env);
+    const body = await created.json<{
+      asset: { id: string; agentAccessEnabled: boolean };
+      upload: { url: string };
+    }>();
+    await owner.app.request(body.upload.url, {
+      method: "PUT",
+      headers: {
+        authorization: owner.authorization,
+        "content-type": "video/quicktime",
+        "content-length": "5",
+      },
+      body: "video",
+    }, env);
+    await owner.app.request(`/v1/assets/${body.asset.id}/upload/complete`, {
+      method: "POST",
+      headers: { authorization: owner.authorization },
+    }, env);
+    return { ...owner, assetId: body.asset.id, createdAsset: body.asset };
+  }
+
+  it("defaults existing and new assets to agent access enabled", async () => {
+    const owner = await createReadyVideo("agent-access-default");
+    expect(owner.createdAsset.agentAccessEnabled).toBe(true);
+
+    const timeline = await owner.app.request("/v1/assets", {
+      headers: { authorization: owner.authorization },
+    }, env);
+    await expect(timeline.json()).resolves.toMatchObject({
+      items: [{ id: owner.assetId, agentAccessEnabled: true }],
+    });
+  });
+
+  it("lets the owner disable agent access without changing transcription", async () => {
+    const owner = await createReadyVideo("agent-access-owner");
+    await env.DB.prepare(
+      `UPDATE assets
+          SET transcription_status = 'completed', transcript = '残しておく文字起こし'
+        WHERE id = ?`,
+    ).bind(owner.assetId).run();
+
+    const disabled = await owner.app.request(`/v1/assets/${owner.assetId}/agent-access`, {
+      method: "PATCH",
+      headers: { authorization: owner.authorization, "content-type": "application/json" },
+      body: JSON.stringify({ enabled: false }),
+    }, env);
+
+    expect(disabled.status).toBe(200);
+    await expect(disabled.json()).resolves.toMatchObject({
+      asset: { id: owner.assetId, agentAccessEnabled: false },
+    });
+    await expect(env.DB.prepare(
+      "SELECT agent_access_enabled, transcript FROM assets WHERE id = ?",
+    ).bind(owner.assetId).first()).resolves.toEqual({
+      agent_access_enabled: 0,
+      transcript: "残しておく文字起こし",
+    });
+
+    const enabled = await owner.app.request(`/v1/assets/${owner.assetId}/agent-access`, {
+      method: "PATCH",
+      headers: { authorization: owner.authorization, "content-type": "application/json" },
+      body: JSON.stringify({ enabled: true }),
+    }, env);
+    expect(enabled.status).toBe(200);
+    await expect(enabled.json()).resolves.toMatchObject({
+      asset: { id: owner.assetId, agentAccessEnabled: true },
+    });
+  });
+
+  it("hides ownership when another user changes agent access", async () => {
+    const owner = await createReadyVideo("agent-access-private-owner");
+    const other = await signIn("agent-access-private-other");
+    const response = await other.app.request(`/v1/assets/${owner.assetId}/agent-access`, {
+      method: "PATCH",
+      headers: { authorization: other.authorization, "content-type": "application/json" },
+      body: JSON.stringify({ enabled: false }),
+    }, env);
+
+    expect(response.status).toBe(404);
+    await expect(response.json()).resolves.toMatchObject({ error: { code: "asset_not_found" } });
+  });
+});
+
 
 describe("uploaded asset duplicate detection", () => {
   const trackedFingerprint = "a".repeat(64);
