@@ -123,5 +123,16 @@ def test_analysis_accepts_nested_contract_object() -> None:
     assert result.summary == "keys on desk"
 
 
+def test_analysis_skips_unrelated_json_before_contract() -> None:
+    result = parse_analysis(
+        "Metadata: "
+        + json.dumps({"confidence": "high"})
+        + "\nResult: "
+        + json.dumps({"summary": "keys on desk", "segments": []}),
+        duration_ms=4000,
+    )
+    assert result.summary == "keys on desk"
+
+
 def test_failure_code_serializes_to_api_value() -> None:
     assert FailureCode.OUTPUT_INVALID.value == "output_invalid"

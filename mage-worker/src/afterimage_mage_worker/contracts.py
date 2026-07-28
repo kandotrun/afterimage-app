@@ -1,3 +1,4 @@
+from collections.abc import Iterator
 from dataclasses import dataclass
 from enum import Enum
 import json
@@ -213,7 +214,7 @@ def parse_lease(payload: object) -> JobLease:
     )
 
 
-def _first_json_object(value: str) -> dict[str, object]:
+def _json_objects(value: str) -> Iterator[dict[str, object]]:
     decoder = json.JSONDecoder()
     for position, character in enumerate(value):
         if character != "{":
@@ -223,25 +224,30 @@ def _first_json_object(value: str) -> dict[str, object]:
         except json.JSONDecodeError:
             continue
         if type(decoded) is dict:
-            return decoded
-    raise ContractError("analysis_json_invalid")
+            yield decoded
 
 
 def parse_analysis(value: str, duration_ms: int) -> AnalysisResult:
-    decoded = _first_json_object(value)
     required_fields = {"summary", "segments"}
-    candidates = [decoded]
     payload: dict[str, object] | None = None
-    while candidates:
-        candidate = candidates.pop()
-        if required_fields.issubset(candidate):
-            payload = {field: candidate[field] for field in required_fields}
+    found_json = False
+    for decoded in _json_objects(value):
+        found_json = True
+        candidates = [decoded]
+        while candidates:
+            candidate = candidates.pop()
+            if required_fields.issubset(candidate):
+                payload = {field: candidate[field] for field in required_fields}
+                break
+            candidates.extend(
+                item for item in candidate.values()
+                if type(item) is dict
+            )
+        if payload is not None:
             break
-        candidates.extend(
-            item for item in candidate.values()
-            if type(item) is dict
-        )
     if payload is None:
+        if not found_json:
+            raise ContractError("analysis_json_invalid")
         raise ContractError("analysis_output_fields_invalid")
     summary = _string(payload["summary"], "summary")
     raw_segments = payload["segments"]
