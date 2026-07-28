@@ -24,6 +24,10 @@ class RuntimeFailure(RuntimeError):
         super().__init__(code.value)
 
 
+def model_output_invalid_event(error: ContractError) -> dict[str, str]:
+    return {"event": "model_output_invalid", "reason": str(error)}
+
+
 def offline_model_imports(
     filename: str,
     check_imports: Callable[[str], list[str]],
@@ -385,6 +389,7 @@ class MageRuntime:
                 ),
             )
         except ContractError as error:
+            print(json.dumps(model_output_invalid_event(error)), flush=True)
             raise RuntimeFailure(FailureCode.OUTPUT_INVALID) from error
         except RuntimeFailure:
             raise

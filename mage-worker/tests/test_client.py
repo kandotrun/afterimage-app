@@ -41,19 +41,23 @@ def test_lease_uses_worker_bearer_without_exposing_it(tmp_path: Path) -> None:
     assert lease is not None
     assert requests[0].full_url.endswith("/v1/internal/gpu-jobs/lease")
     assert requests[0].get_header("Authorization") == f"Bearer aft_worker_{'w' * 43}"
+    assert requests[0].get_header("User-agent") == "afterimage-mage-worker/0.1.0"
 
 
 def test_download_validates_declared_size(tmp_path: Path) -> None:
     token_path = tmp_path / "token"
     token_path.write_text(f"aft_worker_{'w' * 43}")
+    requests: list[Request] = []
 
     def opener(request: Request, timeout: float) -> Response:
+        requests.append(request)
         return Response(b"four")
 
     client = WorkerClient("https://afterimage.example", token_path, opener=opener)
     lease = WorkerClient.parse_lease_payload(lease_payload())
     with pytest.raises(APIError, match="size_mismatch"):
         client.download(lease, tmp_path / "source.mov")
+    assert requests[0].get_header("User-agent") == "afterimage-mage-worker/0.1.0"
 
 
 def test_http_error_redacts_urls_and_tokens(tmp_path: Path) -> None:

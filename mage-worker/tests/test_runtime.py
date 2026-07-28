@@ -3,14 +3,22 @@ import subprocess
 
 import pytest
 
-from afterimage_mage_worker.contracts import AnalysisResult, Segment
+from afterimage_mage_worker.contracts import AnalysisResult, ContractError, Segment
 from afterimage_mage_worker.runtime import (
     MageRuntime,
     analysis_windows,
+    model_output_invalid_event,
     normalize_window_segments,
     offline_model_imports,
     sample_frame_indices,
 )
+
+
+def test_model_output_error_event_excludes_generated_content() -> None:
+    assert model_output_invalid_event(ContractError("analysis_json_invalid")) == {
+        "event": "model_output_invalid",
+        "reason": "analysis_json_invalid",
+    }
 
 
 def test_long_video_uses_bounded_sampled_windows() -> None:

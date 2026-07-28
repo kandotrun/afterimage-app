@@ -8,6 +8,8 @@ from urllib.request import Request, urlopen
 from . import MODEL_ID, MODEL_REVISION
 from .contracts import AnalysisResult, FailureCode, JobLease, parse_lease
 
+_USER_AGENT = "afterimage-mage-worker/0.1.0"
+
 
 class APIError(RuntimeError):
     def __init__(self, code: str) -> None:
@@ -60,6 +62,7 @@ class WorkerClient:
         body = json.dumps(payload, separators=(",", ":")).encode() if payload is not None else data
         request_headers = {
             "Authorization": f"Bearer {self._token}",
+            "User-Agent": _USER_AGENT,
             **(headers or {}),
         }
         if payload is not None:
@@ -120,7 +123,7 @@ class WorkerClient:
         return type(payload) is dict and payload.get("status") == "leased"
 
     def download(self, lease: JobLease, destination: Path) -> None:
-        request = Request(lease.media.url, method="GET")
+        request = Request(lease.media.url, headers={"User-Agent": _USER_AGENT}, method="GET")
         written = 0
         try:
             response = self._opener(request, timeout=self._timeout)

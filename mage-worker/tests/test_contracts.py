@@ -78,5 +78,50 @@ def test_analysis_accepts_bounded_json() -> None:
     assert result.segments[0].caption == "keys"
 
 
+def test_analysis_accepts_json_code_fence() -> None:
+    result = parse_analysis(
+        "```json\n"
+        + json.dumps({"summary": "keys on desk", "segments": []})
+        + "\n```",
+        duration_ms=4000,
+    )
+    assert result.summary == "keys on desk"
+
+
+def test_analysis_accepts_json_surrounded_by_model_prose() -> None:
+    result = parse_analysis(
+        "Here is the requested JSON:\n"
+        + json.dumps({"summary": "keys on desk", "segments": []})
+        + "\nThis describes the visible content.",
+        duration_ms=4000,
+    )
+    assert result.summary == "keys on desk"
+
+
+def test_analysis_ignores_additional_model_fields() -> None:
+    result = parse_analysis(
+        json.dumps({
+            "summary": "keys on desk",
+            "segments": [],
+            "confidence": "high",
+        }),
+        duration_ms=4000,
+    )
+    assert result.summary == "keys on desk"
+
+
+def test_analysis_accepts_nested_contract_object() -> None:
+    result = parse_analysis(
+        json.dumps({
+            "analysis": {
+                "summary": "keys on desk",
+                "segments": [],
+            },
+        }),
+        duration_ms=4000,
+    )
+    assert result.summary == "keys on desk"
+
+
 def test_failure_code_serializes_to_api_value() -> None:
     assert FailureCode.OUTPUT_INVALID.value == "output_invalid"

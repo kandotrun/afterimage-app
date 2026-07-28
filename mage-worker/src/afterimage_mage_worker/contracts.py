@@ -213,12 +213,36 @@ def parse_lease(payload: object) -> JobLease:
     )
 
 
+def _first_json_object(value: str) -> dict[str, object]:
+    decoder = json.JSONDecoder()
+    for position, character in enumerate(value):
+        if character != "{":
+            continue
+        try:
+            decoded, _ = decoder.raw_decode(value, position)
+        except json.JSONDecodeError:
+            continue
+        if type(decoded) is dict:
+            return decoded
+    raise ContractError("analysis_json_invalid")
+
+
 def parse_analysis(value: str, duration_ms: int) -> AnalysisResult:
-    try:
-        decoded = json.loads(value)
-    except json.JSONDecodeError as error:
-        raise ContractError("analysis_json_invalid") from error
-    payload = _object(decoded, {"summary", "segments"}, "analysis_output")
+    decoded = _first_json_object(value)
+    required_fields = {"summary", "segments"}
+    candidates = [decoded]
+    payload: dict[str, object] | None = None
+    while candidates:
+        candidate = candidates.pop()
+        if required_fields.issubset(candidate):
+            payload = {field: candidate[field] for field in required_fields}
+            break
+        candidates.extend(
+            item for item in candidate.values()
+            if type(item) is dict
+        )
+    if payload is None:
+        raise ContractError("analysis_output_fields_invalid")
     summary = _string(payload["summary"], "summary")
     raw_segments = payload["segments"]
     if type(raw_segments) is not list or len(raw_segments) > 200:
