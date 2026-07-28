@@ -1879,6 +1879,17 @@ describe("MCP personal access tokens", () => {
 });
 
 describe("agent access privacy boundary", () => {
+  const workerToken = `aft_worker_${"w".repeat(43)}`;
+
+  async function tokenHash(value: string) {
+    const digest = await crypto.subtle.digest("SHA-256", new TextEncoder().encode(value));
+    return [...new Uint8Array(digest)].map((byte) => byte.toString(16).padStart(2, "0")).join("");
+  }
+
+  async function gpuEnv() {
+    return { ...env, MAGE_WORKER_TOKEN_HASH: await tokenHash(workerToken) };
+  }
+
   async function createReadyVideo(subject: string) {
     const owner = await signIn(subject);
     const created = await owner.app.request("/v1/assets", {
@@ -1974,6 +1985,214 @@ describe("agent access privacy boundary", () => {
 
     expect(response.status).toBe(404);
     await expect(response.json()).resolves.toMatchObject({ error: { code: "asset_not_found" } });
+  });
+
+  it("keeps app grants valid while revoking agent and worker grants", async () => {
+    const owner = await createReadyVideo("agent-access-grants");
+    const appGrant = await owner.app.request(`/v1/assets/${owner.assetId}/playback`, {
+      method: "POST",
+      headers: { authorization: owner.authorization },
+    }, env);
+    const appGrantBody = await appGrant.json<{ url: string }>();
+    const agentToken = "a".repeat(43);
+    const workerGrantToken = "b".repeat(43);
+    const expiresAt = new Date(NOW.getTime() + 300_000).toISOString();
+    await env.DB.batch([
+      env.DB.prepare(
+        `INSERT INTO media_grants (id, asset_id, user_id, token_hash, expires_at, created_at, purpose)
+         SELECT 'agent-grant', id, user_id, ?, ?, ?, 'agent' FROM assets WHERE id = ?`,
+      ).bind(await tokenHash(agentToken), expiresAt, NOW.toISOString(), owner.assetId),
+      env.DB.prepare(
+        `INSERT INTO media_grants (id, asset_id, user_id, token_hash, expires_at, created_at, purpose)
+         SELECT 'worker-grant', id, user_id, ?, ?, ?, 'worker' FROM assets WHERE id = ?`,
+      ).bind(await tokenHash(workerGrantToken), expiresAt, NOW.toISOString(), owner.assetId),
+    ]);
+
+    await owner.app.request(`/v1/assets/${owner.assetId}/agent-access`, {
+      method: "PATCH",
+      headers: { authorization: owner.authorization, "content-type": "application/json" },
+      body: JSON.stringify({ enabled: false }),
+    }, env);
+
+    expect((await owner.app.request(appGrantBody.url, {}, env)).status).toBe(200);
+    expect((await owner.app.request(`/v1/media/${agentToken}`, {}, env)).status).toBe(404);
+    expect((await owner.app.request(`/v1/media/${workerGrantToken}`, {}, env)).status).toBe(404);
+  });
+
+  it("leases one enabled ready video atomically", async () => {
+    const owner = await createReadyVideo("agent-access-lease");
+    const workerEnvironment = await gpuEnv();
+    const leaseRequest = () => owner.app.request("/v1/internal/gpu-jobs/lease", {
+      method: "POST",
+      headers: {
+        authorization: `Bearer ${workerToken}`,
+        "content-type": "application/json",
+      },
+      body: JSON.stringify({
+        workerId: "spark-1721",
+        capabilities: { backends: ["frames"], modelId: "microsoft/Mage-VL" },
+      }),
+    }, workerEnvironment);
+
+    const [first, second] = await Promise.all([leaseRequest(), leaseRequest()]);
+    expect([first.status, second.status].sort()).toEqual([200, 204]);
+    const leased = first.status === 200 ? first : second;
+    await expect(leased.json()).resolves.toMatchObject({
+      job: {
+        kind: "analysis",
+        asset: { id: owner.assetId },
+        analysis: {
+          modelId: "microsoft/Mage-VL",
+          modelRevision: "8484f3154beea3b563bee99e2fab2d6c8bb5d3f3",
+          backend: "frames",
+        },
+      },
+    });
+  });
+
+  it("rejects stale analysis completion after agent access is disabled", async () => {
+    const owner = await createReadyVideo("agent-access-stale-job");
+    const workerEnvironment = await gpuEnv();
+    const lease = await owner.app.request("/v1/internal/gpu-jobs/lease", {
+      method: "POST",
+      headers: {
+        authorization: `Bearer ${workerToken}`,
+        "content-type": "application/json",
+      },
+      body: JSON.stringify({
+        workerId: "spark-1721",
+        capabilities: { backends: ["frames"], modelId: "microsoft/Mage-VL" },
+      }),
+    }, workerEnvironment);
+    const leased = await lease.json<{ job: { id: string; leaseToken: string } }>();
+
+    await owner.app.request(`/v1/assets/${owner.assetId}/agent-access`, {
+      method: "PATCH",
+      headers: { authorization: owner.authorization, "content-type": "application/json" },
+      body: JSON.stringify({ enabled: false }),
+    }, env);
+    const completed = await owner.app.request(`/v1/internal/gpu-jobs/${leased.job.id}/analysis`, {
+      method: "POST",
+      headers: {
+        authorization: `Bearer ${workerToken}`,
+        "content-type": "application/json",
+      },
+      body: JSON.stringify({
+        leaseToken: leased.job.leaseToken,
+        modelId: "microsoft/Mage-VL",
+        modelRevision: "8484f3154beea3b563bee99e2fab2d6c8bb5d3f3",
+        backend: "frames",
+        coverageMode: "full",
+        analyzedRanges: [{ startMs: 0, endMs: 2_000 }],
+        summary: "机の上に鍵を置いた。",
+        segments: [{ startMs: 500, endMs: 1_200, caption: "鍵を置いた。" }],
+      }),
+    }, workerEnvironment);
+
+    expect(completed.status).toBe(404);
+    expect(await env.DB.prepare(
+      "SELECT COUNT(*) AS count FROM video_analyses WHERE asset_id = ?",
+    ).bind(owner.assetId).first<{ count: number }>()).toEqual({ count: 0 });
+  });
+
+  it("streams a leased frame derivative to private R2 before marking it ready", async () => {
+    const owner = await createReadyVideo("agent-access-frame-job");
+    const workerEnvironment = await gpuEnv();
+    const nowIso = NOW.toISOString();
+    const expiresAt = new Date(NOW.getTime() + 86_400_000).toISOString();
+    await env.DB.batch([
+      env.DB.prepare(
+        `INSERT INTO gpu_jobs (
+          id, asset_id, kind, status, request_json, priority, attempt_count,
+          available_at, created_at, updated_at
+        ) VALUES ('frame-job', ?, 'frame', 'queued', ?, 100, 0, ?, ?, ?)`,
+      ).bind(owner.assetId, JSON.stringify({ derivativeId: "frame-derivative", timeMs: 750 }), nowIso, nowIso, nowIso),
+      env.DB.prepare(
+        `INSERT INTO media_derivatives (
+          id, asset_id, job_id, kind, start_ms, end_ms, status,
+          expires_at, created_at, updated_at
+        ) VALUES ('frame-derivative', ?, 'frame-job', 'frame', 750, 750, 'queued', ?, ?, ?)`,
+      ).bind(owner.assetId, expiresAt, nowIso, nowIso),
+    ]);
+    const lease = await owner.app.request("/v1/internal/gpu-jobs/lease", {
+      method: "POST",
+      headers: {
+        authorization: `Bearer ${workerToken}`,
+        "content-type": "application/json",
+      },
+      body: JSON.stringify({
+        workerId: "spark-1721",
+        capabilities: { backends: ["frames"], modelId: "microsoft/Mage-VL" },
+      }),
+    }, workerEnvironment);
+    const leased = await lease.json<{ job: { id: string; leaseToken: string } }>();
+    expect(leased.job.id).toBe("frame-job");
+
+    const uploaded = await owner.app.request(`/v1/internal/gpu-jobs/${leased.job.id}/derivative`, {
+      method: "PUT",
+      headers: {
+        authorization: `Bearer ${workerToken}`,
+        "x-afterimage-lease-token": leased.job.leaseToken,
+        "content-type": "image/jpeg",
+        "content-length": "4",
+      },
+      body: "jpeg",
+    }, workerEnvironment);
+
+    expect(uploaded.status).toBe(200);
+    const derivative = await env.DB.prepare(
+      `SELECT status, content_type, byte_size, object_key
+         FROM media_derivatives WHERE id = 'frame-derivative'`,
+    ).first<{
+      status: string;
+      content_type: string;
+      byte_size: number;
+      object_key: string;
+    }>();
+    expect(derivative).toMatchObject({
+      status: "ready",
+      content_type: "image/jpeg",
+      byte_size: 4,
+    });
+    expect((await env.MEDIA.get(derivative!.object_key))?.size).toBe(4);
+  });
+
+  it("requeues a retryable failed lease without storing exception text", async () => {
+    const owner = await createReadyVideo("agent-access-failed-job");
+    const workerEnvironment = await gpuEnv();
+    const lease = await owner.app.request("/v1/internal/gpu-jobs/lease", {
+      method: "POST",
+      headers: {
+        authorization: `Bearer ${workerToken}`,
+        "content-type": "application/json",
+      },
+      body: JSON.stringify({
+        workerId: "spark-1721",
+        capabilities: { backends: ["frames"], modelId: "microsoft/Mage-VL" },
+      }),
+    }, workerEnvironment);
+    const leased = await lease.json<{ job: { id: string; leaseToken: string } }>();
+    const failed = await owner.app.request(`/v1/internal/gpu-jobs/${leased.job.id}/fail`, {
+      method: "POST",
+      headers: {
+        authorization: `Bearer ${workerToken}`,
+        "content-type": "application/json",
+      },
+      body: JSON.stringify({
+        leaseToken: leased.job.leaseToken,
+        code: "inference_failed",
+      }),
+    }, workerEnvironment);
+
+    expect(failed.status).toBe(200);
+    await expect(env.DB.prepare(
+      "SELECT status, error_code, available_at, lease_token_hash FROM gpu_jobs WHERE id = ?",
+    ).bind(leased.job.id).first()).resolves.toEqual({
+      status: "queued",
+      error_code: "inference_failed",
+      available_at: "2026-07-27T00:01:00.000Z",
+      lease_token_hash: null,
+    });
   });
 });
 

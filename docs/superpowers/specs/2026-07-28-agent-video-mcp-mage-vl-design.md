@@ -70,7 +70,7 @@ background-analysis job with a new identifier.
 
 ## D1 schema
 
-Migration `0008_agent_video_access.sql` adds:
+Migration `0009_agent_video_access.sql` adds:
 
 ```sql
 ALTER TABLE assets ADD COLUMN agent_access_enabled INTEGER NOT NULL DEFAULT 1
@@ -276,7 +276,7 @@ worker concurrency: 1
 lease duration: 15 minutes
 heartbeat interval: 60 seconds
 maximum attempts: 3
-retry delays: 1 minute, 5 minutes, 30 minutes
+retry delays after the first and second failures: 1 minute, 5 minutes
 idle poll delay: 15 to 30 seconds with jitter
 ```
 

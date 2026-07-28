@@ -13,6 +13,7 @@ import {
   cleanupSoniox,
 } from "./soniox";
 import { handleMcpRequest } from "./mcp";
+import { createGpuJobRoutes } from "./gpu-jobs";
 import {
   configuredDailySummaryModel,
   DAILY_SUMMARY_MAX_CHARACTERS,
@@ -95,6 +96,13 @@ interface AssetRow {
   transcript_error: string | null;
   transcription_updated_at: string | null;
   agent_access_enabled: 0 | 1;
+}
+
+interface MediaBodyRow {
+  filename: string;
+  content_type: string;
+  byte_size: number;
+  object_key: string;
 }
 
 interface DailySummaryCacheRow {
@@ -310,6 +318,23 @@ async function findOwnedAsset(bindings: Env, assetId: string, userId: string): P
   ).bind(assetId, userId).first<AssetRow>();
 }
 
+async function queueVideoAnalysis(bindings: Env, assetId: string, now: Date) {
+  const nowIso = now.toISOString();
+  await bindings.DB.prepare(
+    `INSERT INTO gpu_jobs (
+      id, asset_id, kind, status, request_json, priority, attempt_count,
+      available_at, created_at, updated_at
+    )
+    SELECT ?, id, 'analysis', 'queued', '{}', 0, 0, ?, ?, ?
+      FROM assets
+     WHERE id = ? AND kind = 'video' AND status = 'ready' AND agent_access_enabled = 1
+       AND NOT EXISTS (
+         SELECT 1 FROM gpu_jobs
+          WHERE asset_id = ? AND kind = 'analysis' AND status IN ('queued', 'leased')
+       )`,
+  ).bind(crypto.randomUUID(), nowIso, nowIso, nowIso, assetId, assetId).run();
+}
+
 function parseRangeHeader(value: string | undefined, size: number): { offset: number; length: number } | null | "invalid" {
   if (!value) return null;
   const match = /^bytes=(\d*)-(\d*)$/.exec(value);
@@ -328,7 +353,7 @@ function parseRangeHeader(value: string | undefined, size: number): { offset: nu
   return { offset, length: end - offset + 1 };
 }
 
-async function serveAssetBody(context: Context<AppEnvironment>, asset: AssetRow) {
+async function serveAssetBody(context: Context<AppEnvironment>, asset: MediaBodyRow) {
   const range = parseRangeHeader(context.req.header("range"), asset.byte_size);
   if (range === "invalid") {
     return new Response(null, {
@@ -705,14 +730,25 @@ export function createApp(overrides: Partial<AppDependencies> = {}) {
     if (!/^[A-Za-z0-9_-]{32,256}$/.test(token)) {
       return errorResponse(context, 404, "media_grant_not_found", "Playback grant was not found.");
     }
+    const nowIso = dependencies.now().toISOString();
     const asset = await context.env.DB.prepare(
-      `SELECT a.id, a.user_id, a.kind, a.filename, a.content_type, a.byte_size, a.captured_at,
-              a.latitude, a.longitude, a.duration_ms, a.width, a.height, a.status, a.object_key, a.thumbnail_key,
-              a.upload_mode, a.upload_id, a.part_size, a.created_at, a.updated_at,
-              a.agent_access_enabled
-         FROM media_grants g JOIN assets a ON a.id = g.asset_id AND a.user_id = g.user_id
-        WHERE g.token_hash = ? AND g.expires_at > ? AND a.status = 'ready'`,
-    ).bind(await sha256Hex(token), dependencies.now().toISOString()).first<AssetRow>();
+      `SELECT
+          CASE WHEN g.derivative_id IS NULL THEN a.filename
+               WHEN d.kind = 'frame' THEN 'frame.jpg'
+               ELSE 'clip.mp4' END AS filename,
+          COALESCE(d.content_type, a.content_type) AS content_type,
+          COALESCE(d.byte_size, a.byte_size) AS byte_size,
+          COALESCE(d.object_key, a.object_key) AS object_key
+         FROM media_grants g
+         JOIN assets a ON a.id = g.asset_id AND a.user_id = g.user_id
+         LEFT JOIN media_derivatives d ON d.id = g.derivative_id AND d.asset_id = a.id
+        WHERE g.token_hash = ? AND g.expires_at > ? AND a.status = 'ready'
+          AND (g.purpose = 'app' OR a.agent_access_enabled = 1)
+          AND (
+            g.derivative_id IS NULL
+            OR (d.status = 'ready' AND d.expires_at > ?)
+          )`,
+    ).bind(await sha256Hex(token), nowIso, nowIso).first<MediaBodyRow>();
     if (!asset) return errorResponse(context, 404, "media_grant_not_found", "Playback grant was not found.");
     return serveAssetBody(context, asset);
   });
@@ -810,13 +846,38 @@ export function createApp(overrides: Partial<AppDependencies> = {}) {
     if (!asset || asset.kind !== "video" || asset.status !== "ready") {
       return errorResponse(context, 404, "asset_not_found", "Asset was not found.");
     }
-    const updatedAt = dependencies.now().toISOString();
-    const updated = await context.env.DB.prepare(
-      `UPDATE assets SET agent_access_enabled = ?, updated_at = ?
-        WHERE id = ? AND user_id = ? AND kind = 'video' AND status = 'ready'`,
-    ).bind(parsed.data.enabled ? 1 : 0, updatedAt, assetId, auth.userId).run();
-    if ((updated.meta.changes ?? 0) !== 1) {
+    const now = dependencies.now();
+    const updatedAt = now.toISOString();
+    const derivatives = parsed.data.enabled
+      ? { results: [] as Array<{ object_key: string | null }> }
+      : await context.env.DB.prepare(
+          "SELECT object_key FROM media_derivatives WHERE asset_id = ? AND object_key IS NOT NULL",
+        ).bind(assetId).all<{ object_key: string | null }>();
+    const statements = [
+      context.env.DB.prepare(
+        `UPDATE assets SET agent_access_enabled = ?, updated_at = ?
+          WHERE id = ? AND user_id = ? AND kind = 'video' AND status = 'ready'`,
+      ).bind(parsed.data.enabled ? 1 : 0, updatedAt, assetId, auth.userId),
+    ];
+    if (!parsed.data.enabled) {
+      statements.push(
+        context.env.DB.prepare(
+          "DELETE FROM media_grants WHERE asset_id = ? AND purpose IN ('agent', 'worker')",
+        ).bind(assetId),
+        context.env.DB.prepare("DELETE FROM gpu_jobs WHERE asset_id = ?").bind(assetId),
+        context.env.DB.prepare("DELETE FROM video_analyses WHERE asset_id = ?").bind(assetId),
+        context.env.DB.prepare("DELETE FROM media_derivatives WHERE asset_id = ?").bind(assetId),
+      );
+    }
+    const [updated] = await context.env.DB.batch(statements);
+    if ((updated?.meta.changes ?? 0) !== 1) {
       return errorResponse(context, 404, "asset_not_found", "Asset was not found.");
+    }
+    if (parsed.data.enabled) {
+      await queueVideoAnalysis(context.env, assetId, now);
+    } else {
+      const keys = derivatives.results.flatMap((row) => row.object_key ? [row.object_key] : []);
+      if (keys.length > 0) await context.env.MEDIA.delete(keys);
     }
     const result = await findOwnedAsset(context.env, assetId, auth.userId);
     if (!result) return errorResponse(context, 404, "asset_not_found", "Asset was not found.");
@@ -1238,6 +1299,17 @@ export function createApp(overrides: Partial<AppDependencies> = {}) {
         // Transcription is best-effort; the asset is already ready.
       }
     }
+    if (completed.kind === "video" && completed.agent_access_enabled === 1) {
+      try {
+        await queueVideoAnalysis(context.env, completed.id, dependencies.now());
+      } catch (error) {
+        console.error(JSON.stringify({
+          event: "video_analysis_queue_failed",
+          assetId: completed.id,
+          message: String(error),
+        }));
+      }
+    }
     try {
       await context.env.DB.prepare("DELETE FROM upload_parts WHERE asset_id = ?").bind(completed.id).run();
     } catch {
@@ -1271,8 +1343,9 @@ export function createApp(overrides: Partial<AppDependencies> = {}) {
     await context.env.DB.batch([
       context.env.DB.prepare("DELETE FROM media_grants WHERE expires_at <= ?").bind(nowIso),
       context.env.DB.prepare(
-        `INSERT INTO media_grants (id, asset_id, user_id, token_hash, expires_at, created_at)
-         VALUES (?, ?, ?, ?, ?, ?)`,
+        `INSERT INTO media_grants (
+          id, asset_id, user_id, token_hash, expires_at, created_at, purpose
+        ) VALUES (?, ?, ?, ?, ?, ?, 'app')`,
       ).bind(crypto.randomUUID(), asset.id, auth.userId, await sha256Hex(token), expiresAt, nowIso),
     ]);
     return context.json({ url: `/v1/media/${token}`, expiresAt }, 201);
@@ -1630,6 +1703,7 @@ export function createApp(overrides: Partial<AppDependencies> = {}) {
     });
   });
 
+  app.route("/v1/internal/gpu-jobs", createGpuJobRoutes({ now: dependencies.now }));
   app.route("/v1", api);
   app.notFound((context) => errorResponse(context, 404, "not_found", "Route was not found."));
   app.onError((error, context) => {

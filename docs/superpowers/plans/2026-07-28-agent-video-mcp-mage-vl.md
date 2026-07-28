@@ -27,7 +27,7 @@
 ### Task 1: D1 privacy boundary and owner toggle API
 
 **Files:**
-- Create: `backend/migrations/0008_agent_video_access.sql`
+- Create: `backend/migrations/0009_agent_video_access.sql`
 - Modify: `backend/src/app.ts`
 - Test: `backend/tests/app.test.ts`
 
@@ -107,7 +107,7 @@ Expected: selected tests and typecheck pass.
 - [ ] **Step 1.5: Commit**
 
 ```bash
-git add backend/migrations/0008_agent_video_access.sql backend/src/app.ts backend/tests/app.test.ts
+git add backend/migrations/0009_agent_video_access.sql backend/src/app.ts backend/tests/app.test.ts
 git commit -m "feat(api): add agent access privacy boundary"
 ```
 
@@ -116,7 +116,7 @@ git commit -m "feat(api): add agent access privacy boundary"
 ### Task 2: Purpose-scoped media grants and GPU lease API
 
 **Files:**
-- Modify: `backend/migrations/0008_agent_video_access.sql`
+- Modify: `backend/migrations/0009_agent_video_access.sql`
 - Modify: `backend/src/env-secrets.d.ts`
 - Modify: `backend/src/app.ts`
 - Create: `backend/src/gpu-jobs.ts`
@@ -216,7 +216,7 @@ Expected: all backend tests and typecheck pass.
 - [ ] **Step 2.7: Commit**
 
 ```bash
-git add backend/migrations/0008_agent_video_access.sql backend/src/env-secrets.d.ts backend/src/app.ts backend/src/gpu-jobs.ts backend/tests/app.test.ts
+git add backend/migrations/0009_agent_video_access.sql backend/src/env-secrets.d.ts backend/src/app.ts backend/src/gpu-jobs.ts backend/tests/app.test.ts
 git commit -m "feat(api): add private GPU job leases"
 ```
 
