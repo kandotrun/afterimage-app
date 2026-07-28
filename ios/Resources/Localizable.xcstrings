@@ -3870,25 +3870,25 @@
         "ja": {
           "stringUnit": {
             "state": "translated",
-            "value": "新しくアップロードする写真・動画はありません。"
+            "value": "新しくアップロードする動画はありません。"
           }
         },
         "en": {
           "stringUnit": {
             "state": "translated",
-            "value": "There are no new photos or videos to upload."
+            "value": "There are no new videos to upload."
           }
         },
         "zh-Hans": {
           "stringUnit": {
             "state": "translated",
-            "value": "没有新的照片或视频需要上传。"
+            "value": "没有新的视频需要上传。"
           }
         },
         "ko": {
           "stringUnit": {
             "state": "translated",
-            "value": "새로 업로드할 사진이나 동영상이 없습니다."
+            "value": "새로 업로드할 동영상이 없습니다."
           }
         }
       }
