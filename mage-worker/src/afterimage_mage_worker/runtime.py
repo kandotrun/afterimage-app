@@ -24,6 +24,10 @@ class RuntimeFailure(RuntimeError):
         super().__init__(code.value)
 
 
+def model_output_invalid_event(error: ContractError) -> dict[str, str]:
+    return {"event": "model_output_invalid", "reason": str(error)}
+
+
 def offline_model_imports(
     filename: str,
     check_imports: Callable[[str], list[str]],
@@ -319,14 +323,9 @@ class MageRuntime:
         frames = self._sample_frames(source, time_range, duration_ms)
         window_duration_ms = time_range.end_ms - time_range.start_ms
         prompt = (
-            "Return only one valid JSON object. It must contain exactly two fields: "
-            "summary, a concise factual description of the visible video content; and "
-            "segments, an array of visible events. Each segment must contain exactly "
-            "startMs, endMs, and caption. "
+            "Describe the clearly visible video content in concise factual prose. "
             f"The sampled frames cover {time_range.start_ms}ms through {time_range.end_ms}ms "
-            f"of a {duration_ms}ms private lifelog video. Segment timestamps must be integer "
-            f"millisecond offsets from 0 through {window_duration_ms} within this sampled window. "
-            "Four seconds must be written as 4000, never 4. "
+            f"of a {duration_ms}ms private lifelog video. "
             "Include only clearly visible events, do not infer identity or facts not shown, "
             "and do not repeat text from these instructions."
         )
@@ -385,6 +384,7 @@ class MageRuntime:
                 ),
             )
         except ContractError as error:
+            print(json.dumps(model_output_invalid_event(error)), flush=True)
             raise RuntimeFailure(FailureCode.OUTPUT_INVALID) from error
         except RuntimeFailure:
             raise

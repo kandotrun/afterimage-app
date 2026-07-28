@@ -1,3 +1,4 @@
+from collections.abc import Iterator
 from dataclasses import dataclass
 from enum import Enum
 import json
@@ -213,12 +214,84 @@ def parse_lease(payload: object) -> JobLease:
     )
 
 
-def parse_analysis(value: str, duration_ms: int) -> AnalysisResult:
+def _json_objects(value: str) -> Iterator[dict[str, object]]:
+    decoder = json.JSONDecoder()
+    for position, character in enumerate(value):
+        if character != "{":
+            continue
+        try:
+            decoded, _ = decoder.raw_decode(value, position)
+        except json.JSONDecodeError:
+            continue
+        if type(decoded) is dict:
+            yield decoded
+
+
+def _contains_json(value: str) -> bool:
     try:
-        decoded = json.loads(value)
-    except json.JSONDecodeError as error:
-        raise ContractError("analysis_json_invalid") from error
-    payload = _object(decoded, {"summary", "segments"}, "analysis_output")
+        json.loads(value)
+    except json.JSONDecodeError:
+        pass
+    else:
+        return True
+    stripped = value.strip()
+    if stripped.startswith(("{", "[")):
+        return True
+    if "```json" in value.lower():
+        return True
+    if stripped.startswith('"'):
+        escaped = False
+        for character in stripped[1:]:
+            if escaped:
+                escaped = False
+            elif character == "\\":
+                escaped = True
+            elif character == '"':
+                break
+        else:
+            return True
+    decoder = json.JSONDecoder()
+    for position, character in enumerate(value):
+        if character not in "{[":
+            continue
+        try:
+            decoded, _ = decoder.raw_decode(value, position)
+        except json.JSONDecodeError:
+            decoded = None
+        if type(decoded) in {dict, list}:
+            return True
+        remainder = value[position + 1:].lstrip()
+        if not remainder:
+            return True
+        if character == "{" and remainder.startswith('"'):
+            return True
+        if character == "[" and "," in remainder:
+            return True
+    return False
+
+
+def parse_analysis(value: str, duration_ms: int) -> AnalysisResult:
+    required_fields = {"summary", "segments"}
+    payload: dict[str, object] | None = None
+    found_json = _contains_json(value)
+    for decoded in _json_objects(value):
+        found_json = True
+        candidates = [decoded]
+        while candidates:
+            candidate = candidates.pop()
+            if required_fields.issubset(candidate):
+                payload = {field: candidate[field] for field in required_fields}
+                break
+            candidates.extend(
+                item for item in candidate.values()
+                if type(item) is dict
+            )
+        if payload is not None:
+            break
+    if payload is None:
+        if found_json:
+            raise ContractError("analysis_output_fields_invalid")
+        return AnalysisResult(summary=_string(value, "summary"), segments=())
     summary = _string(payload["summary"], "summary")
     raw_segments = payload["segments"]
     if type(raw_segments) is not list or len(raw_segments) > 200:
