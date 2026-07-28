@@ -80,6 +80,7 @@ export async function generateDailySummary(
     },
     body: JSON.stringify({
       model,
+      reasoning_effort: "low",
       temperature: 0.1,
       max_tokens: 128,
       messages: [
