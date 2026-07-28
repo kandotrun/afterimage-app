@@ -1,6 +1,8 @@
+@preconcurrency import AVFoundation
 import CoreTransferable
 import CryptoKit
 import Foundation
+import ImageIO
 import PhotosUI
 import SwiftUI
 import UniformTypeIdentifiers
@@ -130,7 +132,7 @@ enum MediaImporter {
                 kind: .video,
                 url: movie.url,
                 originalFilename: identity?.filename ?? movie.url.lastPathComponent,
-                capturedAt: nil
+                capturedAt: await captureDate(for: .video, at: movie.url)
             )
         }
 
@@ -142,8 +144,37 @@ enum MediaImporter {
             kind: .image,
             url: image.url,
             originalFilename: identity?.filename ?? image.url.lastPathComponent,
-            capturedAt: nil
+            capturedAt: await captureDate(for: .image, at: image.url)
         )
+    }
+
+    static func captureDate(for kind: MediaKind, at url: URL) async -> Date? {
+        switch kind {
+        case .image:
+            guard let source = CGImageSourceCreateWithURL(url as CFURL, nil),
+                  let rawProperties = CGImageSourceCopyPropertiesAtIndex(source, 0, nil) else {
+                return nil
+            }
+            let properties = rawProperties as NSDictionary
+            guard let exif = properties[kCGImagePropertyExifDictionary] as? NSDictionary,
+                  let dateTime = exif[kCGImagePropertyExifDateTimeOriginal] as? String else {
+                return nil
+            }
+            let formatter = DateFormatter()
+            formatter.calendar = Calendar(identifier: .gregorian)
+            formatter.locale = Locale(identifier: "en_US_POSIX")
+            if let offset = exif[kCGImagePropertyExifOffsetTimeOriginal] as? String {
+                formatter.dateFormat = "yyyy:MM:dd HH:mm:ssXXXXX"
+                return formatter.date(from: dateTime + offset)
+            }
+            formatter.dateFormat = "yyyy:MM:dd HH:mm:ss"
+            formatter.timeZone = .autoupdatingCurrent
+            return formatter.date(from: dateTime)
+        case .video:
+            let asset = AVURLAsset(url: url)
+            guard let metadata = try? await asset.load(.creationDate) else { return nil }
+            return try? await metadata.load(.dateValue)
+        }
     }
 
     private static func mediaKind(for item: PhotosPickerItem) -> MediaKind? {
