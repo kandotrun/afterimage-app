@@ -35,7 +35,6 @@ struct MemoryDetailView: View {
                 }
             }
             .tabViewStyle(.page(indexDisplayMode: .never))
-            .ignoresSafeArea()
         }
         .navigationTitle(title)
         .navigationBarTitleDisplayMode(.inline)
