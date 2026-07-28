@@ -66,7 +66,7 @@ install -Dm644 deploy/afterimage-mage-vl.service \
 systemctl --user daemon-reload
 ```
 
-Deploy migration `0009_agent_video_access.sql`, deploy the matching backend,
+Deploy migration `0010_agent_video_access.sql`, deploy the matching backend,
 and configure its `MAGE_WORKER_TOKEN_HASH` from the DGX credential before
 activating the service:
 

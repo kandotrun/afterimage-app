@@ -70,7 +70,7 @@ background-analysis job with a new identifier.
 
 ## D1 schema
 
-Migration `0009_agent_video_access.sql` adds:
+Migration `0010_agent_video_access.sql` adds:
 
 ```sql
 ALTER TABLE assets ADD COLUMN agent_access_enabled INTEGER NOT NULL DEFAULT 1
