@@ -36,6 +36,7 @@ final class DailyVideoPlaybackController: ObservableObject {
     private var timeObserver: Any?
     private var cancellables: Set<AnyCancellable> = []
     private var generation = 0
+    private var prepareRequestID = 0
 
     var clips: [DailyPlaybackClip] { plan.clips }
     var activeClip: DailyPlaybackClip? {
@@ -48,6 +49,7 @@ final class DailyVideoPlaybackController: ObservableObject {
     ) async {
         generation += 1
         let expected = generation
+        let requestID = issuePrepareRequest()
         resetPlayerState()
         self.loadGrant = loadGrant
         plan = DailyPlaybackPlan(clips: playback.clips)
@@ -55,7 +57,13 @@ final class DailyVideoPlaybackController: ObservableObject {
         intendsToPlay = true
         installTimeObserverIfNeeded()
         guard !playback.clips.isEmpty else { return }
-        await prepareClip(index: 0, localSeconds: 0, shouldPlay: true, generation: expected)
+        await prepareClip(
+            index: 0,
+            localSeconds: 0,
+            shouldPlay: true,
+            generation: expected,
+            requestID: requestID
+        )
     }
 
     func deactivate() {
@@ -80,10 +88,7 @@ final class DailyVideoPlaybackController: ObservableObject {
             resumePlayback()
         case .ended:
             intendsToPlay = true
-            let expected = generation
-            Task { [weak self] in
-                await self?.prepareClip(index: 0, localSeconds: 0, shouldPlay: true, generation: expected)
-            }
+            startPreparing(index: 0, localSeconds: 0, shouldPlay: true)
         case .idle, .failed:
             break
         }
@@ -113,34 +118,24 @@ final class DailyVideoPlaybackController: ObservableObject {
 
         if location.clipIndex == activeIndex,
            recoveryPolicy.grantAction(now: Date(), expiresAt: grant?.expiresAt) == .reuse {
-            player.seek(
-                to: CMTime(seconds: location.localSeconds, preferredTimescale: 600),
-                toleranceBefore: .zero,
-                toleranceAfter: .zero
+            startSeekingCurrentItem(
+                localSeconds: location.localSeconds,
+                shouldPlay: shouldPlay
             )
-            phase = .paused
-            if shouldPlay { player.play() }
             return
         }
 
-        let expected = generation
-        Task { [weak self] in
-            await self?.prepareClip(
-                index: location.clipIndex,
-                localSeconds: location.localSeconds,
-                shouldPlay: shouldPlay,
-                generation: expected
-            )
-        }
+        startPreparing(
+            index: location.clipIndex,
+            localSeconds: location.localSeconds,
+            shouldPlay: shouldPlay
+        )
     }
 
     func playClip(at index: Int) {
         guard plan.clips.indices.contains(index) else { return }
         intendsToPlay = true
-        let expected = generation
-        Task { [weak self] in
-            await self?.prepareClip(index: index, localSeconds: 0, shouldPlay: true, generation: expected)
-        }
+        startPreparing(index: index, localSeconds: 0, shouldPlay: true)
     }
 
     func retry() {
@@ -149,15 +144,11 @@ final class DailyVideoPlaybackController: ObservableObject {
         grant = nil
         intendsToPlay = true
         let location = plan.location(at: position)
-        let expected = generation
-        Task { [weak self] in
-            await self?.prepareClip(
-                index: location?.clipIndex ?? 0,
-                localSeconds: location?.localSeconds ?? 0,
-                shouldPlay: true,
-                generation: expected
-            )
-        }
+        startPreparing(
+            index: location?.clipIndex ?? 0,
+            localSeconds: location?.localSeconds ?? 0,
+            shouldPlay: true
+        )
     }
 
     private func installTimeObserverIfNeeded() {
@@ -167,7 +158,7 @@ final class DailyVideoPlaybackController: ObservableObject {
             queue: .main
         ) { [weak self] time in
             MainActor.assumeIsolated {
-                guard let self, !self.isScrubbing,
+                guard let self, !self.isScrubbing, self.phase != .loading,
                       let global = self.plan.globalPosition(
                         localSeconds: max(0, time.seconds.isFinite ? time.seconds : 0),
                         clipIndex: self.activeIndex
@@ -184,14 +175,56 @@ final class DailyVideoPlaybackController: ObservableObject {
             player.play()
         case .refresh:
             let location = plan.location(at: position)
-            let expected = generation
-            Task { [weak self] in
-                await self?.prepareClip(
-                    index: location?.clipIndex ?? self?.activeIndex ?? 0,
-                    localSeconds: location?.localSeconds ?? 0,
-                    shouldPlay: true,
-                    generation: expected
-                )
+            startPreparing(
+                index: location?.clipIndex ?? activeIndex,
+                localSeconds: location?.localSeconds ?? 0,
+                shouldPlay: true
+            )
+        }
+    }
+
+    private func issuePrepareRequest() -> Int {
+        prepareRequestID += 1
+        return prepareRequestID
+    }
+
+    private func isCurrentRequest(generation expected: Int, requestID: Int) -> Bool {
+        expected == generation && requestID == prepareRequestID
+    }
+
+    private func startPreparing(index: Int, localSeconds: TimeInterval, shouldPlay: Bool) {
+        let expected = generation
+        let requestID = issuePrepareRequest()
+        Task { [weak self] in
+            await self?.prepareClip(
+                index: index,
+                localSeconds: localSeconds,
+                shouldPlay: shouldPlay,
+                generation: expected,
+                requestID: requestID
+            )
+        }
+    }
+
+    private func startSeekingCurrentItem(localSeconds: TimeInterval, shouldPlay: Bool) {
+        let expected = generation
+        let requestID = issuePrepareRequest()
+        phase = .loading
+        Task { [weak self] in
+            guard let self,
+                  self.isCurrentRequest(generation: expected, requestID: requestID),
+                  !Task.isCancelled else { return }
+            await self.player.seek(
+                to: CMTime(seconds: localSeconds, preferredTimescale: 600),
+                toleranceBefore: .zero,
+                toleranceAfter: .zero
+            )
+            guard self.isCurrentRequest(generation: expected, requestID: requestID),
+                  !Task.isCancelled else { return }
+            if shouldPlay && self.intendsToPlay {
+                self.player.play()
+            } else {
+                self.phase = .paused
             }
         }
     }
@@ -200,11 +233,14 @@ final class DailyVideoPlaybackController: ObservableObject {
         index: Int,
         localSeconds: TimeInterval,
         shouldPlay: Bool,
-        generation expected: Int
+        generation expected: Int,
+        requestID: Int
     ) async {
-        guard expected == generation,
+        guard isCurrentRequest(generation: expected, requestID: requestID),
               plan.clips.indices.contains(index),
               let loadGrant else { return }
+        player.pause()
+        cancellables.removeAll()
         phase = .loading
         activeIndex = index
         position = plan.globalPosition(localSeconds: localSeconds, clipIndex: index) ?? 0
@@ -212,11 +248,12 @@ final class DailyVideoPlaybackController: ObservableObject {
 
         do {
             let fresh = try await loadGrant(plan.clips[index].asset)
-            guard expected == generation, activeIndex == index else { return }
+            guard isCurrentRequest(generation: expected, requestID: requestID),
+                  activeIndex == index else { return }
             grant = fresh
             try audioSession.activate()
             let item = AVPlayerItem(url: fresh.url)
-            observe(item: item)
+            observe(item: item, generation: expected, requestID: requestID)
             player.replaceCurrentItem(with: item)
             if localSeconds > 0 {
                 await player.seek(
@@ -224,7 +261,8 @@ final class DailyVideoPlaybackController: ObservableObject {
                     toleranceBefore: .zero,
                     toleranceAfter: .zero
                 )
-                guard expected == generation, activeIndex == index else { return }
+                guard isCurrentRequest(generation: expected, requestID: requestID),
+                      activeIndex == index else { return }
             }
             if shouldPlay && intendsToPlay {
                 player.play()
@@ -232,26 +270,36 @@ final class DailyVideoPlaybackController: ObservableObject {
                 phase = .paused
             }
         } catch {
-            guard expected == generation, !Task.isCancelled else { return }
+            guard isCurrentRequest(generation: expected, requestID: requestID),
+                  !Task.isCancelled else { return }
             if error is CancellationError || (error as? URLError)?.code == .cancelled { return }
             phase = .failed((error as? LocalizedError)?.errorDescription ?? error.localizedDescription)
         }
     }
 
-    private func observe(item: AVPlayerItem) {
+    private func observe(item: AVPlayerItem, generation expected: Int, requestID: Int) {
         cancellables.removeAll()
 
         item.publisher(for: \.status)
             .receive(on: DispatchQueue.main)
             .sink { [weak self] status in
-                MainActor.assumeIsolated { self?.handle(itemStatus: status, of: item) }
+                MainActor.assumeIsolated {
+                    guard let self,
+                          self.isCurrentRequest(generation: expected, requestID: requestID),
+                          self.player.currentItem === item else { return }
+                    self.handle(itemStatus: status, of: item)
+                }
             }
             .store(in: &cancellables)
 
         player.publisher(for: \.timeControlStatus)
             .receive(on: DispatchQueue.main)
             .sink { [weak self] control in
-                MainActor.assumeIsolated { self?.handle(controlStatus: control) }
+                MainActor.assumeIsolated {
+                    guard let self,
+                          self.isCurrentRequest(generation: expected, requestID: requestID) else { return }
+                    self.handle(controlStatus: control)
+                }
             }
             .store(in: &cancellables)
 
@@ -259,7 +307,12 @@ final class DailyVideoPlaybackController: ObservableObject {
             .map { _ in }
             .receive(on: DispatchQueue.main)
             .sink { [weak self] in
-                MainActor.assumeIsolated { self?.itemDidFinish() }
+                MainActor.assumeIsolated {
+                    guard let self,
+                          self.isCurrentRequest(generation: expected, requestID: requestID),
+                          self.player.currentItem === item else { return }
+                    self.itemDidFinish()
+                }
             }
             .store(in: &cancellables)
     }
@@ -297,10 +350,7 @@ final class DailyVideoPlaybackController: ObservableObject {
             return
         }
         position = TimeInterval(plan.clips[next].startMs) / 1_000
-        let expected = generation
-        Task { [weak self] in
-            await self?.prepareClip(index: next, localSeconds: 0, shouldPlay: true, generation: expected)
-        }
+        startPreparing(index: next, localSeconds: 0, shouldPlay: true)
     }
 
     private func handleFailure(message: String?) {
@@ -309,15 +359,11 @@ final class DailyVideoPlaybackController: ObservableObject {
             retriesUsed += 1
             grant = nil
             let location = plan.location(at: position)
-            let expected = generation
-            Task { [weak self] in
-                await self?.prepareClip(
-                    index: location?.clipIndex ?? self?.activeIndex ?? 0,
-                    localSeconds: location?.localSeconds ?? 0,
-                    shouldPlay: true,
-                    generation: expected
-                )
-            }
+            startPreparing(
+                index: location?.clipIndex ?? activeIndex,
+                localSeconds: location?.localSeconds ?? 0,
+                shouldPlay: true
+            )
         case .surface:
             phase = .failed(message ?? L10n.string("playback.failed"))
         }
