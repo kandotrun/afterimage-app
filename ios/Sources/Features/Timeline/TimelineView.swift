@@ -207,11 +207,12 @@ private struct UploadDock: View {
                             preferredItemEncoding: .current,
                             photoLibrary: .shared()
                         ) {
-                            Label("追加", systemImage: "plus")
+                            Image(systemName: "plus")
                                 .font(.headline)
-                                .frame(minWidth: 82, minHeight: 44)
+                                .frame(width: 44, height: 44)
                         }
                         .buttonStyle(.glassProminent)
+                        .buttonBorderShape(.circle)
                         .accessibilityLabel("写真や動画を追加")
                         .accessibilityHint(L10n.string("accessibility.upload_picker_duplicate_hint"))
                     }

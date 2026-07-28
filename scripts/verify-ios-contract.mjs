@@ -56,6 +56,11 @@ assert.match(
   /PhotosPicker\([\s\S]*?photoLibrary:\s*\.shared\(\)[\s\S]*?\)\s*\{/,
   "media picker must provide stable photo library item identifiers",
 );
+assert.match(
+  timeline,
+  /PhotosPicker\([\s\S]*?photoLibrary:\s*\.shared\(\)[\s\S]*?\)\s*\{\s*Image\(systemName:\s*"plus"\)[\s\S]*?\}\s*\.buttonStyle\(\.glassProminent\)\s*\.buttonBorderShape\(\.circle\)/,
+  "upload picker must be an icon-only circular prominent glass button",
+);
 assert.doesNotMatch(
   mediaImporter,
   /PHAsset\.fetchAssets/,
