@@ -9,6 +9,12 @@ enum AudioCompressionStrategy: Equatable, Sendable {
     case passthrough
 }
 
+enum VideoAudioTrackSelection {
+    static func select<Element>(_ tracks: [Element]) -> [Element] {
+        Array(tracks.prefix(1))
+    }
+}
+
 struct VideoCompressionPlan: Equatable, Sendable {
     let width: Int
     let height: Int
@@ -241,8 +247,11 @@ actor MediaCompressor {
         }
         writer.add(videoInput)
 
+        let audioTracks = VideoAudioTrackSelection.select(
+            try await asset.loadTracks(withMediaType: .audio)
+        )
         var audioPipelines: [MediaSamplePipeline] = []
-        for audioTrack in try await asset.loadTracks(withMediaType: .audio) {
+        for audioTrack in audioTracks {
             let descriptions = try await audioTrack.load(.formatDescriptions)
             let formatHint = descriptions.first
             let output = AVAssetReaderTrackOutput(track: audioTrack, outputSettings: nil)
