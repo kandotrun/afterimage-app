@@ -9,6 +9,34 @@ type TestDailySummaryGenerator = (
   transcripts: Array<{ capturedAt: string; text: string }>,
 ) => Promise<{ summary: string; model: string }>;
 
+type TestMcpResponse = {
+  result: {
+    tools: Array<{
+      name: string;
+      annotations?: Record<string, unknown>;
+      inputSchema?: {
+        properties?: Record<string, {
+          type?: string;
+          enum?: string[];
+          maximum?: number;
+        }>;
+      };
+    }>;
+    structuredContent: {
+      items: Array<Record<string, unknown>>;
+      derivativeId: string;
+      [key: string]: unknown;
+    };
+    content: Array<{
+      type: string;
+      uri?: string;
+      mimeType?: string;
+      size?: number;
+    }>;
+    isError?: boolean;
+  };
+};
+
 function makeApp(identity: AppleIdentity = {
   subject: "apple-user-a",
   email: "a@example.com",
@@ -188,6 +216,43 @@ function envWithRunFailureBeforeCommit(sqlFragment: string): Env {
             ? wrapStatementWithRunFailureBeforeCommit(statement)
             : statement;
         };
+      }
+      const member = Reflect.get(target, property, target) as unknown;
+      return typeof member === "function" ? member.bind(target) : member;
+    },
+  });
+  return { ...env, DB: db };
+}
+
+function envWithFirstResultHook(sqlFragment: string, afterFirst: () => Promise<void>): Env {
+  let armed = true;
+  const wrap = (statement: D1PreparedStatement): D1PreparedStatement => new Proxy(statement, {
+    get(target, property) {
+      if (property === "bind") {
+        return (...values: unknown[]) => wrap(target.bind(...values));
+      }
+      if (property === "first") {
+        return async (columnName?: string) => {
+          const result = columnName === undefined
+            ? await target.first()
+            : await target.first(columnName);
+          if (armed && result !== null) {
+            armed = false;
+            await afterFirst();
+          }
+          return result;
+        };
+      }
+      const member = Reflect.get(target, property, target) as unknown;
+      return typeof member === "function" ? member.bind(target) : member;
+    },
+  });
+  const db = new Proxy(env.DB, {
+    get(target, property) {
+      if (property === "prepare") {
+        return (query: string) => query.includes(sqlFragment)
+          ? wrap(target.prepare(query))
+          : target.prepare(query);
       }
       const member = Reflect.get(target, property, target) as unknown;
       return typeof member === "function" ? member.bind(target) : member;
@@ -1617,6 +1682,8 @@ describe("asset upload and private timeline", () => {
 
     const user = await env.DB.prepare("SELECT id FROM users WHERE apple_subject = ?")
       .bind("cleanup-owner").first<{ id: string }>();
+    const derivativeKey = `users/${user!.id}/assets/${ready.asset.id}/derivatives/expired.jpg`;
+    await env.MEDIA.put(derivativeKey, "expired derivative");
     await env.DB.batch([
       env.DB.prepare(
         "INSERT INTO sessions (id, user_id, token_hash, expires_at, created_at) VALUES (?, ?, ?, ?, ?)",
@@ -1624,6 +1691,19 @@ describe("asset upload and private timeline", () => {
       env.DB.prepare(
         "INSERT INTO media_grants (id, asset_id, user_id, token_hash, expires_at, created_at) VALUES (?, ?, ?, ?, ?, ?)",
       ).bind("expired-grant", ready.asset.id, user!.id, "expired-grant-hash", "2026-07-26T00:00:00.000Z", "2026-07-25T00:00:00.000Z"),
+      env.DB.prepare(
+        `INSERT INTO gpu_jobs (
+          id, asset_id, kind, status, request_json, priority, attempt_count,
+          available_at, created_at, updated_at
+        ) VALUES ('expired-derivative-job', ?, 'frame', 'queued', '{}', 0, 0, ?, ?, ?)`,
+      ).bind(ready.asset.id, NOW.toISOString(), NOW.toISOString(), NOW.toISOString()),
+      env.DB.prepare(
+        `INSERT INTO media_derivatives (
+          id, asset_id, job_id, kind, start_ms, end_ms, status, object_key,
+          content_type, byte_size, expires_at, created_at, updated_at
+        ) VALUES ('expired-derivative', ?, 'expired-derivative-job', 'frame', 0, 0,
+          'ready', ?, 'image/jpeg', 18, '2026-07-26T00:00:00.000Z', ?, ?)`,
+      ).bind(ready.asset.id, derivativeKey, NOW.toISOString(), NOW.toISOString()),
     ]);
 
     const firstCleanup = await cleanupExpiredState(env, NOW);
@@ -1631,11 +1711,15 @@ describe("asset upload and private timeline", () => {
     expect(firstCleanup).toMatchObject({
       expiredSessions: 1,
       expiredGrants: 1,
+      expiredDerivatives: 1,
       quarantinedAssets: 1,
       abandonedAssets: 0,
     });
     expect(await env.DB.prepare("SELECT id FROM sessions WHERE id = 'expired-session'").first()).toBeNull();
     expect(await env.DB.prepare("SELECT id FROM media_grants WHERE id = 'expired-grant'").first()).toBeNull();
+    expect(await env.DB.prepare("SELECT id FROM media_derivatives WHERE id = 'expired-derivative'").first()).toBeNull();
+    expect(await env.DB.prepare("SELECT id FROM gpu_jobs WHERE id = 'expired-derivative-job'").first()).toBeNull();
+    expect(await env.MEDIA.head(derivativeKey)).toBeNull();
     expect(await env.DB.prepare("SELECT status FROM assets WHERE id = ?").bind(abandoned.asset.id).first())
       .toMatchObject({ status: "failed" });
     expect(await env.MEDIA.head(abandonedKey!.object_key)).not.toBeNull();
@@ -1770,7 +1854,7 @@ describe("MCP personal access tokens", () => {
     expect(mcp.status).toBe(401);
   });
 
-  it("exposes only the owner's completed transcriptions through read-only tools", async () => {
+  it("exposes only agent-enabled owner video memories through read-only tools", async () => {
     const owner = await signIn("mcp-tools-owner");
     await signIn("mcp-tools-other");
     const ownerUser = await env.DB.prepare("SELECT id FROM users WHERE apple_subject = ?")
@@ -1778,14 +1862,17 @@ describe("MCP personal access tokens", () => {
     const otherUser = await env.DB.prepare("SELECT id FROM users WHERE apple_subject = ?")
       .bind("mcp-tools-other").first<{ id: string }>();
     const ownerAssetId = crypto.randomUUID();
+    const silentAssetId = crypto.randomUUID();
+    const disabledAssetId = crypto.randomUUID();
     const otherAssetId = crypto.randomUUID();
+    const silentAnalysisJobId = crypto.randomUUID();
     await env.DB.batch([
       env.DB.prepare(
         `INSERT INTO assets (
           id, user_id, kind, filename, content_type, byte_size, captured_at, duration_ms,
           status, object_key, upload_mode, created_at, updated_at,
           transcription_status, transcript, transcript_language, transcription_updated_at
-        ) VALUES (?, ?, 'video', ?, 'video/mp4', 100, ?, 12000,
+        ) VALUES (?, ?, 'video', ?, 'video/mp4', 11, ?, 12000,
           'ready', ?, 'single', ?, ?, 'completed', ?, 'ja', ?)`,
       ).bind(
         ownerAssetId,
@@ -1796,6 +1883,62 @@ describe("MCP personal access tokens", () => {
         NOW.toISOString(),
         NOW.toISOString(),
         "海辺で今日の計画を話した。",
+        NOW.toISOString(),
+      ),
+      env.DB.prepare(
+        `INSERT INTO assets (
+          id, user_id, kind, filename, content_type, byte_size, captured_at, duration_ms,
+          status, object_key, upload_mode, created_at, updated_at, transcription_status
+        ) VALUES (?, ?, 'video', ?, 'video/mp4', 12, ?, 20000,
+          'ready', ?, 'single', ?, ?, 'pending')`,
+      ).bind(
+        silentAssetId,
+        ownerUser!.id,
+        "silent.mp4",
+        "2026-07-27T06:30:00.000Z",
+        `users/${ownerUser!.id}/assets/${silentAssetId}/media`,
+        NOW.toISOString(),
+        NOW.toISOString(),
+      ),
+      env.DB.prepare(
+        `INSERT INTO video_analyses (
+          asset_id, job_id, model_id, model_revision, backend, coverage_mode,
+          summary, created_at, updated_at
+        ) VALUES (?, ?, 'microsoft/Mage-VL', 'pinned-revision', 'frames', 'full', ?, ?, ?)`,
+      ).bind(
+        silentAssetId,
+        silentAnalysisJobId,
+        "机の上に鍵を置く様子。",
+        NOW.toISOString(),
+        NOW.toISOString(),
+      ),
+      env.DB.prepare(
+        `INSERT INTO video_analysis_ranges (
+          analysis_asset_id, position, start_ms, end_ms
+        ) VALUES (?, 0, 0, 20000)`,
+      ).bind(silentAssetId),
+      env.DB.prepare(
+        `INSERT INTO video_analysis_segments (
+          analysis_asset_id, position, start_ms, end_ms, caption
+        ) VALUES (?, 0, 500, 1500, ?)`,
+      ).bind(silentAssetId, "机の上に鍵を置いた。"),
+      env.DB.prepare(
+        `INSERT INTO assets (
+          id, user_id, kind, filename, content_type, byte_size, captured_at, duration_ms,
+          status, object_key, upload_mode, created_at, updated_at,
+          transcription_status, transcript, transcript_language, transcription_updated_at,
+          agent_access_enabled
+        ) VALUES (?, ?, 'video', ?, 'video/mp4', 12, ?, 9000,
+          'ready', ?, 'single', ?, ?, 'completed', ?, 'ja', ?, 0)`,
+      ).bind(
+        disabledAssetId,
+        ownerUser!.id,
+        "disabled.mp4",
+        "2026-07-27T06:15:00.000Z",
+        `users/${ownerUser!.id}/assets/${disabledAssetId}/media`,
+        NOW.toISOString(),
+        NOW.toISOString(),
+        "共有しない秘密の記憶。",
         NOW.toISOString(),
       ),
       env.DB.prepare(
@@ -1817,6 +1960,8 @@ describe("MCP personal access tokens", () => {
         NOW.toISOString(),
       ),
     ]);
+    await env.MEDIA.put(`users/${ownerUser!.id}/assets/${ownerAssetId}/media`, "owner-video");
+    await env.MEDIA.put(`users/${ownerUser!.id}/assets/${silentAssetId}/media`, "silent-video");
 
     const created = await owner.app.request("/v1/mcp/tokens", {
       method: "POST",
@@ -1836,13 +1981,19 @@ describe("MCP personal access tokens", () => {
         body: JSON.stringify({ jsonrpc: "2.0", id, method, params }),
       }, env);
       expect(response.status).toBe(200);
-      return response.json<any>();
+      return response.json<TestMcpResponse>();
     }
 
     const tools = await callMcp(1, "tools/list", {});
     expect(tools.result.tools.map((tool: { name: string }) => tool.name)).toEqual([
       "list_transcriptions",
       "get_transcription",
+      "search_memories",
+      "get_memory",
+      "get_video",
+      "get_video_frame",
+      "get_video_clip",
+      "get_video_derivative",
     ]);
     expect(tools.result.tools).toEqual(expect.arrayContaining([
       expect.objectContaining({
@@ -1850,6 +2001,17 @@ describe("MCP personal access tokens", () => {
         annotations: expect.objectContaining({ readOnlyHint: true, destructiveHint: false }),
       }),
     ]));
+    const searchTool = tools.result.tools.find((tool) => tool.name === "search_memories");
+    expect(searchTool?.inputSchema?.properties).toMatchObject({
+      capturedAfter: { type: "string" },
+      capturedBefore: { type: "string" },
+      analysisStatus: {
+        enum: ["queued", "processing", "completed", "failed", "unavailable"],
+      },
+      limit: { maximum: 50 },
+    });
+    expect(searchTool?.inputSchema?.properties).not.toHaveProperty("from");
+    expect(searchTool?.inputSchema?.properties).not.toHaveProperty("to");
 
     const listed = await callMcp(2, "tools/call", {
       name: "list_transcriptions",
@@ -1859,6 +2021,7 @@ describe("MCP personal access tokens", () => {
       expect.objectContaining({ id: ownerAssetId, filename: "owner.mp4" }),
     ]);
     expect(JSON.stringify(listed)).not.toContain("他人だけの秘密");
+    expect(JSON.stringify(listed)).not.toContain("共有しない秘密");
 
     const ownDetail = await callMcp(3, "tools/call", {
       name: "get_transcription",
@@ -1875,6 +2038,855 @@ describe("MCP personal access tokens", () => {
     });
     expect(otherDetail.result).toMatchObject({ isError: true });
     expect(JSON.stringify(otherDetail)).not.toContain("他人だけの秘密");
+
+    const searched = await callMcp(5, "tools/call", {
+      name: "search_memories",
+      arguments: {
+        query: "鍵",
+        capturedAfter: "2026-07-27T06:20:00.000Z",
+        capturedBefore: "2026-07-27T06:40:00.000Z",
+        analysisStatus: "completed",
+        limit: 10,
+      },
+    });
+    expect(searched.result.structuredContent.items).toEqual([
+      expect.objectContaining({
+        id: silentAssetId,
+        filename: "silent.mp4",
+        visualSummary: "机の上に鍵を置く様子。",
+        videoAnalysisStatus: "completed",
+      }),
+    ]);
+    expect(JSON.stringify(searched)).not.toContain("共有しない秘密");
+    expect(JSON.stringify(searched)).not.toContain("他人だけの秘密");
+
+    const memory = await callMcp(6, "tools/call", {
+      name: "get_memory",
+      arguments: { assetId: silentAssetId },
+    });
+    expect(memory.result.structuredContent).toMatchObject({
+      id: silentAssetId,
+      transcript: null,
+      videoAnalysis: {
+        status: "completed",
+        summary: "机の上に鍵を置く様子。",
+        coverage: [{ startMs: 0, endMs: 20000 }],
+        segments: [{ startMs: 500, endMs: 1500, caption: "机の上に鍵を置いた。" }],
+      },
+      applicableMediaTools: [
+        "get_video",
+        "get_video_frame",
+        "get_video_clip",
+        "get_video_derivative",
+      ],
+    });
+
+    const video = await callMcp(7, "tools/call", {
+      name: "get_video",
+      arguments: { assetId: ownerAssetId },
+    });
+    expect(video.result.structuredContent).toMatchObject({
+      id: ownerAssetId,
+      mimeType: "video/mp4",
+      byteSize: 11,
+      acceptsRanges: true,
+    });
+    expect(video.result.content).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        type: "resource_link",
+        mimeType: "video/mp4",
+        size: 11,
+      }),
+    ]));
+    const videoUri = video.result.content.find(
+      (content: { type: string; uri?: string }) => content.type === "resource_link",
+    )?.uri;
+    expect(videoUri).toEqual(expect.any(String));
+    const rangedVideo = await owner.app.request(videoUri!, {
+      headers: { range: "bytes=0-4" },
+    }, env);
+    expect(rangedVideo.status).toBe(206);
+    expect(new TextDecoder().decode(await rangedVideo.arrayBuffer())).toBe("owner");
+
+    const frame = await callMcp(8, "tools/call", {
+      name: "get_video_frame",
+      arguments: { assetId: silentAssetId, timeMs: 750 },
+    });
+    expect(frame.result.structuredContent).toMatchObject({
+      status: "queued",
+      kind: "frame",
+      startMs: 750,
+      endMs: 750,
+      retryAfterMs: 15000,
+    });
+    expect(frame.result.structuredContent.derivativeId).toEqual(expect.any(String));
+
+    const clip = await callMcp(9, "tools/call", {
+      name: "get_video_clip",
+      arguments: { assetId: silentAssetId, startMs: 1000, endMs: 3000 },
+    });
+    expect(clip.result.structuredContent).toMatchObject({
+      status: "queued",
+      kind: "clip",
+      startMs: 1000,
+      endMs: 3000,
+    });
+
+    const derivative = await callMcp(10, "tools/call", {
+      name: "get_video_derivative",
+      arguments: { derivativeId: frame.result.structuredContent.derivativeId },
+    });
+    expect(derivative.result.structuredContent).toMatchObject({
+      status: "queued",
+      derivativeId: frame.result.structuredContent.derivativeId,
+    });
+
+    const frameObjectKey = `users/${ownerUser!.id}/assets/${silentAssetId}/derivatives/frame.jpg`;
+    await env.MEDIA.put(frameObjectKey, "jpeg");
+    await env.DB.prepare(
+      `UPDATE media_derivatives
+          SET status = 'ready', object_key = ?, content_type = 'image/jpeg', byte_size = 4
+        WHERE id = ?`,
+    ).bind(frameObjectKey, frame.result.structuredContent.derivativeId).run();
+    const readyDerivative = await callMcp(11, "tools/call", {
+      name: "get_video_derivative",
+      arguments: { derivativeId: frame.result.structuredContent.derivativeId },
+    });
+    expect(readyDerivative.result.structuredContent).toMatchObject({
+      status: "ready",
+      mimeType: "image/jpeg",
+      byteSize: 4,
+      acceptsRanges: true,
+    });
+    expect(readyDerivative.result.content).toEqual(expect.arrayContaining([
+      expect.objectContaining({ type: "resource_link", mimeType: "image/jpeg", size: 4 }),
+    ]));
+
+    const oversizedClip = await callMcp(12, "tools/call", {
+      name: "get_video_clip",
+      arguments: { assetId: silentAssetId, startMs: 0, endMs: 61000 },
+    });
+    expect(oversizedClip.result).toMatchObject({ isError: true });
+
+    const disabledMemory = await callMcp(13, "tools/call", {
+      name: "get_memory",
+      arguments: { assetId: disabledAssetId },
+    });
+    expect(disabledMemory.result).toMatchObject({ isError: true });
+    expect(JSON.stringify(disabledMemory)).not.toContain("共有しない秘密");
+
+    const disabledTranscription = await callMcp(14, "tools/call", {
+      name: "get_transcription",
+      arguments: { assetId: disabledAssetId },
+    });
+    expect(disabledTranscription.result).toMatchObject({ isError: true });
+    expect(JSON.stringify(disabledTranscription)).not.toContain("共有しない秘密");
+  });
+});
+
+describe("agent access privacy boundary", () => {
+  const workerToken = `aft_worker_${"w".repeat(43)}`;
+
+  async function tokenHash(value: string) {
+    const digest = await crypto.subtle.digest("SHA-256", new TextEncoder().encode(value));
+    return [...new Uint8Array(digest)].map((byte) => byte.toString(16).padStart(2, "0")).join("");
+  }
+
+  async function gpuEnv() {
+    return { ...env, MAGE_WORKER_TOKEN_HASH: await tokenHash(workerToken) };
+  }
+
+  async function createReadyVideo(subject: string) {
+    const owner = await signIn(subject);
+    const created = await owner.app.request("/v1/assets", {
+      method: "POST",
+      headers: { authorization: owner.authorization, "content-type": "application/json" },
+      body: JSON.stringify({
+        kind: "video",
+        filename: `${subject}.mov`,
+        contentType: "video/quicktime",
+        byteSize: 5,
+        capturedAt: "2026-07-27T00:00:00.000Z",
+        durationMs: 2_000,
+        width: 1_920,
+        height: 1_080,
+      }),
+    }, env);
+    const body = await created.json<{
+      asset: { id: string; agentAccessEnabled: boolean };
+      upload: { url: string };
+    }>();
+    await owner.app.request(body.upload.url, {
+      method: "PUT",
+      headers: {
+        authorization: owner.authorization,
+        "content-type": "video/quicktime",
+        "content-length": "5",
+      },
+      body: "video",
+    }, env);
+    await owner.app.request(`/v1/assets/${body.asset.id}/upload/complete`, {
+      method: "POST",
+      headers: { authorization: owner.authorization },
+    }, env);
+    return { ...owner, assetId: body.asset.id, createdAsset: body.asset };
+  }
+
+  it("defaults existing and new assets to agent access enabled", async () => {
+    const owner = await createReadyVideo("agent-access-default");
+    expect(owner.createdAsset.agentAccessEnabled).toBe(true);
+
+    const timeline = await owner.app.request("/v1/assets", {
+      headers: { authorization: owner.authorization },
+    }, env);
+    await expect(timeline.json()).resolves.toMatchObject({
+      items: [{
+        id: owner.assetId,
+        agentAccessEnabled: true,
+        videoAnalysisStatus: "queued",
+      }],
+    });
+  });
+
+  it("reports the owner-visible video analysis lifecycle", async () => {
+    const owner = await createReadyVideo("agent-analysis-lifecycle");
+    const disabled = await owner.app.request(`/v1/assets/${owner.assetId}/agent-access`, {
+      method: "PATCH",
+      headers: { authorization: owner.authorization, "content-type": "application/json" },
+      body: JSON.stringify({ enabled: false }),
+    }, env);
+    await expect(disabled.json()).resolves.toMatchObject({
+      asset: { videoAnalysisStatus: null },
+    });
+
+    const enabled = await owner.app.request(`/v1/assets/${owner.assetId}/agent-access`, {
+      method: "PATCH",
+      headers: { authorization: owner.authorization, "content-type": "application/json" },
+      body: JSON.stringify({ enabled: true }),
+    }, env);
+    await expect(enabled.json()).resolves.toMatchObject({
+      asset: { videoAnalysisStatus: "queued" },
+    });
+
+    await env.DB.prepare(
+      `INSERT INTO video_analyses (
+        asset_id, job_id, model_id, model_revision, backend, coverage_mode,
+        summary, created_at, updated_at
+      ) VALUES (?, 'completed-analysis-job', 'microsoft/Mage-VL', 'pinned-revision',
+        'frames', 'full', '完了した解析', ?, ?)`,
+    ).bind(owner.assetId, NOW.toISOString(), NOW.toISOString()).run();
+    const timeline = await owner.app.request("/v1/assets", {
+      headers: { authorization: owner.authorization },
+    }, env);
+    await expect(timeline.json()).resolves.toMatchObject({
+      items: [{ id: owner.assetId, videoAnalysisStatus: "completed" }],
+    });
+  });
+
+  it("lets the owner disable agent access without changing transcription", async () => {
+    const owner = await createReadyVideo("agent-access-owner");
+    await env.DB.prepare(
+      `UPDATE assets
+          SET transcription_status = 'completed', transcript = '残しておく文字起こし'
+        WHERE id = ?`,
+    ).bind(owner.assetId).run();
+
+    const disabled = await owner.app.request(`/v1/assets/${owner.assetId}/agent-access`, {
+      method: "PATCH",
+      headers: { authorization: owner.authorization, "content-type": "application/json" },
+      body: JSON.stringify({ enabled: false }),
+    }, env);
+
+    expect(disabled.status).toBe(200);
+    await expect(disabled.json()).resolves.toMatchObject({
+      asset: { id: owner.assetId, agentAccessEnabled: false },
+    });
+    await expect(env.DB.prepare(
+      "SELECT agent_access_enabled, transcript FROM assets WHERE id = ?",
+    ).bind(owner.assetId).first()).resolves.toEqual({
+      agent_access_enabled: 0,
+      transcript: "残しておく文字起こし",
+    });
+
+    const enabled = await owner.app.request(`/v1/assets/${owner.assetId}/agent-access`, {
+      method: "PATCH",
+      headers: { authorization: owner.authorization, "content-type": "application/json" },
+      body: JSON.stringify({ enabled: true }),
+    }, env);
+    expect(enabled.status).toBe(200);
+    await expect(enabled.json()).resolves.toMatchObject({
+      asset: { id: owner.assetId, agentAccessEnabled: true },
+    });
+  });
+
+  it("hides ownership when another user changes agent access", async () => {
+    const owner = await createReadyVideo("agent-access-private-owner");
+    const other = await signIn("agent-access-private-other");
+    const response = await other.app.request(`/v1/assets/${owner.assetId}/agent-access`, {
+      method: "PATCH",
+      headers: { authorization: other.authorization, "content-type": "application/json" },
+      body: JSON.stringify({ enabled: false }),
+    }, env);
+
+    expect(response.status).toBe(404);
+    await expect(response.json()).resolves.toMatchObject({ error: { code: "asset_not_found" } });
+  });
+
+  it("keeps app grants valid while revoking agent and worker grants", async () => {
+    const owner = await createReadyVideo("agent-access-grants");
+    const appGrant = await owner.app.request(`/v1/assets/${owner.assetId}/playback`, {
+      method: "POST",
+      headers: { authorization: owner.authorization },
+    }, env);
+    const appGrantBody = await appGrant.json<{ url: string }>();
+    const agentToken = "a".repeat(43);
+    const workerGrantToken = "b".repeat(43);
+    const expiresAt = new Date(NOW.getTime() + 300_000).toISOString();
+    await env.DB.batch([
+      env.DB.prepare(
+        `INSERT INTO media_grants (id, asset_id, user_id, token_hash, expires_at, created_at, purpose)
+         SELECT 'agent-grant', id, user_id, ?, ?, ?, 'agent' FROM assets WHERE id = ?`,
+      ).bind(await tokenHash(agentToken), expiresAt, NOW.toISOString(), owner.assetId),
+      env.DB.prepare(
+        `INSERT INTO media_grants (id, asset_id, user_id, token_hash, expires_at, created_at, purpose)
+         SELECT 'worker-grant', id, user_id, ?, ?, ?, 'worker' FROM assets WHERE id = ?`,
+      ).bind(await tokenHash(workerGrantToken), expiresAt, NOW.toISOString(), owner.assetId),
+    ]);
+
+    await owner.app.request(`/v1/assets/${owner.assetId}/agent-access`, {
+      method: "PATCH",
+      headers: { authorization: owner.authorization, "content-type": "application/json" },
+      body: JSON.stringify({ enabled: false }),
+    }, env);
+
+    expect((await owner.app.request(appGrantBody.url, {}, env)).status).toBe(200);
+    expect((await owner.app.request(`/v1/media/${agentToken}`, {}, env)).status).toBe(404);
+    expect((await owner.app.request(`/v1/media/${workerGrantToken}`, {}, env)).status).toBe(404);
+  });
+
+  it("does not create an agent grant after access is disabled following asset lookup", async () => {
+    const owner = await createReadyVideo("agent-access-interleaved-grant");
+    const created = await owner.app.request("/v1/mcp/tokens", {
+      method: "POST",
+      headers: { authorization: owner.authorization, "content-type": "application/json" },
+      body: JSON.stringify({ name: "Interleaved grant" }),
+    }, env);
+    const { token } = await created.json<{ token: string }>();
+    const interleavedEnvironment = envWithFirstResultHook(
+      "SELECT id, filename, content_type, byte_size, duration_ms",
+      async () => {
+        await owner.app.request(`/v1/assets/${owner.assetId}/agent-access`, {
+          method: "PATCH",
+          headers: { authorization: owner.authorization, "content-type": "application/json" },
+          body: JSON.stringify({ enabled: false }),
+        }, env);
+      },
+    );
+    const response = await owner.app.request("/mcp", {
+      method: "POST",
+      headers: {
+        authorization: `Bearer ${token}`,
+        "content-type": "application/json",
+        accept: "application/json, text/event-stream",
+      },
+      body: JSON.stringify({
+        jsonrpc: "2.0",
+        id: 1,
+        method: "tools/call",
+        params: { name: "get_video", arguments: { assetId: owner.assetId } },
+      }),
+    }, interleavedEnvironment);
+    const result = await response.json<TestMcpResponse>();
+
+    expect(result.result.isError).toBe(true);
+    await expect(env.DB.prepare(
+      "SELECT COUNT(*) AS count FROM media_grants WHERE asset_id = ? AND purpose = 'agent'",
+    ).bind(owner.assetId).first()).resolves.toEqual({ count: 0 });
+  });
+
+  it("does not queue a derivative after access is disabled following asset lookup", async () => {
+    const owner = await createReadyVideo("agent-access-interleaved-derivative");
+    const created = await owner.app.request("/v1/mcp/tokens", {
+      method: "POST",
+      headers: { authorization: owner.authorization, "content-type": "application/json" },
+      body: JSON.stringify({ name: "Interleaved derivative" }),
+    }, env);
+    const { token } = await created.json<{ token: string }>();
+    const interleavedEnvironment = envWithFirstResultHook(
+      "SELECT id, filename, content_type, byte_size, duration_ms",
+      async () => {
+        await owner.app.request(`/v1/assets/${owner.assetId}/agent-access`, {
+          method: "PATCH",
+          headers: { authorization: owner.authorization, "content-type": "application/json" },
+          body: JSON.stringify({ enabled: false }),
+        }, env);
+      },
+    );
+    const response = await owner.app.request("/mcp", {
+      method: "POST",
+      headers: {
+        authorization: `Bearer ${token}`,
+        "content-type": "application/json",
+        accept: "application/json, text/event-stream",
+      },
+      body: JSON.stringify({
+        jsonrpc: "2.0",
+        id: 1,
+        method: "tools/call",
+        params: {
+          name: "get_video_frame",
+          arguments: { assetId: owner.assetId, timeMs: 750 },
+        },
+      }),
+    }, interleavedEnvironment);
+    const result = await response.json<TestMcpResponse>();
+
+    expect(result.result.isError).toBe(true);
+    await expect(env.DB.prepare(
+      "SELECT COUNT(*) AS count FROM media_derivatives WHERE asset_id = ?",
+    ).bind(owner.assetId).first()).resolves.toEqual({ count: 0 });
+    await expect(env.DB.prepare(
+      "SELECT COUNT(*) AS count FROM gpu_jobs WHERE asset_id = ?",
+    ).bind(owner.assetId).first()).resolves.toEqual({ count: 0 });
+  });
+
+  it("leases one enabled ready video atomically", async () => {
+    const owner = await createReadyVideo("agent-access-lease");
+    const workerEnvironment = await gpuEnv();
+    const leaseRequest = () => owner.app.request("/v1/internal/gpu-jobs/lease", {
+      method: "POST",
+      headers: {
+        authorization: `Bearer ${workerToken}`,
+        "content-type": "application/json",
+      },
+      body: JSON.stringify({
+        workerId: "spark-1721",
+        capabilities: { backends: ["frames"], modelId: "microsoft/Mage-VL" },
+      }),
+    }, workerEnvironment);
+
+    const [first, second] = await Promise.all([leaseRequest(), leaseRequest()]);
+    expect([first.status, second.status].sort()).toEqual([200, 204]);
+    const leased = first.status === 200 ? first : second;
+    await expect(leased.json()).resolves.toMatchObject({
+      job: {
+        kind: "analysis",
+        asset: { id: owner.assetId },
+        analysis: {
+          modelId: "microsoft/Mage-VL",
+          modelRevision: "8484f3154beea3b563bee99e2fab2d6c8bb5d3f3",
+          backend: "frames",
+        },
+      },
+    });
+  });
+
+  it("rejects stale analysis completion after agent access is disabled", async () => {
+    const owner = await createReadyVideo("agent-access-stale-job");
+    const workerEnvironment = await gpuEnv();
+    const lease = await owner.app.request("/v1/internal/gpu-jobs/lease", {
+      method: "POST",
+      headers: {
+        authorization: `Bearer ${workerToken}`,
+        "content-type": "application/json",
+      },
+      body: JSON.stringify({
+        workerId: "spark-1721",
+        capabilities: { backends: ["frames"], modelId: "microsoft/Mage-VL" },
+      }),
+    }, workerEnvironment);
+    const leased = await lease.json<{ job: { id: string; leaseToken: string } }>();
+
+    await owner.app.request(`/v1/assets/${owner.assetId}/agent-access`, {
+      method: "PATCH",
+      headers: { authorization: owner.authorization, "content-type": "application/json" },
+      body: JSON.stringify({ enabled: false }),
+    }, env);
+    const completed = await owner.app.request(`/v1/internal/gpu-jobs/${leased.job.id}/analysis`, {
+      method: "POST",
+      headers: {
+        authorization: `Bearer ${workerToken}`,
+        "content-type": "application/json",
+      },
+      body: JSON.stringify({
+        leaseToken: leased.job.leaseToken,
+        modelId: "microsoft/Mage-VL",
+        modelRevision: "8484f3154beea3b563bee99e2fab2d6c8bb5d3f3",
+        backend: "frames",
+        coverageMode: "full",
+        analyzedRanges: [{ startMs: 0, endMs: 2_000 }],
+        summary: "机の上に鍵を置いた。",
+        segments: [{ startMs: 500, endMs: 1_200, caption: "鍵を置いた。" }],
+      }),
+    }, workerEnvironment);
+
+    expect(completed.status).toBe(404);
+    expect(await env.DB.prepare(
+      "SELECT COUNT(*) AS count FROM video_analyses WHERE asset_id = ?",
+    ).bind(owner.assetId).first<{ count: number }>()).toEqual({ count: 0 });
+  });
+
+  it("rejects analysis completion when agent access is disabled after lease validation", async () => {
+    const owner = await createReadyVideo("agent-access-interleaved-disable");
+    const workerEnvironment = await gpuEnv();
+    const lease = await owner.app.request("/v1/internal/gpu-jobs/lease", {
+      method: "POST",
+      headers: {
+        authorization: `Bearer ${workerToken}`,
+        "content-type": "application/json",
+      },
+      body: JSON.stringify({
+        workerId: "spark-1721",
+        capabilities: { backends: ["frames"], modelId: "microsoft/Mage-VL" },
+      }),
+    }, workerEnvironment);
+    const leased = await lease.json<{ job: { id: string; leaseToken: string } }>();
+    const interleavedEnvironment = {
+      ...envWithFirstResultHook("j.lease_token_hash = ?", async () => {
+        await owner.app.request(`/v1/assets/${owner.assetId}/agent-access`, {
+          method: "PATCH",
+          headers: { authorization: owner.authorization, "content-type": "application/json" },
+          body: JSON.stringify({ enabled: false }),
+        }, env);
+      }),
+      MAGE_WORKER_TOKEN_HASH: workerEnvironment.MAGE_WORKER_TOKEN_HASH,
+    };
+    const completed = await owner.app.request(`/v1/internal/gpu-jobs/${leased.job.id}/analysis`, {
+      method: "POST",
+      headers: {
+        authorization: `Bearer ${workerToken}`,
+        "content-type": "application/json",
+      },
+      body: JSON.stringify({
+        leaseToken: leased.job.leaseToken,
+        modelId: "microsoft/Mage-VL",
+        modelRevision: "8484f3154beea3b563bee99e2fab2d6c8bb5d3f3",
+        backend: "frames",
+        coverageMode: "full",
+        analyzedRanges: [{ startMs: 0, endMs: 2_000 }],
+        summary: "机の上に鍵を置いた。",
+        segments: [{ startMs: 500, endMs: 1_200, caption: "鍵を置いた。" }],
+      }),
+    }, interleavedEnvironment);
+
+    expect(completed.status).toBe(404);
+    expect(await env.DB.prepare(
+      "SELECT COUNT(*) AS count FROM video_analyses WHERE asset_id = ?",
+    ).bind(owner.assetId).first<{ count: number }>()).toEqual({ count: 0 });
+  });
+
+  it("rejects a heartbeat when lease ownership changes after validation", async () => {
+    const owner = await createReadyVideo("agent-access-interleaved-lease");
+    const workerEnvironment = await gpuEnv();
+    const lease = await owner.app.request("/v1/internal/gpu-jobs/lease", {
+      method: "POST",
+      headers: {
+        authorization: `Bearer ${workerToken}`,
+        "content-type": "application/json",
+      },
+      body: JSON.stringify({
+        workerId: "spark-1721",
+        capabilities: { backends: ["frames"], modelId: "microsoft/Mage-VL" },
+      }),
+    }, workerEnvironment);
+    const leased = await lease.json<{ job: { id: string; leaseToken: string } }>();
+    const replacementExpiresAt = new Date(NOW.getTime() + 30 * 60_000).toISOString();
+    const replacementHash = await tokenHash("r".repeat(43));
+    const interleavedEnvironment = {
+      ...envWithFirstResultHook("j.lease_token_hash = ?", async () => {
+        await env.DB.prepare(
+          "UPDATE gpu_jobs SET lease_token_hash = ?, lease_expires_at = ? WHERE id = ?",
+        ).bind(replacementHash, replacementExpiresAt, leased.job.id).run();
+      }),
+      MAGE_WORKER_TOKEN_HASH: workerEnvironment.MAGE_WORKER_TOKEN_HASH,
+    };
+    const heartbeat = await owner.app.request(`/v1/internal/gpu-jobs/${leased.job.id}/heartbeat`, {
+      method: "POST",
+      headers: {
+        authorization: `Bearer ${workerToken}`,
+        "content-type": "application/json",
+      },
+      body: JSON.stringify({ leaseToken: leased.job.leaseToken }),
+    }, interleavedEnvironment);
+
+    expect(heartbeat.status).toBe(404);
+    await expect(env.DB.prepare(
+      "SELECT lease_token_hash, lease_expires_at FROM gpu_jobs WHERE id = ?",
+    ).bind(leased.job.id).first()).resolves.toEqual({
+      lease_token_hash: replacementHash,
+      lease_expires_at: replacementExpiresAt,
+    });
+  });
+
+  it("streams a leased frame derivative to private R2 before marking it ready", async () => {
+    const owner = await createReadyVideo("agent-access-frame-job");
+    const workerEnvironment = await gpuEnv();
+    const nowIso = NOW.toISOString();
+    const expiresAt = new Date(NOW.getTime() + 86_400_000).toISOString();
+    await env.DB.batch([
+      env.DB.prepare(
+        `INSERT INTO gpu_jobs (
+          id, asset_id, kind, status, request_json, priority, attempt_count,
+          available_at, created_at, updated_at
+        ) VALUES ('frame-job', ?, 'frame', 'queued', ?, 100, 0, ?, ?, ?)`,
+      ).bind(owner.assetId, JSON.stringify({ derivativeId: "frame-derivative", timeMs: 750 }), nowIso, nowIso, nowIso),
+      env.DB.prepare(
+        `INSERT INTO media_derivatives (
+          id, asset_id, job_id, kind, start_ms, end_ms, status,
+          expires_at, created_at, updated_at
+        ) VALUES ('frame-derivative', ?, 'frame-job', 'frame', 750, 750, 'queued', ?, ?, ?)`,
+      ).bind(owner.assetId, expiresAt, nowIso, nowIso),
+    ]);
+    const lease = await owner.app.request("/v1/internal/gpu-jobs/lease", {
+      method: "POST",
+      headers: {
+        authorization: `Bearer ${workerToken}`,
+        "content-type": "application/json",
+      },
+      body: JSON.stringify({
+        workerId: "spark-1721",
+        capabilities: { backends: ["frames"], modelId: "microsoft/Mage-VL" },
+      }),
+    }, workerEnvironment);
+    const leased = await lease.json<{ job: { id: string; leaseToken: string } }>();
+    expect(leased.job.id).toBe("frame-job");
+
+    const uploaded = await owner.app.request(`/v1/internal/gpu-jobs/${leased.job.id}/derivative`, {
+      method: "PUT",
+      headers: {
+        authorization: `Bearer ${workerToken}`,
+        "x-afterimage-lease-token": leased.job.leaseToken,
+        "content-type": "image/jpeg",
+        "content-length": "4",
+      },
+      body: "jpeg",
+    }, workerEnvironment);
+
+    expect(uploaded.status).toBe(200);
+    const derivative = await env.DB.prepare(
+      `SELECT status, content_type, byte_size, object_key
+         FROM media_derivatives WHERE id = 'frame-derivative'`,
+    ).first<{
+      status: string;
+      content_type: string;
+      byte_size: number;
+      object_key: string;
+    }>();
+    expect(derivative).toMatchObject({
+      status: "ready",
+      content_type: "image/jpeg",
+      byte_size: 4,
+    });
+    expect((await env.MEDIA.get(derivative!.object_key))?.size).toBe(4);
+  });
+
+  it("keeps a replacement lease derivative when a stale upload finishes later", async () => {
+    const owner = await createReadyVideo("agent-access-stale-derivative-upload");
+    const workerEnvironment = await gpuEnv();
+    const nowIso = NOW.toISOString();
+    const expiresAt = new Date(NOW.getTime() + 86_400_000).toISOString();
+    await env.DB.batch([
+      env.DB.prepare(
+        `INSERT INTO gpu_jobs (
+          id, asset_id, kind, status, request_json, priority, attempt_count,
+          available_at, created_at, updated_at
+        ) VALUES ('raced-frame-job', ?, 'frame', 'queued', ?, 100, 0, ?, ?, ?)`,
+      ).bind(
+        owner.assetId,
+        JSON.stringify({ derivativeId: "raced-frame-derivative", timeMs: 750 }),
+        nowIso,
+        nowIso,
+        nowIso,
+      ),
+      env.DB.prepare(
+        `INSERT INTO media_derivatives (
+          id, asset_id, job_id, kind, start_ms, end_ms, status,
+          expires_at, created_at, updated_at
+        ) VALUES (
+          'raced-frame-derivative', ?, 'raced-frame-job', 'frame',
+          750, 750, 'queued', ?, ?, ?
+        )`,
+      ).bind(owner.assetId, expiresAt, nowIso, nowIso),
+    ]);
+    const firstPutStarted = deferred();
+    const releaseFirstPut = deferred();
+    let putCount = 0;
+    const media = new Proxy(env.MEDIA, {
+      get(target, property) {
+        if (property === "put") {
+          return async (
+            key: string,
+            value: ReadableStream | ArrayBuffer | ArrayBufferView | string | null | Blob,
+            options?: R2PutOptions,
+          ) => {
+            putCount += 1;
+            if (putCount === 1) {
+              firstPutStarted.resolve();
+              await releaseFirstPut.promise;
+            }
+            return target.put(key, value, options);
+          };
+        }
+        const member = Reflect.get(target, property, target) as unknown;
+        return typeof member === "function" ? member.bind(target) : member;
+      },
+    });
+    const racedEnvironment = { ...workerEnvironment, MEDIA: media };
+    const leaseRequest = () => owner.app.request("/v1/internal/gpu-jobs/lease", {
+      method: "POST",
+      headers: {
+        authorization: `Bearer ${workerToken}`,
+        "content-type": "application/json",
+      },
+      body: JSON.stringify({
+        workerId: "spark-1721",
+        capabilities: { backends: ["frames"], modelId: "microsoft/Mage-VL" },
+      }),
+    }, racedEnvironment);
+    const firstLease = await leaseRequest();
+    const firstLeased = await firstLease.json<{ job: { id: string; leaseToken: string } }>();
+    const firstUpload = owner.app.request(`/v1/internal/gpu-jobs/${firstLeased.job.id}/derivative`, {
+      method: "PUT",
+      headers: {
+        authorization: `Bearer ${workerToken}`,
+        "x-afterimage-lease-token": firstLeased.job.leaseToken,
+        "content-type": "image/jpeg",
+        "content-length": "4",
+      },
+      body: "old!",
+    }, racedEnvironment);
+    await firstPutStarted.promise;
+
+    await env.DB.prepare(
+      "UPDATE gpu_jobs SET lease_expires_at = ? WHERE id = ?",
+    ).bind(nowIso, firstLeased.job.id).run();
+    const secondLease = await leaseRequest();
+    const secondLeased = await secondLease.json<{ job: { id: string; leaseToken: string } }>();
+    expect(secondLeased.job.id).toBe(firstLeased.job.id);
+    expect(secondLeased.job.leaseToken).not.toBe(firstLeased.job.leaseToken);
+    const secondUpload = await owner.app.request(`/v1/internal/gpu-jobs/${secondLeased.job.id}/derivative`, {
+      method: "PUT",
+      headers: {
+        authorization: `Bearer ${workerToken}`,
+        "x-afterimage-lease-token": secondLeased.job.leaseToken,
+        "content-type": "image/jpeg",
+        "content-length": "4",
+      },
+      body: "new!",
+    }, racedEnvironment);
+    expect(secondUpload.status).toBe(200);
+
+    releaseFirstPut.resolve();
+    expect((await firstUpload).status).toBe(404);
+    const derivative = await env.DB.prepare(
+      "SELECT status, object_key FROM media_derivatives WHERE id = 'raced-frame-derivative'",
+    ).first<{ status: string; object_key: string }>();
+    expect(derivative?.status).toBe("ready");
+    expect(await (await env.MEDIA.get(derivative!.object_key))?.text()).toBe("new!");
+    expect((await env.MEDIA.list({
+      prefix: derivative!.object_key.split("/derivatives/", 1)[0] + "/derivatives/",
+    })).objects.map((object) => object.key)).toEqual([derivative!.object_key]);
+  });
+
+  it("requeues a retryable failed lease without storing exception text", async () => {
+    const owner = await createReadyVideo("agent-access-failed-job");
+    const workerEnvironment = await gpuEnv();
+    const lease = await owner.app.request("/v1/internal/gpu-jobs/lease", {
+      method: "POST",
+      headers: {
+        authorization: `Bearer ${workerToken}`,
+        "content-type": "application/json",
+      },
+      body: JSON.stringify({
+        workerId: "spark-1721",
+        capabilities: { backends: ["frames"], modelId: "microsoft/Mage-VL" },
+      }),
+    }, workerEnvironment);
+    const leased = await lease.json<{ job: { id: string; leaseToken: string } }>();
+    const failed = await owner.app.request(`/v1/internal/gpu-jobs/${leased.job.id}/fail`, {
+      method: "POST",
+      headers: {
+        authorization: `Bearer ${workerToken}`,
+        "content-type": "application/json",
+      },
+      body: JSON.stringify({
+        leaseToken: leased.job.leaseToken,
+        code: "inference_failed",
+      }),
+    }, workerEnvironment);
+
+    expect(failed.status).toBe(200);
+    await expect(env.DB.prepare(
+      "SELECT status, error_code, available_at, lease_token_hash FROM gpu_jobs WHERE id = ?",
+    ).bind(leased.job.id).first()).resolves.toEqual({
+      status: "queued",
+      error_code: "inference_failed",
+      available_at: "2026-07-27T00:01:00.000Z",
+      lease_token_hash: null,
+    });
+  });
+
+  it("marks a derivative failed after the final worker attempt", async () => {
+    const owner = await createReadyVideo("agent-access-final-derivative-failure");
+    const workerEnvironment = await gpuEnv();
+    const nowIso = NOW.toISOString();
+    const expiresAt = new Date(NOW.getTime() + 86_400_000).toISOString();
+    await env.DB.batch([
+      env.DB.prepare(
+        `INSERT INTO gpu_jobs (
+          id, asset_id, kind, status, request_json, priority, attempt_count,
+          available_at, created_at, updated_at
+        ) VALUES ('final-frame-job', ?, 'frame', 'queued', ?, 100, 2, ?, ?, ?)`,
+      ).bind(
+        owner.assetId,
+        JSON.stringify({ derivativeId: "final-frame-derivative", timeMs: 750 }),
+        nowIso,
+        nowIso,
+        nowIso,
+      ),
+      env.DB.prepare(
+        `INSERT INTO media_derivatives (
+          id, asset_id, job_id, kind, start_ms, end_ms, status,
+          expires_at, created_at, updated_at
+        ) VALUES (
+          'final-frame-derivative', ?, 'final-frame-job', 'frame',
+          750, 750, 'queued', ?, ?, ?
+        )`,
+      ).bind(owner.assetId, expiresAt, nowIso, nowIso),
+    ]);
+    const lease = await owner.app.request("/v1/internal/gpu-jobs/lease", {
+      method: "POST",
+      headers: {
+        authorization: `Bearer ${workerToken}`,
+        "content-type": "application/json",
+      },
+      body: JSON.stringify({
+        workerId: "spark-1721",
+        capabilities: { backends: ["frames"], modelId: "microsoft/Mage-VL" },
+      }),
+    }, workerEnvironment);
+    const leased = await lease.json<{ job: { id: string; leaseToken: string } }>();
+    expect(leased.job.id).toBe("final-frame-job");
+
+    const failed = await owner.app.request(`/v1/internal/gpu-jobs/${leased.job.id}/fail`, {
+      method: "POST",
+      headers: {
+        authorization: `Bearer ${workerToken}`,
+        "content-type": "application/json",
+      },
+      body: JSON.stringify({
+        leaseToken: leased.job.leaseToken,
+        code: "decode_failed",
+      }),
+    }, workerEnvironment);
+
+    expect(failed.status).toBe(200);
+    await expect(env.DB.prepare(
+      "SELECT status, error_code FROM gpu_jobs WHERE id = 'final-frame-job'",
+    ).first()).resolves.toEqual({ status: "failed", error_code: "decode_failed" });
+    await expect(env.DB.prepare(
+      "SELECT status, error_code FROM media_derivatives WHERE id = 'final-frame-derivative'",
+    ).first()).resolves.toEqual({ status: "failed", error_code: "decode_failed" });
   });
 });
 

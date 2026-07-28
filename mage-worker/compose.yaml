@@ -1,0 +1,27 @@
+services:
+  worker:
+    image: afterimage-mage-worker:0.1.0
+    build:
+      context: .
+    restart: unless-stopped
+    gpus: all
+    shm_size: 16gb
+    read_only: true
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+    environment:
+      AFTERIMAGE_API_BASE_URL: ${AFTERIMAGE_API_BASE_URL:?required}
+      AFTERIMAGE_TOKEN_FILE: /run/secrets/worker-token
+      AFTERIMAGE_WORK_DIR: /work/jobs
+      AFTERIMAGE_WORKER_ID: ${AFTERIMAGE_WORKER_ID:-dgx-spark}
+      HF_HOME: /models/huggingface
+      HOME: /work/tmp/home
+      TMPDIR: /work/tmp
+      XDG_CACHE_HOME: /work/tmp/cache
+    volumes:
+      - ${AFTERIMAGE_MODEL_CACHE:?required}:/models
+      - ${AFTERIMAGE_DATA_ROOT:?required}:/work
+      - ${AFTERIMAGE_TOKEN_FILE_HOST:?required}:/run/secrets/worker-token:ro
+    stop_grace_period: 2m

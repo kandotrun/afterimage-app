@@ -1,0 +1,30 @@
+[build-system]
+requires = ["setuptools>=75"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "afterimage-mage-worker"
+version = "0.1.0"
+requires-python = ">=3.12"
+dependencies = []
+
+[project.optional-dependencies]
+inference = [
+  "accelerate>=1.10,<2",
+  "numpy>=2.0,<3",
+  "opencv-python-headless>=4.12,<5",
+  "pillow>=11,<13",
+  "transformers>=5.7,<5.8",
+]
+test = [
+  "pytest>=8.4,<10",
+]
+
+[project.scripts]
+afterimage-mage-worker = "afterimage_mage_worker.main:main"
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+
+[tool.setuptools.packages.find]
+where = ["src"]

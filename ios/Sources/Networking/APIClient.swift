@@ -257,6 +257,19 @@ actor APIClient {
         try validate(response: response, data: data)
     }
 
+    func setAgentAccess(assetID: String, enabled: Bool) async throws -> Asset {
+        struct Body: Encodable { let enabled: Bool }
+        struct Result: Decodable { let asset: Asset }
+        let request = try makeRequest(
+            path: "/v1/assets/\(assetID)/agent-access",
+            method: "PATCH",
+            body: try encoder.encode(Body(enabled: enabled)),
+            contentType: "application/json"
+        )
+        let result: Result = try await decode(request)
+        return result.asset
+    }
+
     func deleteAsset(assetID: String) async throws {
         let request = try makeRequest(path: "/v1/assets/\(assetID)", method: "DELETE")
         let (data, response) = try await session.data(for: request)

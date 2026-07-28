@@ -316,6 +316,20 @@ final class AppModel: ObservableObject {
         haptics.play(.delete)
     }
 
+    func setAgentAccess(_ asset: Asset, enabled: Bool) async -> Bool {
+        do {
+            let updated = try await api.setAgentAccess(assetID: asset.id, enabled: enabled)
+            guard let index = assets.firstIndex(where: { $0.id == asset.id }) else { return false }
+            assets[index] = updated
+            haptics.play(.selection)
+            return true
+        } catch {
+            haptics.play(.failure)
+            show(error: error)
+            return false
+        }
+    }
+
     func delete(_ asset: Asset) async -> Bool {
         do {
             try await api.deleteAsset(assetID: asset.id)

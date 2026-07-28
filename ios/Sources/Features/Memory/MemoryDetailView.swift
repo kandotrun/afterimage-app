@@ -9,6 +9,7 @@ struct MemoryDetailView: View {
     @State private var chromeVisible = true
     @State private var confirmDelete = false
     @State private var showTranscript = false
+    @State private var isUpdatingAgentAccess = false
 
     init(asset: Asset) {
         self.asset = asset
@@ -63,6 +64,24 @@ struct MemoryDetailView: View {
                 Menu {
                     if let currentAsset {
                         Text(Self.fileSize(currentAsset.byteSize))
+                        if currentAsset.canShareWithAgent {
+                            Button {
+                                updateAgentAccess(!currentAsset.agentAccessEnabled)
+                            } label: {
+                                Label {
+                                    Text("AIエージェント共有")
+                                } icon: {
+                                    Image(
+                                        systemName: currentAsset.agentAccessEnabled
+                                            ? "checkmark.circle.fill"
+                                            : "circle"
+                                    )
+                                }
+                            }
+                            .disabled(isUpdatingAgentAccess)
+                            .accessibilityLabel("AIエージェントに共有")
+                            .accessibilityValue(currentAsset.agentAccessEnabled ? "オン" : "オフ")
+                        }
                         Button("削除", systemImage: "trash", role: .destructive) {
                             confirmDelete = true
                         }
@@ -99,6 +118,17 @@ struct MemoryDetailView: View {
 
     private var title: String {
         (currentAsset ?? asset).capturedAt.formatted(.dateTime.month(.wide).day().hour().minute())
+    }
+
+    private func updateAgentAccess(_ enabled: Bool) {
+        guard let target = currentAsset,
+              target.agentAccessEnabled != enabled,
+              !isUpdatingAgentAccess else { return }
+        isUpdatingAgentAccess = true
+        Task {
+            _ = await model.setAgentAccess(target, enabled: enabled)
+            isUpdatingAgentAccess = false
+        }
     }
 
     private func deleteCurrent() {
