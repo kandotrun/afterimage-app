@@ -170,6 +170,9 @@ def test_analysis_rejects_json_without_complete_contract(value: str) -> None:
         "Narration: [inaudible]",
         "A person walks past [a red door].",
         "The display shows {offline}.",
+        "A person walks past [1st floor].",
+        "A person sees [true story].",
+        "Status: {false alarm}.",
     ],
 )
 def test_analysis_accepts_plain_prose_with_brackets(value: str) -> None:

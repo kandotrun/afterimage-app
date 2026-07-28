@@ -237,6 +237,8 @@ def _contains_json(value: str) -> bool:
     stripped = value.strip()
     if stripped.startswith(("{", "[")):
         return True
+    if "```json" in value.lower():
+        return True
     if stripped.startswith('"'):
         escaped = False
         for character in stripped[1:]:
@@ -248,17 +250,22 @@ def _contains_json(value: str) -> bool:
                 break
         else:
             return True
+    decoder = json.JSONDecoder()
     for position, character in enumerate(value):
         if character not in "{[":
             continue
+        try:
+            decoded, _ = decoder.raw_decode(value, position)
+        except json.JSONDecodeError:
+            decoded = None
+        if type(decoded) in {dict, list}:
+            return True
         remainder = value[position + 1:].lstrip()
         if not remainder:
             return True
-        if (
-            remainder[0] in '"{[-'
-            or remainder[0].isdigit()
-            or remainder.startswith(("true", "false", "null"))
-        ):
+        if character == "{" and remainder.startswith('"'):
+            return True
+        if character == "[" and "," in remainder:
             return True
     return False
 
