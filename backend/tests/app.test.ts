@@ -2680,6 +2680,114 @@ describe("agent access privacy boundary", () => {
     expect((await env.MEDIA.get(derivative!.object_key))?.size).toBe(4);
   });
 
+  it("keeps a replacement lease derivative when a stale upload finishes later", async () => {
+    const owner = await createReadyVideo("agent-access-stale-derivative-upload");
+    const workerEnvironment = await gpuEnv();
+    const nowIso = NOW.toISOString();
+    const expiresAt = new Date(NOW.getTime() + 86_400_000).toISOString();
+    await env.DB.batch([
+      env.DB.prepare(
+        `INSERT INTO gpu_jobs (
+          id, asset_id, kind, status, request_json, priority, attempt_count,
+          available_at, created_at, updated_at
+        ) VALUES ('raced-frame-job', ?, 'frame', 'queued', ?, 100, 0, ?, ?, ?)`,
+      ).bind(
+        owner.assetId,
+        JSON.stringify({ derivativeId: "raced-frame-derivative", timeMs: 750 }),
+        nowIso,
+        nowIso,
+        nowIso,
+      ),
+      env.DB.prepare(
+        `INSERT INTO media_derivatives (
+          id, asset_id, job_id, kind, start_ms, end_ms, status,
+          expires_at, created_at, updated_at
+        ) VALUES (
+          'raced-frame-derivative', ?, 'raced-frame-job', 'frame',
+          750, 750, 'queued', ?, ?, ?
+        )`,
+      ).bind(owner.assetId, expiresAt, nowIso, nowIso),
+    ]);
+    const firstPutStarted = deferred();
+    const releaseFirstPut = deferred();
+    let putCount = 0;
+    const media = new Proxy(env.MEDIA, {
+      get(target, property) {
+        if (property === "put") {
+          return async (
+            key: string,
+            value: ReadableStream | ArrayBuffer | ArrayBufferView | string | null | Blob,
+            options?: R2PutOptions,
+          ) => {
+            putCount += 1;
+            if (putCount === 1) {
+              firstPutStarted.resolve();
+              await releaseFirstPut.promise;
+            }
+            return target.put(key, value, options);
+          };
+        }
+        const member = Reflect.get(target, property, target) as unknown;
+        return typeof member === "function" ? member.bind(target) : member;
+      },
+    });
+    const racedEnvironment = { ...workerEnvironment, MEDIA: media };
+    const leaseRequest = () => owner.app.request("/v1/internal/gpu-jobs/lease", {
+      method: "POST",
+      headers: {
+        authorization: `Bearer ${workerToken}`,
+        "content-type": "application/json",
+      },
+      body: JSON.stringify({
+        workerId: "spark-1721",
+        capabilities: { backends: ["frames"], modelId: "microsoft/Mage-VL" },
+      }),
+    }, racedEnvironment);
+    const firstLease = await leaseRequest();
+    const firstLeased = await firstLease.json<{ job: { id: string; leaseToken: string } }>();
+    const firstUpload = owner.app.request(`/v1/internal/gpu-jobs/${firstLeased.job.id}/derivative`, {
+      method: "PUT",
+      headers: {
+        authorization: `Bearer ${workerToken}`,
+        "x-afterimage-lease-token": firstLeased.job.leaseToken,
+        "content-type": "image/jpeg",
+        "content-length": "4",
+      },
+      body: "old!",
+    }, racedEnvironment);
+    await firstPutStarted.promise;
+
+    await env.DB.prepare(
+      "UPDATE gpu_jobs SET lease_expires_at = ? WHERE id = ?",
+    ).bind(nowIso, firstLeased.job.id).run();
+    const secondLease = await leaseRequest();
+    const secondLeased = await secondLease.json<{ job: { id: string; leaseToken: string } }>();
+    expect(secondLeased.job.id).toBe(firstLeased.job.id);
+    expect(secondLeased.job.leaseToken).not.toBe(firstLeased.job.leaseToken);
+    const secondUpload = await owner.app.request(`/v1/internal/gpu-jobs/${secondLeased.job.id}/derivative`, {
+      method: "PUT",
+      headers: {
+        authorization: `Bearer ${workerToken}`,
+        "x-afterimage-lease-token": secondLeased.job.leaseToken,
+        "content-type": "image/jpeg",
+        "content-length": "4",
+      },
+      body: "new!",
+    }, racedEnvironment);
+    expect(secondUpload.status).toBe(200);
+
+    releaseFirstPut.resolve();
+    expect((await firstUpload).status).toBe(404);
+    const derivative = await env.DB.prepare(
+      "SELECT status, object_key FROM media_derivatives WHERE id = 'raced-frame-derivative'",
+    ).first<{ status: string; object_key: string }>();
+    expect(derivative?.status).toBe("ready");
+    expect(await (await env.MEDIA.get(derivative!.object_key))?.text()).toBe("new!");
+    expect((await env.MEDIA.list({
+      prefix: derivative!.object_key.split("/derivatives/", 1)[0] + "/derivatives/",
+    })).objects.map((object) => object.key)).toEqual([derivative!.object_key]);
+  });
+
   it("requeues a retryable failed lease without storing exception text", async () => {
     const owner = await createReadyVideo("agent-access-failed-job");
     const workerEnvironment = await gpuEnv();

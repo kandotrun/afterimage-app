@@ -433,7 +433,10 @@ export function createGpuJobRoutes(dependencies: GpuJobDependencies) {
       return errorResponse(context, 400, "invalid_derivative", "Derivative body is invalid.");
     }
     const extension = derivative.kind === "frame" ? "jpg" : "mp4";
-    const objectKey = `users/${lease.user_id}/assets/${lease.asset_id}/derivatives/${derivative.id}.${extension}`;
+    const objectKey = [
+      `users/${lease.user_id}/assets/${lease.asset_id}/derivatives`,
+      `${derivative.id}/${crypto.randomUUID()}.${extension}`,
+    ].join("/");
     const object = await context.env.MEDIA.put(objectKey, context.req.raw.body, {
       httpMetadata: { contentType: expectedType },
       customMetadata: {
