@@ -7,6 +7,7 @@ struct TimelineView: View {
     @State private var selection: [PhotosPickerItem] = []
     @State private var pendingOpen: Asset?
     @State private var pendingDay: DailyPlaybackRoute?
+    @State private var isShowingAIConnection = false
     @Namespace private var zoomTransition
 
     private var sections: [MemoryDay] {
@@ -84,6 +85,9 @@ struct TimelineView: View {
             .toolbar {
                 ToolbarItem(placement: .topBarTrailing) {
                     Menu {
+                        Button("AI連携", systemImage: "brain.head.profile") {
+                            isShowingAIConnection = true
+                        }
                         Button("再読み込み", systemImage: "arrow.clockwise") {
                             Task { try? await model.refreshTimeline() }
                         }
@@ -95,6 +99,9 @@ struct TimelineView: View {
                     }
                     .accessibilityLabel("アカウント")
                 }
+            }
+            .sheet(isPresented: $isShowingAIConnection) {
+                AIConnectionView()
             }
             .safeAreaInset(edge: .bottom) {
                 UploadDock(selection: $selection)
