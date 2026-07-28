@@ -227,10 +227,18 @@ def _json_objects(value: str) -> Iterator[dict[str, object]]:
             yield decoded
 
 
+def _contains_json(value: str) -> bool:
+    try:
+        json.loads(value)
+    except json.JSONDecodeError:
+        return "{" in value or "[" in value
+    return True
+
+
 def parse_analysis(value: str, duration_ms: int) -> AnalysisResult:
     required_fields = {"summary", "segments"}
     payload: dict[str, object] | None = None
-    found_json = False
+    found_json = _contains_json(value)
     for decoded in _json_objects(value):
         found_json = True
         candidates = [decoded]

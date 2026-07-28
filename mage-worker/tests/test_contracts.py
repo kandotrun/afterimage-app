@@ -149,6 +149,13 @@ def test_analysis_accepts_plain_visual_summary() -> None:
         json.dumps({"summary": "keys on desk"}),
         json.dumps({"segments": []}),
         "Metadata: " + json.dumps({"confidence": "high"}),
+        json.dumps([]),
+        json.dumps("visual summary"),
+        json.dumps(42),
+        json.dumps(True),
+        json.dumps(None),
+        'prefix {"summary":"keys","segments":',
+        "[1,",
     ],
 )
 def test_analysis_rejects_json_without_complete_contract(value: str) -> None:
