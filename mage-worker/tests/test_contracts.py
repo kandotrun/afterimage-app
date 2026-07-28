@@ -156,11 +156,26 @@ def test_analysis_accepts_plain_visual_summary() -> None:
         json.dumps(None),
         'prefix {"summary":"keys","segments":',
         "[1,",
+        '"unterminated',
     ],
 )
 def test_analysis_rejects_json_without_complete_contract(value: str) -> None:
     with pytest.raises(ContractError, match="analysis_output_fields_invalid"):
         parse_analysis(value, duration_ms=4000)
+
+
+@pytest.mark.parametrize(
+    "value",
+    [
+        "Narration: [inaudible]",
+        "A person walks past [a red door].",
+        "The display shows {offline}.",
+    ],
+)
+def test_analysis_accepts_plain_prose_with_brackets(value: str) -> None:
+    result = parse_analysis(value, duration_ms=4000)
+    assert result.summary == value
+    assert result.segments == ()
 
 
 def test_failure_code_serializes_to_api_value() -> None:

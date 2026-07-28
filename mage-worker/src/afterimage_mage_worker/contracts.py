@@ -231,8 +231,36 @@ def _contains_json(value: str) -> bool:
     try:
         json.loads(value)
     except json.JSONDecodeError:
-        return "{" in value or "[" in value
-    return True
+        pass
+    else:
+        return True
+    stripped = value.strip()
+    if stripped.startswith(("{", "[")):
+        return True
+    if stripped.startswith('"'):
+        escaped = False
+        for character in stripped[1:]:
+            if escaped:
+                escaped = False
+            elif character == "\\":
+                escaped = True
+            elif character == '"':
+                break
+        else:
+            return True
+    for position, character in enumerate(value):
+        if character not in "{[":
+            continue
+        remainder = value[position + 1:].lstrip()
+        if not remainder:
+            return True
+        if (
+            remainder[0] in '"{[-'
+            or remainder[0].isdigit()
+            or remainder.startswith(("true", "false", "null"))
+        ):
+            return True
+    return False
 
 
 def parse_analysis(value: str, duration_ms: int) -> AnalysisResult:
