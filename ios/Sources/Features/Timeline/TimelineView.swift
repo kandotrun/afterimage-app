@@ -19,46 +19,29 @@ struct TimelineView: View {
     var body: some View {
         NavigationStack {
             MemoryBackdrop {
-                GeometryReader { proxy in
-                    let layout = TimelineGridLayout(containerWidth: proxy.size.width)
-
-                    ScrollView {
-                        if sections.isEmpty && !model.isLoadingTimeline {
-                            EmptyTimelineView()
-                                .padding(.top, 120)
-                        } else {
-                            LazyVStack(alignment: .leading, spacing: 28, pinnedViews: [.sectionHeaders]) {
-                                ForEach(sections) { section in
-                                    Section {
-                                        LazyVGrid(
-                                            columns: layout.columns,
-                                            spacing: layout.spacing
-                                        ) {
-                                            ForEach(section.assets) { asset in
-                                                NavigationLink(value: asset) {
-                                                    MemoryTile(asset: asset)
-                                                        .frame(width: layout.cellLength, height: layout.cellLength)
-                                                }
-                                                .buttonStyle(.plain)
-                                                .matchedTransitionSource(id: asset.id, in: zoomTransition)
-                                                .task { await model.loadMoreIfNeeded(after: asset) }
-                                            }
-                                        }
-                                    } header: {
-                                        Text(section.title)
-                                            .font(.headline.weight(.semibold))
-                                            .padding(.horizontal, 16)
-                                            .padding(.vertical, 8)
-                                            .frame(maxWidth: .infinity, alignment: .leading)
-                                            .background(Color(.systemBackground))
-                                    }
+                ScrollView {
+                    if sections.isEmpty && !model.isLoadingTimeline {
+                        EmptyTimelineView()
+                            .padding(.top, 120)
+                    } else {
+                        LazyVStack(alignment: .leading, spacing: 40) {
+                            ForEach(sections) { section in
+                                if let story = DayStoryPolicy.story(for: section.assets) {
+                                    DayStorySection(
+                                        title: section.title,
+                                        story: story,
+                                        namespace: zoomTransition
+                                    )
+                                    .padding(.horizontal, 20)
+                                    .task { await model.loadMoreIfNeeded(after: section.assets.last ?? story.hero) }
                                 }
                             }
-                            .padding(.bottom, 100)
                         }
-                        }
-                    .refreshable { try? await model.refreshTimeline() }
+                        .padding(.top, 8)
+                        .padding(.bottom, 100)
+                    }
                 }
+                .refreshable { try? await model.refreshTimeline() }
             }
             .navigationTitle("ライブラリ")
             .navigationDestination(for: Asset.self) { asset in
@@ -112,50 +95,10 @@ private struct MemoryDay: Identifiable {
     var title: String {
         if Calendar.autoupdatingCurrent.isDateInToday(day) { return L10n.string("timeline.today") }
         if Calendar.autoupdatingCurrent.isDateInYesterday(day) { return L10n.string("timeline.yesterday") }
-        return day.formatted(.dateTime.year().month(.wide).day())
-    }
-}
-
-private struct MemoryTile: View {
-    let asset: Asset
-
-    var body: some View {
-        Color(.tertiarySystemFill)
-            .aspectRatio(1, contentMode: .fit)
-            .overlay {
-                AuthenticatedThumbnail(asset: asset)
-                    .frame(maxWidth: .infinity, maxHeight: .infinity)
-                    .clipped()
-            }
-            .overlay(alignment: .bottomTrailing) {
-                if asset.mediaType == .video {
-                    HStack(spacing: 4) {
-                        Image(systemName: "play.fill")
-                        if let duration = asset.durationMs {
-                            Text(Self.duration(duration))
-                        }
-                    }
-                    .font(.caption2.weight(.semibold))
-                    .foregroundStyle(.white)
-                    .padding(.horizontal, 8)
-                    .padding(.vertical, 5)
-                    .background(.black.opacity(0.54), in: .capsule)
-                    .padding(8)
-                }
-            }
-            .clipped()
-            .contentShape(.rect)
-            .accessibilityLabel(
-                L10n.format(
-                    asset.mediaType == .video ? "accessibility.video_at" : "accessibility.photo_at",
-                    asset.capturedAt.formatted() as NSString
-                )
-            )
-    }
-
-    private static func duration(_ milliseconds: Int) -> String {
-        let seconds = max(0, milliseconds / 1_000)
-        return String(format: "%d:%02d", seconds / 60, seconds % 60)
+        if Calendar.autoupdatingCurrent.isDate(day, equalTo: .now, toGranularity: .year) {
+            return day.formatted(.dateTime.month(.wide).day().weekday(.wide))
+        }
+        return day.formatted(.dateTime.year().month(.wide).day().weekday(.wide))
     }
 }
 
