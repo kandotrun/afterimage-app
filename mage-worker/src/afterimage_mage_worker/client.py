@@ -1,9 +1,11 @@
 import json
+from http.client import HTTPMessage
 from pathlib import Path
 import re
 from typing import BinaryIO, Iterator, Protocol
 from urllib.error import HTTPError, URLError
-from urllib.request import Request, urlopen
+from urllib.parse import urlparse
+from urllib.request import HTTPRedirectHandler, Request, build_opener
 
 from . import MODEL_ID, MODEL_REVISION
 from .contracts import AnalysisResult, FailureCode, JobLease, parse_lease
@@ -21,6 +23,42 @@ class Opener(Protocol):
     def __call__(self, request: Request, *, timeout: float) -> object: ...
 
 
+class _NoRedirectHandler(HTTPRedirectHandler):
+    def redirect_request(
+        self,
+        _req: Request,
+        _fp: BinaryIO | None,
+        _code: int,
+        _msg: str,
+        _headers: HTTPMessage,
+        _newurl: str,
+    ) -> None:
+        return None
+
+
+_OPENER = build_opener(_NoRedirectHandler())
+
+
+def _open(request: Request, *, timeout: float) -> object:
+    return _OPENER.open(request, timeout=timeout)
+
+
+def _https_origin(url: str) -> tuple[str, str, int]:
+    parsed = urlparse(url)
+    try:
+        port = parsed.port
+    except ValueError:
+        raise ValueError("url_origin_invalid") from None
+    if (
+        parsed.scheme != "https"
+        or parsed.hostname is None
+        or parsed.username is not None
+        or parsed.password is not None
+    ):
+        raise ValueError("url_origin_invalid")
+    return parsed.scheme, parsed.hostname, port or 443
+
+
 def read_chunks(body: BinaryIO) -> Iterator[bytes]:
     while True:
         chunk = body.read(1024 * 1024)
@@ -35,10 +73,12 @@ class WorkerClient:
         base_url: str,
         token_path: Path,
         timeout: float = 60,
-        opener: Opener = urlopen,
+        opener: Opener = _open,
     ) -> None:
         self._base_url = base_url.rstrip("/")
-        if not self._base_url.startswith("https://"):
+        try:
+            self._api_origin = _https_origin(self._base_url)
+        except ValueError:
             raise ValueError("api_base_url_invalid")
         self._token = token_path.read_text().strip()
         if not re.fullmatch(r"aft_worker_[A-Za-z0-9_-]{43}", self._token):
@@ -123,6 +163,12 @@ class WorkerClient:
         return type(payload) is dict and payload.get("status") == "leased"
 
     def download(self, lease: JobLease, destination: Path) -> None:
+        try:
+            media_origin = _https_origin(lease.media.url)
+        except ValueError:
+            raise APIError("download_origin_invalid") from None
+        if media_origin != self._api_origin:
+            raise APIError("download_origin_invalid")
         request = Request(lease.media.url, headers={"User-Agent": _USER_AGENT}, method="GET")
         written = 0
         try:

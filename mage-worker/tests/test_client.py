@@ -1,13 +1,14 @@
 import io
 import json
 from dataclasses import replace
+from http.client import HTTPMessage
 from pathlib import Path
 from urllib.error import HTTPError
 from urllib.request import Request
 
 import pytest
 
-from afterimage_mage_worker.client import APIError, WorkerClient
+from afterimage_mage_worker.client import APIError, WorkerClient, _NoRedirectHandler
 from afterimage_mage_worker.contracts import FailureCode
 
 from test_contracts import lease_payload
@@ -58,6 +59,44 @@ def test_download_validates_declared_size(tmp_path: Path) -> None:
     with pytest.raises(APIError, match="size_mismatch"):
         client.download(lease, tmp_path / "source.mov")
     assert requests[0].get_header("User-agent") == "afterimage-mage-worker/0.1.0"
+
+
+def test_transport_rejects_redirects() -> None:
+    request = Request(
+        "https://afterimage.example/v1/internal/gpu-jobs/lease",
+        headers={"Authorization": f"Bearer aft_worker_{'w' * 43}"},
+        method="POST",
+    )
+    redirected = _NoRedirectHandler().redirect_request(
+        request,
+        None,
+        302,
+        "Found",
+        HTTPMessage(),
+        "https://attacker.example/collect",
+    )
+    assert redirected is None
+
+
+def test_download_rejects_media_from_another_origin(tmp_path: Path) -> None:
+    token_path = tmp_path / "token"
+    token_path.write_text(f"aft_worker_{'w' * 43}")
+    opened = False
+
+    def opener(request: Request, timeout: float) -> Response:
+        nonlocal opened
+        opened = True
+        return Response(b"five!")
+
+    lease = WorkerClient.parse_lease_payload(lease_payload())
+    lease = replace(
+        lease,
+        media=replace(lease.media, url="https://storage.example/private-token"),
+    )
+    client = WorkerClient("https://afterimage.example", token_path, opener=opener)
+    with pytest.raises(APIError, match="download_origin_invalid"):
+        client.download(lease, tmp_path / "source.mov")
+    assert opened is False
 
 
 def test_http_error_redacts_urls_and_tokens(tmp_path: Path) -> None:
