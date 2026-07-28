@@ -1,3 +1,5 @@
 "CFBundleDisplayName" = "afterimage";
+"NSCameraUsageDescription" = "앱에서 afterimage 동영상을 촬영하기 위해 카메라 접근을 허용합니다.";
+"NSMicrophoneUsageDescription" = "촬영하는 동영상에 소리를 녹음하기 위해 마이크 접근을 허용합니다.";
 "NSPhotoLibraryUsageDescription" = "선택한 동영상을 비공개 추억으로 afterimage에 저장하려면 접근 권한이 필요합니다.";
 "NSLocationWhenInUseUsageDescription" = "그날의 날씨를 기록하기 위해 앱 사용 중 현재 위치를 한 번만 사용합니다. 정확한 위치는 저장하지 않습니다.";

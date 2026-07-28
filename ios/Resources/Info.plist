@@ -22,6 +22,10 @@
     <true/>
     <key>MinimumOSVersion</key>
     <string>26.0</string>
+    <key>NSCameraUsageDescription</key>
+    <string>afterimageの動画をアプリ内で撮影するためにカメラを使用します。</string>
+    <key>NSMicrophoneUsageDescription</key>
+    <string>撮影する動画に音声を記録するためにマイクを使用します。</string>
     <key>NSPhotoLibraryUsageDescription</key>
     <string>動画を、あなたの記憶としてafterimageへ保存します。</string>
     <key>NSLocationWhenInUseUsageDescription</key>

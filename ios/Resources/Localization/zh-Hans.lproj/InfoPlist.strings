@@ -1,3 +1,5 @@
 "CFBundleDisplayName" = "afterimage";
+"NSCameraUsageDescription" = "允许使用摄像头在 App 内拍摄 afterimage 视频。";
+"NSMicrophoneUsageDescription" = "允许使用麦克风为拍摄的视频录制声音。";
 "NSPhotoLibraryUsageDescription" = "允许访问所选视频，并将其作为私人记忆保存到 afterimage。";
 "NSLocationWhenInUseUsageDescription" = "允许在使用 App 时获取一次当前位置，用于记录当天的天气。不会存储您的精确位置。";
