@@ -6,7 +6,7 @@ import { fileURLToPath } from "node:url";
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const read = (relative) => readFileSync(path.join(root, relative), "utf8");
 const project = read("ios/project.yml");
-const timeline = read("ios/Sources/Features/Timeline/TimelineView.swift");
+const dayStory = read("ios/Sources/Features/Timeline/DayStorySection.swift");
 const privacy = read("ios/Resources/PrivacyInfo.xcprivacy");
 const login = read("ios/Sources/Features/Auth/LoginView.swift");
 const appIconContents = read("ios/Resources/Assets.xcassets/AppIcon.appiconset/Contents.json");
@@ -35,14 +35,19 @@ for (const category of [
 assert.ok(!swift.includes("#available"), "iOS 26-only app must not carry legacy availability branches");
 assert.ok(!swift.includes("ultraThinMaterial"), "iOS 26-only app must not carry a Material fallback");
 assert.match(
-  timeline,
-  /Color\(\.tertiarySystemFill\)[\s\S]*?\.aspectRatio\(1,\s*contentMode:\s*\.fit\)[\s\S]*?\.overlay\s*\{[\s\S]*?AuthenticatedThumbnail\(asset:\s*asset\)/,
-  "timeline tiles must use an intrinsic-size-free square container",
+  dayStory,
+  /Color\(\.tertiarySystemFill\)[\s\S]*?\.aspectRatio\(4\.0\s*\/\s*3\.0,\s*contentMode:\s*\.fit\)[\s\S]*?\.overlay\s*\{[\s\S]*?AuthenticatedThumbnail\(asset:\s*asset\)/,
+  "day story hero must use an intrinsic-size-free container",
+);
+assert.match(
+  dayStory,
+  /Color\(\.tertiarySystemFill\)[\s\S]*?\.frame\(width:\s*64,\s*height:\s*64\)[\s\S]*?\.overlay\s*\{[\s\S]*?AuthenticatedThumbnail\(asset:\s*asset\)/,
+  "day story strip cells must use an intrinsic-size-free container",
 );
 assert.doesNotMatch(
-  timeline,
-  /AuthenticatedThumbnail\(asset:\s*asset\)[\s\S]{0,240}?\.aspectRatio\(1,\s*contentMode:\s*\.fill\)/,
-  "thumbnail aspect ratios must not participate in grid sizing",
+  dayStory,
+  /AuthenticatedThumbnail\(asset:\s*asset\)[\s\S]{0,240}?\.aspectRatio\([\s\S]{0,40}?contentMode:\s*\.fill\)/,
+  "thumbnail aspect ratios must not participate in layout sizing",
 );
 for (const symbol of [
   "GlassEffectContainer",
