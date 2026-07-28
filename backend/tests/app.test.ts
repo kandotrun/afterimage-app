@@ -4,19 +4,28 @@ import { cleanupExpiredState, createApp, pollTranscriptions, type AppleIdentity 
 
 const NOW = new Date("2026-07-27T00:00:00.000Z");
 
+type TestDailySummaryGenerator = (
+  bindings: Env,
+  transcripts: Array<{ capturedAt: string; text: string }>,
+) => Promise<{ summary: string; model: string }>;
+
 function makeApp(identity: AppleIdentity = {
   subject: "apple-user-a",
   email: "a@example.com",
   displayName: "A User",
-}) {
+}, generateDailySummary?: TestDailySummaryGenerator) {
   return createApp({
     verifyAppleIdentityToken: async () => identity,
     now: () => NOW,
+    ...(generateDailySummary ? { generateDailySummary } : {}),
   });
 }
 
-async function signIn(subject = "apple-user-a") {
-  const app = makeApp({ subject, email: `${subject}@example.com`, displayName: subject });
+async function signIn(subject = "apple-user-a", generateDailySummary?: TestDailySummaryGenerator) {
+  const app = makeApp(
+    { subject, email: `${subject}@example.com`, displayName: subject },
+    generateDailySummary,
+  );
   const response = await app.request("/v1/auth/apple", {
     method: "POST",
     headers: { "content-type": "application/json" },
@@ -2030,5 +2039,178 @@ describe("daily playback manifest", () => {
 
     expect(response.status).toBe(413);
     await expect(response.json()).resolves.toMatchObject({ error: { code: "daily_playback_too_large" } });
+  });
+});
+
+describe("daily Qwen summary", () => {
+  const summaryPath = "/v1/days/summary?startAt=2026-07-27T00%3A00%3A00.000Z&endAt=2026-07-28T00%3A00%3A00.000Z";
+
+  async function userId(subject: string): Promise<string> {
+    const user = await env.DB.prepare("SELECT id FROM users WHERE apple_subject = ?")
+      .bind(subject).first<{ id: string }>();
+    expect(user).not.toBeNull();
+    return user!.id;
+  }
+
+  async function insertTranscript(options: {
+    id: string;
+    userId: string;
+    capturedAt: string;
+    text: string | null;
+    transcriptionStatus?: "completed" | "pending";
+  }) {
+    await env.DB.prepare(
+      `INSERT INTO assets (
+        id, user_id, kind, filename, content_type, byte_size, captured_at, duration_ms,
+        status, object_key, upload_mode, created_at, updated_at,
+        transcription_status, transcript, transcript_language, transcription_updated_at
+      ) VALUES (?, ?, 'video', ?, 'video/mp4', 100, ?, 1000, 'ready', ?, 'single', ?, ?, ?, ?, 'ja', ?)`,
+    ).bind(
+      options.id,
+      options.userId,
+      `${options.id}.mp4`,
+      options.capturedAt,
+      `users/${options.userId}/assets/${options.id}/media`,
+      NOW.toISOString(),
+      NOW.toISOString(),
+      options.transcriptionStatus ?? "completed",
+      options.text,
+      NOW.toISOString(),
+    ).run();
+  }
+
+  it("summarizes only the owner's completed transcripts and caches an unchanged day", async () => {
+    const generator = vi.fn<TestDailySummaryGenerator>(async () => ({
+      summary: "検査書類を確認し、昼食後に車の設定を見直した。",
+      model: "qwen3.8-max-preview",
+    }));
+    const owner = await signIn("summary-owner", generator);
+    await signIn("summary-other");
+    const ownerId = await userId("summary-owner");
+    const otherId = await userId("summary-other");
+
+    await insertTranscript({ id: "owner-later", userId: ownerId, capturedAt: "2026-07-27T12:00:00.000Z", text: "車の設定を見直した" });
+    await insertTranscript({ id: "owner-earlier", userId: ownerId, capturedAt: "2026-07-27T01:00:00.000Z", text: "検査書類を確認した" });
+    await insertTranscript({ id: "owner-pending", userId: ownerId, capturedAt: "2026-07-27T13:00:00.000Z", text: null, transcriptionStatus: "pending" });
+    await insertTranscript({ id: "owner-outside", userId: ownerId, capturedAt: "2026-07-28T00:00:00.000Z", text: "翌日の記録" });
+    await insertTranscript({ id: "other-private", userId: otherId, capturedAt: "2026-07-27T02:00:00.000Z", text: "他人の秘密" });
+
+    const first = await owner.app.request(summaryPath, {
+      headers: { authorization: owner.authorization },
+    }, env);
+    expect(first.status).toBe(200);
+    expect(first.headers.get("cache-control")).toBe("private, no-store");
+    await expect(first.json()).resolves.toMatchObject({
+      summary: "検査書類を確認し、昼食後に車の設定を見直した。",
+      model: "qwen3.8-max-preview",
+      sourceTranscriptCount: 2,
+      generatedAt: NOW.toISOString(),
+    });
+    expect(generator).toHaveBeenCalledOnce();
+    expect(generator.mock.calls[0]?.[1]).toEqual([
+      { capturedAt: "2026-07-27T01:00:00.000Z", text: "検査書類を確認した" },
+      { capturedAt: "2026-07-27T12:00:00.000Z", text: "車の設定を見直した" },
+    ]);
+    expect(JSON.stringify(generator.mock.calls)).not.toContain("他人の秘密");
+    expect(JSON.stringify(generator.mock.calls)).not.toContain("翌日の記録");
+
+    const cached = await owner.app.request(summaryPath, {
+      headers: { authorization: owner.authorization },
+    }, env);
+    expect(cached.status).toBe(200);
+    await expect(cached.json()).resolves.toMatchObject({
+      summary: "検査書類を確認し、昼食後に車の設定を見直した。",
+      sourceTranscriptCount: 2,
+    });
+    expect(generator).toHaveBeenCalledOnce();
+
+    const shiftedSameSources = await owner.app.request(
+      "/v1/days/summary?startAt=2026-07-27T00%3A00%3A00.001Z&endAt=2026-07-28T00%3A00%3A00.000Z",
+      { headers: { authorization: owner.authorization } },
+      env,
+    );
+    expect(shiftedSameSources.status).toBe(200);
+    await expect(shiftedSameSources.json()).resolves.toMatchObject({
+      summary: "検査書類を確認し、昼食後に車の設定を見直した。",
+      sourceTranscriptCount: 2,
+    });
+    expect(generator).toHaveBeenCalledOnce();
+  });
+
+  it("regenerates the cached summary after a source transcript changes", async () => {
+    const generator = vi.fn<TestDailySummaryGenerator>()
+      .mockResolvedValueOnce({ summary: "午前の記録。", model: "qwen3.8-max-preview" })
+      .mockResolvedValueOnce({ summary: "午前と午後の記録。", model: "qwen3.8-max-preview" });
+    const owner = await signIn("summary-refresh-owner", generator);
+    const ownerId = await userId("summary-refresh-owner");
+    await insertTranscript({ id: "changing", userId: ownerId, capturedAt: "2026-07-27T01:00:00.000Z", text: "午前の記録" });
+
+    const first = await owner.app.request(summaryPath, {
+      headers: { authorization: owner.authorization },
+    }, env);
+    expect(first.status).toBe(200);
+    await env.DB.prepare(
+      "UPDATE assets SET transcript = ?, transcription_updated_at = ? WHERE id = ?",
+    ).bind("午前と午後の記録", "2026-07-27T14:00:00.000Z", "changing").run();
+
+    const refreshed = await owner.app.request(summaryPath, {
+      headers: { authorization: owner.authorization },
+    }, env);
+    expect(refreshed.status).toBe(200);
+    await expect(refreshed.json()).resolves.toMatchObject({ summary: "午前と午後の記録。" });
+    expect(generator).toHaveBeenCalledTimes(2);
+  });
+
+  it("rejects ranges that are not a calendar-day-sized window", async () => {
+    const generator = vi.fn<TestDailySummaryGenerator>();
+    const owner = await signIn("summary-invalid-range-owner", generator);
+    const response = await owner.app.request(
+      "/v1/days/summary?startAt=2026-07-27T00%3A00%3A00.000Z&endAt=2026-07-27T01%3A00%3A00.000Z",
+      { headers: { authorization: owner.authorization } },
+      env,
+    );
+
+    expect(response.status).toBe(400);
+    await expect(response.json()).resolves.toMatchObject({ error: { code: "invalid_day_range" } });
+    expect(generator).not.toHaveBeenCalled();
+  });
+
+  it("returns no summary without completed transcripts and hides provider failures", async () => {
+    const unusedGenerator = vi.fn<TestDailySummaryGenerator>();
+    const emptyOwner = await signIn("summary-empty-owner", unusedGenerator);
+    const empty = await emptyOwner.app.request(summaryPath, {
+      headers: { authorization: emptyOwner.authorization },
+    }, env);
+    expect(empty.status).toBe(200);
+    await expect(empty.json()).resolves.toMatchObject({
+      summary: null,
+      model: null,
+      sourceTranscriptCount: 0,
+      generatedAt: null,
+    });
+    expect(unusedGenerator).not.toHaveBeenCalled();
+
+    const errorLog = vi.spyOn(console, "error").mockImplementation(() => {});
+    const failingGenerator = vi.fn<TestDailySummaryGenerator>(async () => {
+      throw new Error("private transcript echoed by provider");
+    });
+    const failingOwner = await signIn("summary-failure-owner", failingGenerator);
+    const failingOwnerId = await userId("summary-failure-owner");
+    await insertTranscript({ id: "failure-source", userId: failingOwnerId, capturedAt: "2026-07-27T01:00:00.000Z", text: "秘密の日記" });
+    const failed = await failingOwner.app.request(summaryPath, {
+      headers: { authorization: failingOwner.authorization },
+    }, env);
+    expect(failed.status).toBe(503);
+    const failedBody = await failed.text();
+    expect(failedBody).toContain("summary_unavailable");
+    expect(failedBody).not.toContain("private transcript");
+    expect(failedBody).not.toContain("秘密の日記");
+    expect(errorLog).toHaveBeenCalledWith(JSON.stringify({
+      event: "daily_summary_generation_failed",
+      model: "qwen3.8-max-preview",
+    }));
+    expect(JSON.stringify(errorLog.mock.calls)).not.toContain("秘密の日記");
+    expect(JSON.stringify(errorLog.mock.calls)).not.toContain("private transcript");
+    errorLog.mockRestore();
   });
 });

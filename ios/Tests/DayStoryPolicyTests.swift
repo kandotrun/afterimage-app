@@ -29,15 +29,6 @@ final class DayStoryPolicyTests: XCTestCase {
         XCTAssertEqual(story?.strip.map(\.id), ["p1", "p2"])
     }
 
-    func testQuotePicksNewestNonEmptyPreview() {
-        let story = DayStoryPolicy.story(for: [
-            makeAsset(id: "a"),
-            makeAsset(id: "b", kind: .video, transcriptionStatus: .completed, transcriptPreview: "   "),
-            makeAsset(id: "c", kind: .video, transcriptionStatus: .completed, transcriptPreview: "海沿いを歩いた。"),
-        ])
-        XCTAssertEqual(story?.quote, "海沿いを歩いた。")
-    }
-
     func testEmptyDayHasNoStory() {
         XCTAssertNil(DayStoryPolicy.story(for: []))
     }
@@ -45,8 +36,7 @@ final class DayStoryPolicyTests: XCTestCase {
     private func makeAsset(
         id: String,
         kind: MediaKind = .image,
-        transcriptionStatus: TranscriptionStatus? = nil,
-        transcriptPreview: String? = nil
+        transcriptionStatus: TranscriptionStatus? = nil
     ) -> Asset {
         let date = Date(timeIntervalSince1970: 1_000)
         return Asset(
@@ -65,7 +55,7 @@ final class DayStoryPolicyTests: XCTestCase {
             thumbnailUrl: nil,
             contentUrl: nil,
             transcriptionStatus: transcriptionStatus,
-            transcriptPreview: transcriptPreview,
+            transcriptPreview: nil,
             transcriptUrl: nil
         )
     }

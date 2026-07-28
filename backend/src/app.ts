@@ -13,6 +13,13 @@ import {
   cleanupSoniox,
 } from "./soniox";
 import { handleMcpRequest } from "./mcp";
+import {
+  configuredDailySummaryModel,
+  DAILY_SUMMARY_MAX_CHARACTERS,
+  generateDailySummary as generateQwenDailySummary,
+  type DailyTranscriptSource,
+  type GeneratedDailySummary,
+} from "./qwen-summary";
 
 export type { AppleIdentity } from "./apple";
 
@@ -21,8 +28,14 @@ type VerifyAppleIdentityToken = (
   audience: string,
 ) => Promise<AppleIdentity>;
 
+type GenerateDailySummary = (
+  bindings: Env,
+  transcripts: DailyTranscriptSource[],
+) => Promise<GeneratedDailySummary>;
+
 interface AppDependencies {
   verifyAppleIdentityToken: VerifyAppleIdentityToken;
+  generateDailySummary: GenerateDailySummary;
   now: () => Date;
 }
 
@@ -82,6 +95,21 @@ interface AssetRow {
   transcription_updated_at: string | null;
 }
 
+interface DailySummaryCacheRow {
+  transcript_digest: string;
+  source_transcript_count: number;
+  summary: string;
+  model: string;
+  generated_at: string;
+}
+
+interface DailySummaryTranscriptRow {
+  id: string;
+  captured_at: string;
+  transcript: string;
+  transcription_updated_at: string | null;
+}
+
 interface UploadPartRow {
   part_number: number;
   etag: string;
@@ -134,6 +162,10 @@ const dailyPlaybackQuerySchema = z.object({
 const MAX_DAILY_PLAYBACK_SPAN_MS = 48 * 60 * 60 * 1_000;
 const MAX_DAILY_PLAYBACK_CLIPS = 200;
 const MAX_DAILY_PLAYBACK_TRANSCRIPT_CHARS = 500_000;
+const MAX_DAILY_SUMMARY_TRANSCRIPTS = 200;
+const MAX_DAILY_SUMMARY_TRANSCRIPT_CHARS = 200_000;
+const MIN_DAILY_SUMMARY_RANGE_MS = 22 * 60 * 60 * 1_000;
+const MAX_DAILY_SUMMARY_RANGE_MS = 26 * 60 * 60 * 1_000;
 
 const existingAssetsSchema = z.object({
   items: z.array(z.object({
@@ -557,6 +589,7 @@ export async function cleanupExpiredState(bindings: Env, now = new Date()) {
 export function createApp(overrides: Partial<AppDependencies> = {}) {
   const dependencies: AppDependencies = {
     verifyAppleIdentityToken: overrides.verifyAppleIdentityToken ?? verifyAppleIdentityTokenAgainstApple,
+    generateDailySummary: overrides.generateDailySummary ?? generateQwenDailySummary,
     now: overrides.now ?? (() => new Date()),
   };
   const app = new Hono<AppEnvironment>();
@@ -628,7 +661,7 @@ export function createApp(overrides: Partial<AppDependencies> = {}) {
   // Development login: issues a session without Apple verification.
   // Never expose this route in production.
   app.post("/v1/auth/dev", async (context) => {
-    if (context.env.ENVIRONMENT === "production") return context.notFound();
+    if (String(context.env.ENVIRONMENT) === "production") return context.notFound();
 
     const now = dependencies.now();
     const nowIso = now.toISOString();
@@ -1289,6 +1322,143 @@ export function createApp(overrides: Partial<AppDependencies> = {}) {
     // Keep the failed row as a tombstone. Scheduled cleanup repeats prefix deletion after the
     // grace period, catching writes that were already in flight when this request deleted R2.
     return new Response(null, { status: 204 });
+  });
+
+  api.get("/days/summary", async (context) => {
+    const auth = context.get("auth");
+    const parsed = dailyPlaybackQuerySchema.safeParse({
+      startAt: context.req.query("startAt"),
+      endAt: context.req.query("endAt"),
+    });
+    if (!parsed.success) {
+      return errorResponse(context, 400, "invalid_day_range", "A valid startAt and endAt are required.");
+    }
+
+    const startAt = new Date(parsed.data.startAt);
+    const endAt = new Date(parsed.data.endAt);
+    const spanMs = endAt.getTime() - startAt.getTime();
+    if (spanMs < MIN_DAILY_SUMMARY_RANGE_MS || spanMs > MAX_DAILY_SUMMARY_RANGE_MS) {
+      return errorResponse(context, 400, "invalid_day_range", "The summary range must describe one calendar day.");
+    }
+
+    const startIso = startAt.toISOString();
+    const endIso = endAt.toISOString();
+    const rangeWhere = `user_id = ? AND kind = 'video' AND status = 'ready'
+      AND transcription_status = 'completed' AND transcript IS NOT NULL AND length(trim(transcript)) > 0
+      AND julianday(captured_at) >= julianday(?) AND julianday(captured_at) < julianday(?)`;
+    const bounds = await context.env.DB.prepare(
+      `SELECT COUNT(*) AS transcript_count, COALESCE(SUM(length(transcript)), 0) AS transcript_chars
+         FROM assets WHERE ${rangeWhere}`,
+    ).bind(auth.userId, startIso, endIso).first<{ transcript_count: number; transcript_chars: number }>();
+    const transcriptCount = Number(bounds?.transcript_count ?? 0);
+    const transcriptChars = Number(bounds?.transcript_chars ?? 0);
+    if (transcriptCount > MAX_DAILY_SUMMARY_TRANSCRIPTS || transcriptChars > MAX_DAILY_SUMMARY_TRANSCRIPT_CHARS) {
+      return errorResponse(context, 413, "daily_summary_too_large", "This day is too large to summarize.");
+    }
+
+    const setPrivateHeaders = () => {
+      context.header("Cache-Control", "private, no-store");
+      context.header("Pragma", "no-cache");
+      context.header("Vary", "Authorization");
+    };
+    if (transcriptCount === 0) {
+      await context.env.DB.prepare(
+        "DELETE FROM daily_summaries WHERE user_id = ? AND start_at = ? AND end_at = ?",
+      ).bind(auth.userId, startIso, endIso).run();
+      setPrivateHeaders();
+      return context.json({
+        startAt: startIso,
+        endAt: endIso,
+        summary: null,
+        model: null,
+        sourceTranscriptCount: 0,
+        generatedAt: null,
+      });
+    }
+
+    const rows = await context.env.DB.prepare(
+      `SELECT id, captured_at, transcript, transcription_updated_at
+         FROM assets WHERE ${rangeWhere}
+        ORDER BY julianday(captured_at) ASC, id ASC LIMIT ?`,
+    ).bind(auth.userId, startIso, endIso, MAX_DAILY_SUMMARY_TRANSCRIPTS).all<DailySummaryTranscriptRow>();
+    const transcripts: DailyTranscriptSource[] = rows.results.map((row) => ({
+      capturedAt: row.captured_at,
+      text: row.transcript,
+    }));
+    const transcriptDigest = await sha256Hex(JSON.stringify(rows.results.map((row) => [
+      row.id,
+      row.captured_at,
+      row.transcription_updated_at,
+      row.transcript,
+    ])));
+    const model = configuredDailySummaryModel(context.env);
+    const cached = await context.env.DB.prepare(
+      `SELECT transcript_digest, source_transcript_count, summary, model, generated_at
+         FROM daily_summaries
+        WHERE user_id = ? AND transcript_digest = ? AND model = ?
+        ORDER BY generated_at DESC LIMIT 1`,
+    ).bind(auth.userId, transcriptDigest, model).first<DailySummaryCacheRow>();
+    if (cached?.transcript_digest === transcriptDigest && cached.model === model) {
+      setPrivateHeaders();
+      return context.json({
+        startAt: startIso,
+        endAt: endIso,
+        summary: cached.summary,
+        model: cached.model,
+        sourceTranscriptCount: cached.source_transcript_count,
+        generatedAt: cached.generated_at,
+      });
+    }
+
+    let generated: GeneratedDailySummary;
+    try {
+      generated = await dependencies.generateDailySummary(context.env, transcripts);
+    } catch {
+      console.error(JSON.stringify({ event: "daily_summary_generation_failed", model }));
+      return errorResponse(context, 503, "summary_unavailable", "The daily summary is temporarily unavailable.");
+    }
+    const summary = generated.summary.trim();
+    if (
+      generated.model !== model
+      || !summary
+      || /[\r\n]/.test(summary)
+      || Array.from(summary).length > DAILY_SUMMARY_MAX_CHARACTERS
+    ) {
+      console.error(JSON.stringify({ event: "daily_summary_validation_failed", model }));
+      return errorResponse(context, 503, "summary_unavailable", "The daily summary is temporarily unavailable.");
+    }
+
+    const generatedAt = dependencies.now().toISOString();
+    await context.env.DB.prepare(
+      `INSERT INTO daily_summaries (
+        user_id, start_at, end_at, transcript_digest, source_transcript_count, summary, model, generated_at
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+      ON CONFLICT(user_id, start_at, end_at) DO UPDATE SET
+        transcript_digest = excluded.transcript_digest,
+        source_transcript_count = excluded.source_transcript_count,
+        summary = excluded.summary,
+        model = excluded.model,
+        generated_at = excluded.generated_at`,
+    ).bind(
+      auth.userId,
+      startIso,
+      endIso,
+      transcriptDigest,
+      transcripts.length,
+      summary,
+      model,
+      generatedAt,
+    ).run();
+
+    setPrivateHeaders();
+    return context.json({
+      startAt: startIso,
+      endAt: endIso,
+      summary,
+      model,
+      sourceTranscriptCount: transcripts.length,
+      generatedAt,
+    });
   });
 
   api.get("/days/playback", async (context) => {

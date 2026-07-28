@@ -213,4 +213,38 @@ final class APIContractTests: XCTestCase {
         XCTAssertEqual(playback.clips[1].transcript.status, .pending)
         XCTAssertNil(playback.clips[1].transcript.text)
     }
+
+    func testDailySummaryDecodesGeneratedAndEmptyResponses() throws {
+        let generatedJSON = """
+        {
+          "startAt": "2026-07-27T00:00:00.000Z",
+          "endAt": "2026-07-28T00:00:00.000Z",
+          "summary": "検査書類を確認し、昼食後に車の設定を見直した。",
+          "model": "qwen3.8-max-preview",
+          "sourceTranscriptCount": 10,
+          "generatedAt": "2026-07-28T00:05:00.000Z"
+        }
+        """.data(using: .utf8)!
+        let generated = try JSONDecoder.afterimage.decode(DailySummaryResponse.self, from: generatedJSON)
+        XCTAssertEqual(generated.summary, "検査書類を確認し、昼食後に車の設定を見直した。")
+        XCTAssertEqual(generated.model, "qwen3.8-max-preview")
+        XCTAssertEqual(generated.sourceTranscriptCount, 10)
+        XCTAssertNotNil(generated.generatedAt)
+
+        let emptyJSON = """
+        {
+          "startAt": "2026-07-27T00:00:00.000Z",
+          "endAt": "2026-07-28T00:00:00.000Z",
+          "summary": null,
+          "model": null,
+          "sourceTranscriptCount": 0,
+          "generatedAt": null
+        }
+        """.data(using: .utf8)!
+        let empty = try JSONDecoder.afterimage.decode(DailySummaryResponse.self, from: emptyJSON)
+        XCTAssertNil(empty.summary)
+        XCTAssertNil(empty.model)
+        XCTAssertEqual(empty.sourceTranscriptCount, 0)
+        XCTAssertNil(empty.generatedAt)
+    }
 }

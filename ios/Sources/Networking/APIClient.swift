@@ -111,6 +111,19 @@ actor APIClient {
         return try await decode(request)
     }
 
+    func dailySummary(startAt: Date, endAt: Date) async throws -> DailySummaryResponse {
+        let formatter = ISO8601DateFormatter()
+        formatter.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
+        var components = URLComponents()
+        components.path = "/v1/days/summary"
+        components.queryItems = [
+            URLQueryItem(name: "startAt", value: formatter.string(from: startAt)),
+            URLQueryItem(name: "endAt", value: formatter.string(from: endAt)),
+        ]
+        let request = try makeRequest(path: components.string ?? "/v1/days/summary", method: "GET")
+        return try await decode(request)
+    }
+
     func existingSourceFingerprints(
         for candidates: [ExistingAssetCandidate]
     ) async throws -> Set<String> {

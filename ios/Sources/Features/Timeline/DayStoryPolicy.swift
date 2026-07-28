@@ -4,7 +4,6 @@ import Foundation
 struct DayStory: Equatable {
     let hero: Asset
     let strip: [Asset]
-    let quote: String?
 }
 
 enum DayStoryPolicy {
@@ -14,9 +13,6 @@ enum DayStoryPolicy {
         let hero = assets.first { $0.mediaType == .video && $0.transcriptionStatus == .completed }
             ?? assets.first { $0.mediaType == .video }
             ?? newest
-        let quote = assets
-            .compactMap { $0.transcriptPreview?.trimmingCharacters(in: .whitespacesAndNewlines) }
-            .first { !$0.isEmpty }
-        return DayStory(hero: hero, strip: assets.filter { $0.id != hero.id }, quote: quote)
+        return DayStory(hero: hero, strip: assets.filter { $0.id != hero.id })
     }
 }
