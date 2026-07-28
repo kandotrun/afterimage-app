@@ -7,6 +7,7 @@ struct DayStorySection: View {
     @State private var dailySummary: DailySummaryResponse?
 
     let title: String
+    let weather: DailyWeather?
     let day: Date
     let readyVideos: [Asset]
     let story: DayStory
@@ -14,8 +15,14 @@ struct DayStorySection: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 14) {
-            Text(title)
-                .font(.title3.weight(.semibold))
+            HStack(alignment: .top, spacing: 12) {
+                Text(title)
+                    .font(.title3.weight(.semibold))
+                Spacer(minLength: 8)
+                if let weather {
+                    DailyWeatherBadge(weather: weather)
+                }
+            }
 
             if let summary = dailySummary?.summary, !summary.isEmpty {
                 Text(verbatim: summary)

@@ -258,6 +258,81 @@ describe("health and authentication", () => {
   });
 });
 
+describe("daily weather privacy", () => {
+  const weather = {
+    symbolName: "cloud.sun.fill",
+    temperatureCelsius: 28.4,
+    highTemperatureCelsius: 31.2,
+    lowTemperatureCelsius: 24.8,
+    recordedAt: "2026-07-28T01:15:00.000Z",
+    attributionLegalUrl: "https://weatherkit.apple.com/legal-attribution.html",
+    attributionLightUrl: "https://example.com/weather-light.svg",
+    attributionDarkUrl: "https://example.com/weather-dark.svg",
+  };
+
+  it("returns a stored weather snapshot only to its owner", async () => {
+    const owner = await signIn("weather-owner");
+    const other = await signIn("weather-other");
+
+    const stored = await owner.app.request("/v1/weather/days/2026-07-28", {
+      method: "PUT",
+      headers: { authorization: owner.authorization, "content-type": "application/json" },
+      body: JSON.stringify(weather),
+    }, env);
+    expect(stored.status).toBe(200);
+
+    const ownerResponse = await owner.app.request(
+      "/v1/weather/days?from=2026-07-28&to=2026-07-28",
+      { headers: { authorization: owner.authorization } },
+      env,
+    );
+    await expect(ownerResponse.json()).resolves.toEqual({
+      items: [{ localDate: "2026-07-28", ...weather }],
+    });
+
+    const otherResponse = await other.app.request(
+      "/v1/weather/days?from=2026-07-28&to=2026-07-28",
+      { headers: { authorization: other.authorization } },
+      env,
+    );
+    await expect(otherResponse.json()).resolves.toEqual({ items: [] });
+  });
+
+  it("replaces the owner's snapshot when the same day is recorded again", async () => {
+    const owner = await signIn("weather-update-owner");
+    const path = "/v1/weather/days/2026-07-28";
+
+    await owner.app.request(path, {
+      method: "PUT",
+      headers: { authorization: owner.authorization, "content-type": "application/json" },
+      body: JSON.stringify(weather),
+    }, env);
+    const replaced = await owner.app.request(path, {
+      method: "PUT",
+      headers: { authorization: owner.authorization, "content-type": "application/json" },
+      body: JSON.stringify({
+        ...weather,
+        symbolName: "sun.max.fill",
+        temperatureCelsius: 30.1,
+        recordedAt: "2026-07-28T03:00:00.000Z",
+      }),
+    }, env);
+
+    expect(replaced.status).toBe(200);
+    const body = await replaced.json<{
+      item: { symbolName: string; temperatureCelsius: number; recordedAt: string };
+    }>();
+    expect(body.item).toMatchObject({
+      symbolName: "sun.max.fill",
+      temperatureCelsius: 30.1,
+      recordedAt: "2026-07-28T03:00:00.000Z",
+    });
+    await expect(env.DB.prepare(
+      "SELECT COUNT(*) AS count FROM daily_weather WHERE local_date = ?",
+    ).bind("2026-07-28").first<{ count: number }>()).resolves.toMatchObject({ count: 1 });
+  });
+});
+
 describe("asset upload and private timeline", () => {
   it("stores capture time and optional GPS coordinates and returns them on the timeline", async () => {
     const { app, authorization } = await signIn("capture-metadata-owner");

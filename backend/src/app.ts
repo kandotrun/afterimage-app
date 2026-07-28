@@ -20,6 +20,7 @@ import {
   type DailyTranscriptSource,
   type GeneratedDailySummary,
 } from "./qwen-summary";
+import { registerDailyWeatherRoutes } from "./weather";
 
 export type { AppleIdentity } from "./apple";
 
@@ -47,7 +48,7 @@ interface AuthContext {
   displayName: string | null;
 }
 
-type AppEnvironment = {
+export type AppEnvironment = {
   Bindings: Env;
   Variables: {
     auth: AuthContext;
@@ -710,6 +711,7 @@ export function createApp(overrides: Partial<AppDependencies> = {}) {
 
   const api = new Hono<AppEnvironment>();
   api.use("*", authMiddleware(dependencies.now));
+  registerDailyWeatherRoutes(api, dependencies.now);
 
   api.get("/me", (context) => {
     const auth = context.get("auth");

@@ -65,6 +65,7 @@ final class AppModel: ObservableObject {
     @Published private(set) var isAuthenticated = false
     @Published private(set) var isBootstrapping = true
     @Published private(set) var assets: [Asset] = []
+    @Published private(set) var dailyWeather: [String: DailyWeather] = [:]
     @Published private(set) var isLoadingTimeline = false
     @Published var upload: UploadPresentation?
     @Published private(set) var importSelectionSummary: ImportSelectionSummary?
@@ -74,20 +75,24 @@ final class AppModel: ObservableObject {
     private let compressor: MediaCompressor
     private let sessionStore: SessionStoring
     private let haptics: HapticEngine
+    private let weatherRecorder: WeatherKitDailyWeatherRecorder
     private var nextCursor: String?
     private var didBootstrap = false
     private var uploadTask: Task<Void, Never>?
+    private var isRecordingDailyWeather = false
 
     init(
         api: APIClient,
         sessionStore: SessionStoring = KeychainSessionStore(),
         compressor: MediaCompressor = MediaCompressor(),
-        haptics: HapticEngine = HapticEngine()
+        haptics: HapticEngine = HapticEngine(),
+        weatherRecorder: WeatherKitDailyWeatherRecorder = WeatherKitDailyWeatherRecorder()
     ) {
         self.api = api
         self.sessionStore = sessionStore
         self.compressor = compressor
         self.haptics = haptics
+        self.weatherRecorder = weatherRecorder
     }
 
     static func live() -> AppModel {
@@ -192,6 +197,7 @@ final class AppModel: ObservableObject {
         let page = try await api.timeline()
         assets = page.assets.filter { $0.status == .ready }
         nextCursor = page.nextCursor
+        await loadDailyWeather(for: assets)
     }
 
     func loadMoreIfNeeded(after asset: Asset) async {
@@ -201,10 +207,45 @@ final class AppModel: ObservableObject {
         do {
             let page = try await api.timeline(cursor: cursor)
             let existing = Set(assets.map(\.id))
-            assets.append(contentsOf: page.assets.filter { $0.status == .ready && !existing.contains($0.id) })
+            let additions = page.assets.filter { $0.status == .ready && !existing.contains($0.id) }
+            assets.append(contentsOf: additions)
             nextCursor = page.nextCursor
+            await loadDailyWeather(for: additions)
         } catch {
             show(error: error)
+        }
+    }
+
+    func weather(for day: Date) -> DailyWeather? {
+        dailyWeather[DailyWeatherDate.localDate(for: day)]
+    }
+
+    func recordTodayWeather() async {
+        guard !isRecordingDailyWeather else { return }
+        isRecordingDailyWeather = true
+        defer { isRecordingDailyWeather = false }
+
+        let localDate = DailyWeatherDate.localDate(for: .now)
+        if dailyWeather[localDate] != nil { return }
+        if let existing = try? await api.dailyWeather(in: localDate...localDate),
+           let weather = existing.first {
+            mergeDailyWeather([weather])
+            return
+        }
+        guard let draft = try? await weatherRecorder.snapshot(),
+              let weather = try? await api.saveDailyWeather(draft) else { return }
+        mergeDailyWeather([weather])
+    }
+
+    private func loadDailyWeather(for assets: [Asset]) async {
+        guard let range = DailyWeatherDate.range(for: assets.map(\.capturedAt)),
+              let weather = try? await api.dailyWeather(in: range) else { return }
+        mergeDailyWeather(weather)
+    }
+
+    private func mergeDailyWeather(_ weather: [DailyWeather]) {
+        for item in weather {
+            dailyWeather[item.localDate] = item
         }
     }
 
@@ -492,6 +533,7 @@ final class AppModel: ObservableObject {
     private func clearLocalSession() {
         try? sessionStore.clear()
         assets = []
+        dailyWeather = [:]
         nextCursor = nil
         isAuthenticated = false
     }

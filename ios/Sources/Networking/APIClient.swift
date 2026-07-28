@@ -98,6 +98,29 @@ actor APIClient {
         return try await decode(request)
     }
 
+    func dailyWeather(in range: ClosedRange<String>) async throws -> [DailyWeather] {
+        var components = URLComponents()
+        components.path = "/v1/weather/days"
+        components.queryItems = [
+            URLQueryItem(name: "from", value: range.lowerBound),
+            URLQueryItem(name: "to", value: range.upperBound),
+        ]
+        let request = try makeRequest(path: components.string ?? "/v1/weather/days", method: "GET")
+        let page: DailyWeatherPage = try await decode(request)
+        return page.items
+    }
+
+    func saveDailyWeather(_ weather: DailyWeatherDraft) async throws -> DailyWeather {
+        let request = try makeRequest(
+            path: "/v1/weather/days/\(weather.localDate)",
+            method: "PUT",
+            body: encoder.encode(weather),
+            contentType: "application/json"
+        )
+        let response: DailyWeatherResponse = try await decode(request)
+        return response.item
+    }
+
     func dailyPlayback(startAt: Date, endAt: Date) async throws -> DailyPlaybackResponse {
         let formatter = ISO8601DateFormatter()
         formatter.formatOptions = [.withInternetDateTime, .withFractionalSeconds]

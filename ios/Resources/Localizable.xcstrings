@@ -2297,6 +2297,62 @@
         }
       }
     },
+    "weather.attribution": {
+      "localizations": {
+        "ja": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Weatherのデータ提供元"
+          }
+        },
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Weather data sources"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Weather 数据来源"
+          }
+        },
+        "ko": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Weather 데이터 출처"
+          }
+        }
+      }
+    },
+    "weather.summary.accessibility": {
+      "localizations": {
+        "ja": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "天気、現在%@、最高%@、最低%@"
+          }
+        },
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Weather, current %@, high %@, low %@"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "天气，当前%@，最高%@，最低%@"
+          }
+        },
+        "ko": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "날씨, 현재 %@, 최고 %@, 최저 %@"
+          }
+        }
+      }
+    },
     "timeline.today": {
       "localizations": {
         "ja": {

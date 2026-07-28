@@ -6,8 +6,11 @@ import { fileURLToPath } from "node:url";
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const read = (relative) => readFileSync(path.join(root, relative), "utf8");
 const project = read("ios/project.yml");
+const info = read("ios/Resources/Info.plist");
+const entitlements = read("ios/Resources/afterimage.entitlements");
 const dayStory = read("ios/Sources/Features/Timeline/DayStorySection.swift");
 const [dayStorySection, dayStoryHero = ""] = dayStory.split("private struct DayStoryHero");
+const weatherBadge = read("ios/Sources/Features/Timeline/DailyWeatherBadge.swift");
 const timeline = read("ios/Sources/Features/Timeline/TimelineView.swift");
 const apiClient = read("ios/Sources/Networking/APIClient.swift");
 const apiModels = read("ios/Sources/Models/APIModels.swift");
@@ -28,6 +31,10 @@ const swift = readdirSync(sourceRoot, { recursive: true, withFileTypes: true })
 assert.match(project, /PRODUCT_NAME:\s*afterimage/);
 assert.match(project, /IPHONEOS_DEPLOYMENT_TARGET:\s*["']?26\.0/);
 assert.match(project, /path:\s*Resources\/PrivacyInfo\.xcprivacy\s*\n\s+buildPhase:\s*resources/);
+assert.match(info, /<key>NSLocationWhenInUseUsageDescription<\/key>/);
+assert.match(entitlements, /<key>com\.apple\.developer\.weatherkit<\/key>\s*<true\/>/);
+assert.match(weatherBadge, /\.symbolRenderingMode\(\.hierarchical\)/);
+assert.match(weatherBadge, /\.tint\(\.secondary\)/);
 assert.match(privacy, /<key>NSPrivacyTracking<\/key>\s*<false\/>/);
 for (const category of [
   "NSPrivacyCollectedDataTypeName",
@@ -128,6 +135,8 @@ for (const symbol of [
   "/playback",
   "resolver.isAPIOrigin(url)",
   "/v1/auth/session",
+  "CLLocationUpdate.liveUpdates",
+  "WeatherService.shared",
 ]) {
   assert.ok(swift.includes(symbol), `missing iOS contract symbol: ${symbol}`);
 }

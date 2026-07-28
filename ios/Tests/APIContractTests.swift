@@ -247,4 +247,32 @@ final class APIContractTests: XCTestCase {
         XCTAssertEqual(empty.sourceTranscriptCount, 0)
         XCTAssertNil(empty.generatedAt)
     }
+
+    func testDailyWeatherPageDecodesStoredSnapshot() throws {
+        let json = """
+        {
+          "items": [
+            {
+              "localDate": "2026-07-28",
+              "symbolName": "cloud.sun.fill",
+              "temperatureCelsius": 28.4,
+              "highTemperatureCelsius": 31.2,
+              "lowTemperatureCelsius": 24.8,
+              "recordedAt": "2026-07-28T01:15:00.000Z",
+              "attributionLegalUrl": "https://weatherkit.apple.com/legal-attribution.html",
+              "attributionLightUrl": "https://example.com/weather-light.svg",
+              "attributionDarkUrl": "https://example.com/weather-dark.svg"
+            }
+          ]
+        }
+        """.data(using: .utf8)!
+
+        let page = try JSONDecoder.afterimage.decode(DailyWeatherPage.self, from: json)
+
+        XCTAssertEqual(page.items.first?.localDate, "2026-07-28")
+        XCTAssertEqual(page.items.first?.symbolName, "cloud.sun.fill")
+        XCTAssertEqual(page.items.first?.temperatureCelsius, 28.4)
+        XCTAssertEqual(page.items.first?.recordedAt, Date(timeIntervalSince1970: 1_785_201_300))
+        XCTAssertEqual(page.items.first?.attributionLegalUrl.host(), "weatherkit.apple.com")
+    }
 }
