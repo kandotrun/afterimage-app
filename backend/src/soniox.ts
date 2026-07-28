@@ -1,128 +1,223 @@
-/**
- * Soniox async transcription client for afterimage.
- * Adapted from wayo-voice/worker/src/soniox.ts — simplified for fire-and-forget video transcription.
- */
+import { z } from "zod";
 
-const DEFAULT_MODEL = "stt-async-v5";
-const DEFAULT_LANGUAGE_HINTS = ["ja", "en"];
+const SONIOX_BASE = "https://api.soniox.com/v1" as const;
+const DEFAULT_MODEL = "stt-async-v5" as const;
+const DEFAULT_LANGUAGE_HINTS = ["ja", "en"] as const;
+
+const sonioxIdSchema = z.object({
+  id: z.string().min(1),
+});
+
+const sonioxErrorSchema = z.object({
+  message: z.string().optional(),
+  error_message: z.string().optional(),
+  error_type: z.string().optional(),
+});
+
+const transcriptionStatusSchema = z.object({
+  status: z.enum(["queued", "processing", "completed", "error"]),
+  error_type: z.string().nullish(),
+  error_message: z.string().nullish(),
+});
+
+const transcriptSchema = z.object({
+  text: z.string(),
+  language: z.string().nullish(),
+});
 
 interface SonioxEnv {
-  SONIOX_API_KEY: string;
-  SONIOX_MODEL?: string;
-  SONIOX_LANGUAGE_HINTS?: string;
+  readonly SONIOX_API_KEY: string;
+  readonly SONIOX_MODEL?: string;
+  readonly SONIOX_LANGUAGE_HINTS?: string;
 }
 
-function sonioxBase(): string {
-  return "https://api.soniox.com/v1";
+export interface SonioxUpload {
+  readonly body: ReadableStream<Uint8Array>;
+  readonly size: number;
+  readonly filename: string;
+  readonly contentType: string;
+}
+
+class SonioxError extends Error {
+  readonly status: number;
+  readonly code: string;
+
+  constructor(message: string, status: number, code: string) {
+    super(message);
+    this.status = status;
+    this.code = code;
+  }
 }
 
 function sonioxHeaders(env: SonioxEnv): Headers {
-  return new Headers({ authorization: "Bearer " + env.SONIOX_API_KEY });
+  return new Headers({ authorization: `Bearer ${env.SONIOX_API_KEY}` });
 }
 
-function parseLanguageHints(env: SonioxEnv): string[] {
+function parseLanguageHints(env: SonioxEnv): readonly string[] {
   const raw = env.SONIOX_LANGUAGE_HINTS;
   if (!raw) return DEFAULT_LANGUAGE_HINTS;
-  const hints = raw.split(",").map((p) => p.trim()).filter(Boolean);
+  const hints = raw.split(",").map((part) => part.trim()).filter(Boolean);
   return hints.length > 0 ? hints : DEFAULT_LANGUAGE_HINTS;
 }
 
-async function checkedResponse(response: Response, action: string): Promise<Response> {
-  if (response.ok) return response;
-  let body: any = {};
+async function checkedResponse(response: Response, action: string): Promise<void> {
+  if (response.ok) return;
+  const text = await response.text();
+  let payload: unknown = text;
   try {
-    body = await response.json();
-  } catch {
-    body = { message: await response.text().catch(() => "") };
+    payload = JSON.parse(text);
+  } catch (error) {
+    if (!(error instanceof SyntaxError)) throw error;
   }
-  const err = new Error(body.message || body.error_message || `${action} failed`) as Error & {
-    status?: number;
-    code?: string;
-  };
-  err.status = 502;
-  err.code = body.error_type || "soniox_error";
-  throw err;
+  const parsed = sonioxErrorSchema.safeParse(payload);
+  const message = parsed.success
+    ? parsed.data.message ?? parsed.data.error_message ?? `${action} failed`
+    : `${action} failed`;
+  const code = parsed.success
+    ? parsed.data.error_type ?? "soniox_error"
+    : "soniox_error";
+  throw new SonioxError(message, 502, code);
 }
 
-/** Upload audio/video bytes to Soniox, returns file_id. */
+async function parseResponse<T>(
+  response: Response,
+  schema: z.ZodType<T>,
+): Promise<T> {
+  const payload: unknown = await response.json();
+  return schema.parse(payload);
+}
+
 export async function uploadToSoniox(
   env: SonioxEnv,
-  data: ArrayBuffer,
-  filename: string,
-  contentType: string,
+  upload: SonioxUpload,
 ): Promise<string> {
   if (!env.SONIOX_API_KEY) {
-    throw Object.assign(new Error("SONIOX_API_KEY is not configured"), { status: 500, code: "missing_soniox_key" });
+    throw new SonioxError(
+      "SONIOX_API_KEY is not configured",
+      500,
+      "missing_soniox_key",
+    );
   }
-  const form = new FormData();
-  form.set("file", new File([data], filename, { type: contentType }));
-  const response = await fetch(`${sonioxBase()}/files`, {
+
+  const boundary = `afterimage-${crypto.randomUUID().replaceAll("-", "")}`;
+  const encodedFilename = encodeURIComponent(upload.filename).replace(
+    /[!'()*]/g,
+    (character) => `%${character.charCodeAt(0).toString(16).toUpperCase()}`,
+  );
+  const encoder = new TextEncoder();
+  const prefix = encoder.encode(
+    `--${boundary}\r\nContent-Disposition: form-data; name="file"; filename="${encodedFilename}"; filename*=UTF-8''${encodedFilename}\r\nContent-Type: ${upload.contentType}\r\n\r\n`,
+  );
+  const suffix = encoder.encode(`\r\n--${boundary}--\r\n`);
+  const reader = upload.body.getReader();
+  let headerSent = false;
+  let bodyFinished = false;
+  let footerSent = false;
+  const body = new ReadableStream<Uint8Array>({
+    async pull(controller) {
+      if (!headerSent) {
+        headerSent = true;
+        controller.enqueue(prefix);
+        return;
+      }
+      if (!bodyFinished) {
+        const chunk = await reader.read();
+        if (!chunk.done) {
+          controller.enqueue(chunk.value);
+          return;
+        }
+        bodyFinished = true;
+      }
+      if (!footerSent) {
+        footerSent = true;
+        controller.enqueue(suffix);
+        return;
+      }
+      controller.close();
+    },
+    async cancel(reason) {
+      await reader.cancel(reason);
+    },
+  });
+  const contentLength = prefix.byteLength + upload.size + suffix.byteLength;
+  const fixedBody = body.pipeThrough(new FixedLengthStream(contentLength));
+  const headers = sonioxHeaders(env);
+  headers.set("content-type", `multipart/form-data; boundary=${boundary}`);
+  const response = await fetch(`${SONIOX_BASE}/files`, {
     method: "POST",
-    headers: sonioxHeaders(env),
-    body: form,
+    headers,
+    body: fixedBody,
   });
   await checkedResponse(response, "file upload");
-  const body = (await response.json()) as any;
-  return body.id;
+  return (await parseResponse(response, sonioxIdSchema)).id;
 }
 
-/** Create an async transcription job, returns transcription_id. */
 export async function createTranscription(
   env: SonioxEnv,
-  fileId: string,
+  source: { readonly fileId: string } | { readonly audioUrl: string },
 ): Promise<string> {
-  const payload = {
-    model: env.SONIOX_MODEL || DEFAULT_MODEL,
-    file_id: fileId,
-    language_hints: parseLanguageHints(env),
-    language_hints_strict: false,
-    enable_speaker_diarization: true,
-    enable_language_identification: true,
-  };
-  const response = await fetch(`${sonioxBase()}/transcriptions`, {
+  const headers = sonioxHeaders(env);
+  headers.set("content-type", "application/json");
+  const response = await fetch(`${SONIOX_BASE}/transcriptions`, {
     method: "POST",
-    headers: new Headers({ ...Object.fromEntries(sonioxHeaders(env)), "content-type": "application/json" }),
-    body: JSON.stringify(payload),
+    headers,
+    body: JSON.stringify({
+      ...("fileId" in source
+        ? { file_id: source.fileId }
+        : { audio_url: source.audioUrl }),
+      model: env.SONIOX_MODEL || DEFAULT_MODEL,
+      language_hints: parseLanguageHints(env),
+      language_hints_strict: false,
+      enable_speaker_diarization: true,
+      enable_language_identification: true,
+    }),
   });
   await checkedResponse(response, "transcription create");
-  const body = (await response.json()) as any;
-  return body.id;
+  return (await parseResponse(response, sonioxIdSchema)).id;
 }
 
-/** Check transcription status. Returns { status, error_type?, error_message? }. */
 export async function getTranscriptionStatus(
   env: SonioxEnv,
   transcriptionId: string,
-): Promise<{ status: string; error_type?: string; error_message?: string }> {
-  const response = await fetch(`${sonioxBase()}/transcriptions/${transcriptionId}`, {
-    headers: sonioxHeaders(env),
-  });
+) {
+  const response = await fetch(
+    `${SONIOX_BASE}/transcriptions/${transcriptionId}`,
+    { headers: sonioxHeaders(env) },
+  );
   await checkedResponse(response, "transcription status");
-  return response.json() as any;
+  return parseResponse(response, transcriptionStatusSchema);
 }
 
-/** Fetch the completed transcript. Returns { text, tokens?, language? }. */
 export async function getTranscript(
   env: SonioxEnv,
   transcriptionId: string,
-): Promise<{ text: string; tokens?: any[]; language?: string }> {
-  const response = await fetch(`${sonioxBase()}/transcriptions/${transcriptionId}/transcript`, {
-    headers: sonioxHeaders(env),
-  });
+) {
+  const response = await fetch(
+    `${SONIOX_BASE}/transcriptions/${transcriptionId}/transcript`,
+    { headers: sonioxHeaders(env) },
+  );
   await checkedResponse(response, "transcript fetch");
-  return response.json() as any;
+  return parseResponse(response, transcriptSchema);
 }
 
-/** Best-effort cleanup of Soniox resources. */
-export async function cleanupSoniox(env: SonioxEnv, transcriptionId?: string | null, fileId?: string | null): Promise<void> {
-  if (transcriptionId) {
-    try {
-      await fetch(`${sonioxBase()}/transcriptions/${transcriptionId}`, { method: "DELETE", headers: sonioxHeaders(env) });
-    } catch { /* best-effort */ }
-  }
-  if (fileId) {
-    try {
-      await fetch(`${sonioxBase()}/files/${fileId}`, { method: "DELETE", headers: sonioxHeaders(env) });
-    } catch { /* best-effort */ }
-  }
+export async function cleanupSoniox(
+  env: SonioxEnv,
+  transcriptionId?: string | null,
+  fileId?: string | null,
+): Promise<void> {
+  const requests = [
+    ...(transcriptionId
+      ? [fetch(`${SONIOX_BASE}/transcriptions/${transcriptionId}`, {
+        method: "DELETE",
+        headers: sonioxHeaders(env),
+      })]
+      : []),
+    ...(fileId
+      ? [fetch(`${SONIOX_BASE}/files/${fileId}`, {
+        method: "DELETE",
+        headers: sonioxHeaders(env),
+      })]
+      : []),
+  ];
+  await Promise.allSettled(requests);
 }
