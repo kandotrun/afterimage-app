@@ -71,6 +71,10 @@ assert.doesNotMatch(
   /upload\.duplicates\.hint_(?:title|detail)/,
   "upload dock must not show a permanent duplicate-upload hint",
 );
+assert.match(timeline, /matching:\s*\.videos/, "media picker must show only videos");
+assert.doesNotMatch(timeline, /matching:[^\n]*\.images/, "media picker must not show images");
+assert.match(timeline, /\.accessibilityLabel\("動画を追加"\)/, "media picker label must describe video-only selection");
+assert.doesNotMatch(timeline, /写真や動画を(?:追加|選ぶ)/, "timeline copy must describe video-only selection");
 for (const symbol of [
   "GlassEffectContainer",
   ".glassEffect",
