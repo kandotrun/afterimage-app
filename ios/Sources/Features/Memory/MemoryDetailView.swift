@@ -69,9 +69,8 @@ struct MemoryDetailView: View {
                                 updateAgentAccess(!currentAsset.agentAccessEnabled)
                             } label: {
                                 Label {
-                                    Text("AIエージェントに共有")
+                                    Text(verbatim: Self.agentSharingMenuTitle)
                                         .lineLimit(1)
-                                        .minimumScaleFactor(0.8)
                                 } icon: {
                                     Image(
                                         systemName: currentAsset.agentAccessEnabled
@@ -81,6 +80,7 @@ struct MemoryDetailView: View {
                                 }
                             }
                             .disabled(isUpdatingAgentAccess)
+                            .accessibilityLabel("AIエージェントに共有")
                             .accessibilityValue(currentAsset.agentAccessEnabled ? "オン" : "オフ")
                         }
                         Button("削除", systemImage: "trash", role: .destructive) {
@@ -115,6 +115,12 @@ struct MemoryDetailView: View {
                 dismiss()
             }
         }
+    }
+
+    private static var agentSharingMenuTitle: String {
+        String(localized: "AIエージェントに共有")
+            .map { String($0) }
+            .joined(separator: "\u{2060}")
     }
 
     private var title: String {
