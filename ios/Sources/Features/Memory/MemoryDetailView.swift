@@ -69,8 +69,7 @@ struct MemoryDetailView: View {
                                 updateAgentAccess(!currentAsset.agentAccessEnabled)
                             } label: {
                                 Label {
-                                    Text(verbatim: Self.agentSharingMenuTitle)
-                                        .lineLimit(1)
+                                    Text("AIエージェント共有")
                                 } icon: {
                                     Image(
                                         systemName: currentAsset.agentAccessEnabled
@@ -115,12 +114,6 @@ struct MemoryDetailView: View {
                 dismiss()
             }
         }
-    }
-
-    private static var agentSharingMenuTitle: String {
-        String(localized: "AIエージェントに共有")
-            .map { String($0) }
-            .joined(separator: "\u{2060}")
     }
 
     private var title: String {

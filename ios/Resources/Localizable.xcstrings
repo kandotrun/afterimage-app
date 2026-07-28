@@ -85,6 +85,34 @@
         }
       }
     },
+    "AIエージェント共有": {
+      "localizations": {
+        "ja": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "AIエージェント共有"
+          }
+        },
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Share with AI"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "与 AI 共享"
+          }
+        },
+        "ko": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "AI와 공유"
+          }
+        }
+      }
+    },
     "AIエージェントに共有": {
       "localizations": {
         "ja": {
