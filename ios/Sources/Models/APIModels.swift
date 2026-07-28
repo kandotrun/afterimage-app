@@ -69,6 +69,31 @@ struct TimelinePage: Codable, Equatable, Sendable {
     }
 }
 
+struct DailyPlaybackResponse: Codable, Equatable, Sendable {
+    let startAt: Date
+    let endAt: Date
+    let clipCount: Int
+    let durationMs: Int
+    let clips: [DailyPlaybackClip]
+}
+
+struct DailyPlaybackClip: Codable, Identifiable, Hashable, Sendable {
+    let asset: Asset
+    let startMs: Int
+    let endMs: Int
+    let transcript: DailyPlaybackTranscript
+
+    var id: String { asset.id }
+    var duration: TimeInterval { TimeInterval(max(0, endMs - startMs)) / 1_000 }
+}
+
+struct DailyPlaybackTranscript: Codable, Hashable, Sendable {
+    let status: TranscriptionStatus?
+    let language: String?
+    let text: String?
+    let updatedAt: Date?
+}
+
 struct ExistingAssetCandidate: Codable, Equatable, Sendable {
     let sourceFingerprint: String
     let filename: String

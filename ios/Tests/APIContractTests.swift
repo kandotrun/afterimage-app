@@ -109,4 +109,83 @@ final class APIContractTests: XCTestCase {
         XCTAssertEqual(transcript.language, "ja")
         XCTAssertEqual(transcript.status, "completed")
     }
+
+    func testDailyPlaybackDecodesCumulativeClipsAndFullTranscripts() throws {
+        let json = """
+        {
+          "startAt": "2026-07-27T00:00:00.000Z",
+          "endAt": "2026-07-28T00:00:00.000Z",
+          "clipCount": 2,
+          "durationMs": 3000,
+          "clips": [
+            {
+              "asset": {
+                "id": "asset-1",
+                "kind": "video",
+                "filename": "morning.mov",
+                "contentType": "video/quicktime",
+                "byteSize": 100,
+                "capturedAt": "2026-07-27T00:10:00.000Z",
+                "durationMs": 1000,
+                "width": 1920,
+                "height": 1080,
+                "status": "ready",
+                "contentUrl": "/v1/assets/asset-1/content",
+                "thumbnailUrl": null,
+                "transcriptionStatus": "completed",
+                "transcriptPreview": "短いpreview",
+                "transcriptUrl": "/v1/assets/asset-1/transcript",
+                "createdAt": "2026-07-27T00:11:00.000Z",
+                "updatedAt": "2026-07-27T00:12:00.000Z"
+              },
+              "startMs": 0,
+              "endMs": 1000,
+              "transcript": {
+                "status": "completed",
+                "language": "ja",
+                "text": "朝の全文字幕です。",
+                "updatedAt": "2026-07-27T00:12:00.000Z"
+              }
+            },
+            {
+              "asset": {
+                "id": "asset-2",
+                "kind": "video",
+                "filename": "noon.mov",
+                "contentType": "video/quicktime",
+                "byteSize": 200,
+                "capturedAt": "2026-07-27T00:20:00.000Z",
+                "durationMs": 2000,
+                "width": 1920,
+                "height": 1080,
+                "status": "ready",
+                "contentUrl": "/v1/assets/asset-2/content",
+                "thumbnailUrl": null,
+                "transcriptionStatus": "pending",
+                "transcriptPreview": null,
+                "transcriptUrl": null,
+                "createdAt": "2026-07-27T00:21:00.000Z",
+                "updatedAt": "2026-07-27T00:22:00.000Z"
+              },
+              "startMs": 1000,
+              "endMs": 3000,
+              "transcript": {
+                "status": "pending",
+                "language": null,
+                "text": null,
+                "updatedAt": null
+              }
+            }
+          ]
+        }
+        """.data(using: .utf8)!
+
+        let playback = try JSONDecoder.afterimage.decode(DailyPlaybackResponse.self, from: json)
+        XCTAssertEqual(playback.clipCount, 2)
+        XCTAssertEqual(playback.durationMs, 3_000)
+        XCTAssertEqual(playback.clips.map(\.asset.id), ["asset-1", "asset-2"])
+        XCTAssertEqual(playback.clips[0].transcript.text, "朝の全文字幕です。")
+        XCTAssertEqual(playback.clips[1].transcript.status, .pending)
+        XCTAssertNil(playback.clips[1].transcript.text)
+    }
 }

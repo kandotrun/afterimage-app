@@ -124,6 +124,15 @@ const contentTypes = [
 
 const sourceFingerprintSchema = z.string().regex(/^[a-f0-9]{64}$/);
 
+const dailyPlaybackQuerySchema = z.object({
+  startAt: z.string().datetime({ offset: true }),
+  endAt: z.string().datetime({ offset: true }),
+});
+
+const MAX_DAILY_PLAYBACK_SPAN_MS = 48 * 60 * 60 * 1_000;
+const MAX_DAILY_PLAYBACK_CLIPS = 200;
+const MAX_DAILY_PLAYBACK_TRANSCRIPT_CHARS = 500_000;
+
 const existingAssetsSchema = z.object({
   items: z.array(z.object({
     sourceFingerprint: sourceFingerprintSchema,
@@ -834,7 +843,7 @@ export function createApp(overrides: Partial<AppDependencies> = {}) {
         parsed.data.filename,
         parsed.data.contentType,
         parsed.data.byteSize,
-        parsed.data.capturedAt,
+        new Date(parsed.data.capturedAt).toISOString(),
         parsed.data.durationMs ?? null,
         parsed.data.width ?? null,
         parsed.data.height ?? null,
@@ -1269,6 +1278,83 @@ export function createApp(overrides: Partial<AppDependencies> = {}) {
     // Keep the failed row as a tombstone. Scheduled cleanup repeats prefix deletion after the
     // grace period, catching writes that were already in flight when this request deleted R2.
     return new Response(null, { status: 204 });
+  });
+
+  api.get("/days/playback", async (context) => {
+    const auth = context.get("auth");
+    const parsed = dailyPlaybackQuerySchema.safeParse({
+      startAt: context.req.query("startAt"),
+      endAt: context.req.query("endAt"),
+    });
+    if (!parsed.success) {
+      return errorResponse(context, 400, "invalid_day_range", "A valid startAt and endAt are required.");
+    }
+
+    const startAt = new Date(parsed.data.startAt);
+    const endAt = new Date(parsed.data.endAt);
+    const spanMs = endAt.getTime() - startAt.getTime();
+    if (spanMs <= 0 || spanMs > MAX_DAILY_PLAYBACK_SPAN_MS) {
+      return errorResponse(context, 400, "invalid_day_range", "The playback range must be greater than zero and no longer than 48 hours.");
+    }
+
+    const startIso = startAt.toISOString();
+    const endIso = endAt.toISOString();
+    const rangeWhere = `user_id = ? AND kind = 'video' AND status = 'ready'
+      AND julianday(captured_at) >= julianday(?) AND julianday(captured_at) < julianday(?)`;
+    const bounds = await context.env.DB.prepare(
+      `SELECT COUNT(*) AS clip_count,
+        COALESCE(SUM(CASE WHEN transcription_status = 'completed' THEN length(COALESCE(transcript, '')) ELSE 0 END), 0) AS transcript_chars
+       FROM assets WHERE ${rangeWhere}`,
+    ).bind(auth.userId, startIso, endIso).first<{ clip_count: number; transcript_chars: number }>();
+    const clipCount = Number(bounds?.clip_count ?? 0);
+    const transcriptChars = Number(bounds?.transcript_chars ?? 0);
+    if (clipCount > MAX_DAILY_PLAYBACK_CLIPS || transcriptChars > MAX_DAILY_PLAYBACK_TRANSCRIPT_CHARS) {
+      return errorResponse(context, 413, "daily_playback_too_large", "This day is too large for combined playback.");
+    }
+
+    const select = `SELECT id, user_id, kind, filename, content_type, byte_size, captured_at,
+      duration_ms, width, height, status, object_key, thumbnail_key,
+      upload_mode, upload_id, part_size, created_at, updated_at,
+      transcription_status, soniox_file_id, soniox_transcription_id,
+      transcript, transcript_language, transcript_error, transcription_updated_at FROM assets`;
+    const result = await context.env.DB.prepare(
+      `${select} WHERE ${rangeWhere}
+       ORDER BY julianday(captured_at) ASC, id ASC LIMIT ?`,
+    ).bind(
+      auth.userId,
+      startIso,
+      endIso,
+      MAX_DAILY_PLAYBACK_CLIPS,
+    ).all<AssetRow>();
+
+    let offsetMs = 0;
+    const clips = result.results.map((asset) => {
+      const durationMs = Math.max(0, Number(asset.duration_ms) || 0);
+      const startMs = offsetMs;
+      offsetMs += durationMs;
+      return {
+        asset: assetJson(asset),
+        startMs,
+        endMs: offsetMs,
+        transcript: {
+          status: asset.transcription_status,
+          language: asset.transcript_language,
+          text: asset.transcription_status === "completed" && asset.transcript ? asset.transcript : null,
+          updatedAt: asset.transcription_updated_at,
+        },
+      };
+    });
+
+    context.header("Cache-Control", "private, no-store");
+    context.header("Pragma", "no-cache");
+    context.header("Vary", "Authorization");
+    return context.json({
+      startAt: startIso,
+      endAt: endIso,
+      clipCount: clips.length,
+      durationMs: offsetMs,
+      clips,
+    });
   });
 
   api.get("/assets", async (context) => {

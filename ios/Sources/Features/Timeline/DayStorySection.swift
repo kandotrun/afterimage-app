@@ -4,6 +4,8 @@ import SwiftUI
 /// and the remaining moments as a small strip.
 struct DayStorySection: View {
     let title: String
+    let day: Date
+    let readyVideos: [Asset]
     let story: DayStory
     let namespace: Namespace.ID
 
@@ -20,12 +22,22 @@ struct DayStorySection: View {
                     .lineLimit(3)
             }
 
-            NavigationLink(value: story.hero) {
-                DayStoryHero(asset: story.hero)
+            if readyVideos.isEmpty {
+                NavigationLink(value: story.hero) {
+                    DayStoryHero(asset: story.hero, playbackVideos: [])
+                }
+                .buttonStyle(.plain)
+                .matchedTransitionSource(id: story.hero.id, in: namespace)
+                .accessibilityLabel(Self.accessibilityLabel(for: story.hero))
+            } else {
+                NavigationLink(value: DailyPlaybackRoute(day: day)) {
+                    DayStoryHero(asset: story.hero, playbackVideos: readyVideos)
+                }
+                .buttonStyle(.plain)
+                .accessibilityLabel(
+                    L10n.format("daily.playback.card_accessibility", Int64(readyVideos.count))
+                )
             }
-            .buttonStyle(.plain)
-            .matchedTransitionSource(id: story.hero.id, in: namespace)
-            .accessibilityLabel(Self.accessibilityLabel(for: story.hero))
 
             if !story.strip.isEmpty {
                 ScrollView(.horizontal, showsIndicators: false) {
@@ -61,6 +73,13 @@ struct DayStorySection: View {
 
 private struct DayStoryHero: View {
     let asset: Asset
+    let playbackVideos: [Asset]
+
+    private var playbackDuration: TimeInterval {
+        playbackVideos.reduce(0) { partial, video in
+            partial + TimeInterval(max(0, video.durationMs ?? 0)) / 1_000
+        }
+    }
 
     var body: some View {
         Color(.tertiarySystemFill)
@@ -76,16 +95,41 @@ private struct DayStoryHero: View {
                 )
             }
             .overlay(alignment: .bottom) {
-                HStack {
-                    Text(asset.capturedAt.formatted(.dateTime.hour().minute()))
-                        .font(.caption.weight(.semibold))
-                    Spacer()
-                    if asset.mediaType == .video, let duration = asset.durationMs {
-                        Label(
-                            PlaybackClock.label(Double(duration) / 1_000),
-                            systemImage: "play.fill"
-                        )
-                        .font(.caption.weight(.semibold))
+                Group {
+                    if playbackVideos.isEmpty {
+                        HStack {
+                            Text(asset.capturedAt.formatted(.dateTime.hour().minute()))
+                                .font(.caption.weight(.semibold))
+                            Spacer()
+                            if asset.mediaType == .video, let duration = asset.durationMs {
+                                Label(
+                                    PlaybackClock.label(Double(duration) / 1_000),
+                                    systemImage: "play.fill"
+                                )
+                                .font(.caption.weight(.semibold))
+                            }
+                        }
+                    } else {
+                        HStack(alignment: .bottom) {
+                            VStack(alignment: .leading, spacing: 4) {
+                                Text(verbatim: L10n.string("daily.playback.combine"))
+                                    .font(.headline.weight(.semibold))
+                                Text(
+                                    verbatim: L10n.format(
+                                        "daily.playback.summary",
+                                        Int64(playbackVideos.count),
+                                        PlaybackClock.label(playbackDuration) as NSString
+                                    )
+                                )
+                                .font(.caption.monospacedDigit())
+                            }
+                            Spacer()
+                            Image(systemName: "play.fill")
+                                .font(.body.weight(.bold))
+                                .foregroundStyle(.black)
+                                .frame(width: 44, height: 44)
+                                .background(.white, in: .circle)
+                        }
                     }
                 }
                 .foregroundStyle(.white)

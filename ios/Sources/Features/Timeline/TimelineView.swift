@@ -6,6 +6,7 @@ struct TimelineView: View {
     @EnvironmentObject private var model: AppModel
     @State private var selection: [PhotosPickerItem] = []
     @State private var pendingOpen: Asset?
+    @State private var pendingDay: DailyPlaybackRoute?
     @Namespace private var zoomTransition
 
     private var sections: [MemoryDay] {
@@ -29,6 +30,8 @@ struct TimelineView: View {
                                 if let story = DayStoryPolicy.story(for: section.assets) {
                                     DayStorySection(
                                         title: section.title,
+                                        day: section.day,
+                                        readyVideos: section.readyVideos,
                                         story: story,
                                         namespace: zoomTransition
                                     )
@@ -44,6 +47,9 @@ struct TimelineView: View {
                 .refreshable { try? await model.refreshTimeline() }
             }
             .navigationTitle("ライブラリ")
+            .navigationDestination(for: DailyPlaybackRoute.self) { route in
+                DailyPlaybackView(day: route.day)
+            }
             .navigationDestination(for: Asset.self) { asset in
                 MemoryDetailView(asset: asset)
                     .navigationTransition(.zoom(sourceID: asset.id, in: zoomTransition))
@@ -51,11 +57,27 @@ struct TimelineView: View {
             .navigationDestination(item: $pendingOpen) { asset in
                 MemoryDetailView(asset: asset)
             }
+            .navigationDestination(item: $pendingDay) { route in
+                DailyPlaybackView(day: route.day)
+            }
             .task {
                 #if DEBUG
-                guard ProcessInfo.processInfo.arguments.contains("-afterimageOpenFirst"),
-                      pendingOpen == nil else { return }
+                let arguments = ProcessInfo.processInfo.arguments
                 try? await Task.sleep(for: .milliseconds(900))
+                if let index = arguments.firstIndex(of: "-afterimageOpenDay"),
+                   arguments.indices.contains(index + 1) {
+                    let formatter = DateFormatter()
+                    formatter.calendar = Calendar(identifier: .gregorian)
+                    formatter.locale = Locale(identifier: "en_US_POSIX")
+                    formatter.timeZone = .autoupdatingCurrent
+                    formatter.dateFormat = "yyyy-MM-dd"
+                    if let day = formatter.date(from: arguments[index + 1]) {
+                        pendingDay = DailyPlaybackRoute(day: day)
+                        return
+                    }
+                }
+                guard arguments.contains("-afterimageOpenFirst"),
+                      pendingOpen == nil else { return }
                 pendingOpen = model.assets.first
                 #endif
             }
@@ -92,6 +114,11 @@ private struct MemoryDay: Identifiable {
     let day: Date
     let assets: [Asset]
     var id: Date { day }
+    var readyVideos: [Asset] {
+        assets
+            .filter { $0.mediaType == .video && $0.status == .ready }
+            .sorted { $0.capturedAt < $1.capturedAt }
+    }
     var title: String {
         if Calendar.autoupdatingCurrent.isDateInToday(day) { return L10n.string("timeline.today") }
         if Calendar.autoupdatingCurrent.isDateInYesterday(day) { return L10n.string("timeline.yesterday") }

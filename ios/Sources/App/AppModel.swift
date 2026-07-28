@@ -300,6 +300,10 @@ final class AppModel: ObservableObject {
         try await api.playbackGrant(assetID: asset.id)
     }
 
+    func dailyPlayback(in interval: DateInterval) async throws -> DailyPlaybackResponse {
+        try await api.dailyPlayback(startAt: interval.start, endAt: interval.end)
+    }
+
     func transcript(for asset: Asset) async throws -> TranscriptResponse {
         try await api.transcript(assetID: asset.id)
     }

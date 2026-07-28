@@ -1787,3 +1787,146 @@ describe("uploaded asset duplicate detection", () => {
     }, env)).status).toBe(201);
   });
 });
+
+describe("daily playback manifest", () => {
+  async function userId(subject: string) {
+    const user = await env.DB.prepare("SELECT id FROM users WHERE apple_subject = ?")
+      .bind(subject).first<{ id: string }>();
+    expect(user).not.toBeNull();
+    return user!.id;
+  }
+
+  async function insertAsset(options: {
+    id: string;
+    userId: string;
+    capturedAt: string;
+    durationMs: number;
+    kind?: "video" | "photo";
+    status?: "ready" | "failed";
+    transcriptionStatus?: "completed" | "pending";
+    transcript?: string | null;
+  }) {
+    const kind = options.kind ?? "video";
+    const status = options.status ?? "ready";
+    const transcriptionStatus = options.transcriptionStatus ?? "completed";
+    const filename = `${options.id}.${kind === "video" ? "mp4" : "jpg"}`;
+    const contentType = kind === "video" ? "video/mp4" : "image/jpeg";
+    await env.DB.prepare(
+      `INSERT INTO assets (
+        id, user_id, kind, filename, content_type, byte_size, captured_at, duration_ms,
+        status, object_key, upload_mode, created_at, updated_at,
+        transcription_status, transcript, transcript_language, transcription_updated_at
+      ) VALUES (?, ?, ?, ?, ?, 100, ?, ?, ?, ?, 'single', ?, ?, ?, ?, 'ja', ?)`,
+    ).bind(
+      options.id,
+      options.userId,
+      kind,
+      filename,
+      contentType,
+      options.capturedAt,
+      options.durationMs,
+      status,
+      `users/${options.userId}/assets/${options.id}/media`,
+      NOW.toISOString(),
+      NOW.toISOString(),
+      transcriptionStatus,
+      options.transcript ?? null,
+      NOW.toISOString(),
+    ).run();
+  }
+
+  it("requires authentication and rejects invalid or oversized day ranges", async () => {
+    const app = makeApp();
+    const path = "/v1/days/playback?startAt=2026-07-27T00%3A00%3A00.000Z&endAt=2026-07-28T00%3A00%3A00.000Z";
+    expect((await app.request(path, {}, env)).status).toBe(401);
+
+    const owner = await signIn("daily-range-owner");
+    const invalid = await owner.app.request(
+      "/v1/days/playback?startAt=2026-07-27T00%3A00%3A00.000Z&endAt=2026-07-27T00%3A00%3A00.000Z",
+      { headers: { authorization: owner.authorization } },
+      env,
+    );
+    expect(invalid.status).toBe(400);
+    await expect(invalid.json()).resolves.toMatchObject({ error: { code: "invalid_day_range" } });
+
+    const oversized = await owner.app.request(
+      "/v1/days/playback?startAt=2026-07-25T00%3A00%3A00.000Z&endAt=2026-07-28T00%3A00%3A00.000Z",
+      { headers: { authorization: owner.authorization } },
+      env,
+    );
+    expect(oversized.status).toBe(400);
+  });
+
+  it("returns only the owner's ready videos in chronological order with cumulative offsets and full transcripts", async () => {
+    const owner = await signIn("daily-owner");
+    await signIn("daily-other");
+    const ownerId = await userId("daily-owner");
+    const otherId = await userId("daily-other");
+
+    await insertAsset({ id: "middle", userId: ownerId, capturedAt: "2026-07-27T00:30:00.000Z", durationMs: 2_000, transcript: "二本目の全文字幕" });
+    await insertAsset({ id: "first", userId: ownerId, capturedAt: "2026-07-27T00:10:00.000Z", durationMs: 1_000, transcript: "一本目の全文字幕" });
+    await insertAsset({ id: "offset-first", userId: ownerId, capturedAt: "2026-07-27T09:05:00.000+09:00", durationMs: 700, transcript: "offset字幕" });
+    await insertAsset({ id: "before-offset", userId: ownerId, capturedAt: "2026-07-27T08:50:00.000+09:00", durationMs: 800, transcript: "範囲外offset字幕" });
+    await insertAsset({ id: "pending", userId: ownerId, capturedAt: "2026-07-27T00:50:00.000Z", durationMs: 3_000, transcriptionStatus: "pending" });
+    await insertAsset({ id: "photo", userId: ownerId, capturedAt: "2026-07-27T00:20:00.000Z", durationMs: 0, kind: "photo", transcript: "写真" });
+    await insertAsset({ id: "failed", userId: ownerId, capturedAt: "2026-07-27T00:05:00.000Z", durationMs: 500, status: "failed", transcript: "失敗asset" });
+    await insertAsset({ id: "tomorrow", userId: ownerId, capturedAt: "2026-07-28T00:00:00.000Z", durationMs: 500, transcript: "翌日" });
+    await insertAsset({ id: "private", userId: otherId, capturedAt: "2026-07-27T00:00:00.000Z", durationMs: 500, transcript: "他人の字幕" });
+
+    const response = await owner.app.request(
+      "/v1/days/playback?startAt=2026-07-27T00%3A00%3A00.000Z&endAt=2026-07-28T00%3A00%3A00.000Z",
+      { headers: { authorization: owner.authorization } },
+      env,
+    );
+    expect(response.status).toBe(200);
+    expect(response.headers.get("cache-control")).toBe("private, no-store");
+    const body = await response.json<{
+      clipCount: number;
+      durationMs: number;
+      clips: Array<{
+        startMs: number;
+        endMs: number;
+        asset: { id: string };
+        transcript: { status: string | null; language: string | null; text: string | null };
+      }>;
+    }>();
+
+    expect(body.clipCount).toBe(4);
+    expect(body.durationMs).toBe(6_700);
+    expect(body.clips.map((clip) => clip.asset.id)).toEqual(["offset-first", "first", "middle", "pending"]);
+    expect(body.clips.map((clip) => [clip.startMs, clip.endMs])).toEqual([
+      [0, 700],
+      [700, 1_700],
+      [1_700, 3_700],
+      [3_700, 6_700],
+    ]);
+    expect(body.clips[0]!.transcript).toMatchObject({ status: "completed", language: "ja", text: "offset字幕" });
+    expect(body.clips[1]!.transcript).toMatchObject({ status: "completed", language: "ja", text: "一本目の全文字幕" });
+    expect(body.clips[3]!.transcript).toMatchObject({ status: "pending", text: null });
+    expect(JSON.stringify(body)).not.toContain("範囲外offset字幕");
+    expect(JSON.stringify(body)).not.toContain("他人の字幕");
+    expect(JSON.stringify(body)).not.toContain("翌日");
+    expect(JSON.stringify(body)).not.toContain("写真");
+  });
+
+  it("rejects a manifest whose completed transcripts exceed the response budget", async () => {
+    const owner = await signIn("daily-large-transcript-owner");
+    const ownerId = await userId("daily-large-transcript-owner");
+    await insertAsset({
+      id: "oversized-transcript",
+      userId: ownerId,
+      capturedAt: "2026-07-27T00:10:00.000Z",
+      durationMs: 1_000,
+      transcript: "x".repeat(500_001),
+    });
+
+    const response = await owner.app.request(
+      "/v1/days/playback?startAt=2026-07-27T00%3A00%3A00.000Z&endAt=2026-07-28T00%3A00%3A00.000Z",
+      { headers: { authorization: owner.authorization } },
+      env,
+    );
+
+    expect(response.status).toBe(413);
+    await expect(response.json()).resolves.toMatchObject({ error: { code: "daily_playback_too_large" } });
+  });
+});
