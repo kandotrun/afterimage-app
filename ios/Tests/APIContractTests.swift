@@ -64,6 +64,7 @@ final class APIContractTests: XCTestCase {
           "status": "ready",
           "contentUrl": "/v1/assets/asset-2/content",
           "thumbnailUrl": "/v1/assets/asset-2/thumbnail",
+          "agentAccessEnabled": false,
           "transcriptionStatus": "completed",
           "transcriptUrl": "/v1/assets/asset-2/transcript",
           "createdAt": "2026-07-27T01:03:00.000Z",
@@ -71,6 +72,7 @@ final class APIContractTests: XCTestCase {
         }
         """.data(using: .utf8)!
         let asset = try JSONDecoder.afterimage.decode(Asset.self, from: json)
+        XCTAssertFalse(asset.agentAccessEnabled)
         XCTAssertEqual(asset.transcriptionStatus, .completed)
         XCTAssertEqual(asset.transcriptUrl, "/v1/assets/asset-2/transcript")
     }
@@ -95,6 +97,7 @@ final class APIContractTests: XCTestCase {
         XCTAssertNil(asset.transcriptionStatus)
         XCTAssertNil(asset.transcriptUrl)
         XCTAssertNil(asset.location)
+        XCTAssertTrue(asset.agentAccessEnabled)
     }
 
     func testCreateAssetEncodesCaptureLocation() throws {

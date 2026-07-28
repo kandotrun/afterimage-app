@@ -48,6 +48,7 @@ struct Asset: Codable, Identifiable, Hashable, Sendable {
     let updatedAt: Date
     let thumbnailUrl: String?
     let contentUrl: String?
+    var agentAccessEnabled: Bool = true
     let transcriptionStatus: TranscriptionStatus?
     let transcriptPreview: String?
     let transcriptUrl: String?
@@ -55,8 +56,33 @@ struct Asset: Codable, Identifiable, Hashable, Sendable {
     private enum CodingKeys: String, CodingKey {
         case id, status, filename, contentType, byteSize, width, height, durationMs
         case capturedAt, location, createdAt, updatedAt, thumbnailUrl, contentUrl
-        case transcriptionStatus, transcriptPreview, transcriptUrl
+        case agentAccessEnabled, transcriptionStatus, transcriptPreview, transcriptUrl
         case mediaType = "kind"
+    }
+}
+
+extension Asset {
+    init(from decoder: Decoder) throws {
+        let values = try decoder.container(keyedBy: CodingKeys.self)
+        id = try values.decode(String.self, forKey: .id)
+        mediaType = try values.decode(MediaKind.self, forKey: .mediaType)
+        status = try values.decode(AssetStatus.self, forKey: .status)
+        filename = try values.decode(String.self, forKey: .filename)
+        contentType = try values.decode(String.self, forKey: .contentType)
+        byteSize = try values.decode(Int64.self, forKey: .byteSize)
+        width = try values.decodeIfPresent(Int.self, forKey: .width)
+        height = try values.decodeIfPresent(Int.self, forKey: .height)
+        durationMs = try values.decodeIfPresent(Int.self, forKey: .durationMs)
+        capturedAt = try values.decode(Date.self, forKey: .capturedAt)
+        location = try values.decodeIfPresent(CaptureLocation.self, forKey: .location)
+        createdAt = try values.decode(Date.self, forKey: .createdAt)
+        updatedAt = try values.decode(Date.self, forKey: .updatedAt)
+        thumbnailUrl = try values.decodeIfPresent(String.self, forKey: .thumbnailUrl)
+        contentUrl = try values.decodeIfPresent(String.self, forKey: .contentUrl)
+        agentAccessEnabled = try values.decodeIfPresent(Bool.self, forKey: .agentAccessEnabled) ?? true
+        transcriptionStatus = try values.decodeIfPresent(TranscriptionStatus.self, forKey: .transcriptionStatus)
+        transcriptPreview = try values.decodeIfPresent(String.self, forKey: .transcriptPreview)
+        transcriptUrl = try values.decodeIfPresent(String.self, forKey: .transcriptUrl)
     }
 }
 
