@@ -2,7 +2,7 @@
 
 ## Product
 
-Afterimage is an iOS-first private lifelog. The first vertical slice imports photos/videos, compresses media on-device (HEVC video with untouched passthrough audio; HEIC photos), stores only optimized media in private Cloudflare R2, and provides an authenticated timeline and playback API. AI transcription/search comes after the storage and privacy boundary is proven.
+Afterimage is an iOS-first private lifelog. New imports are video-only: the app compresses HEVC video on-device with untouched passthrough audio and stores only optimized media in private Cloudflare R2. Previously stored images remain supported by the authenticated timeline and playback API. AI transcription/search comes after the storage and privacy boundary is proven.
 
 ## Repository layout
 

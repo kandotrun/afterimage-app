@@ -168,12 +168,12 @@ struct AuthenticatedThumbnail: View {
 private struct EmptyTimelineView: View {
     var body: some View {
         VStack(spacing: 16) {
-            Image(systemName: "photo.on.rectangle.angled")
+            Image(systemName: "video.fill")
                 .font(.system(size: 52, weight: .light))
                 .foregroundStyle(.secondary)
             Text("最初のafterimageを残そう")
                 .font(.title3.weight(.semibold))
-            Text("下の＋から写真や動画を選ぶと、\n音を変えずに軽くして保存します。")
+            Text("下の＋から動画を選ぶと、\n音を変えずに軽くして保存します。")
                 .font(.subheadline)
                 .foregroundStyle(.secondary)
                 .multilineTextAlignment(.center)
@@ -210,7 +210,7 @@ private struct UploadDock: View {
                         PhotosPicker(
                             selection: $selection,
                             maxSelectionCount: 12,
-                            matching: .any(of: [.images, .videos]),
+                            matching: .videos,
                             preferredItemEncoding: .current,
                             photoLibrary: .shared()
                         ) {
@@ -220,7 +220,7 @@ private struct UploadDock: View {
                         }
                         .buttonStyle(.glassProminent)
                         .buttonBorderShape(.circle)
-                        .accessibilityLabel("写真や動画を追加")
+                        .accessibilityLabel("動画を追加")
                         .accessibilityHint(L10n.string("accessibility.upload_picker_duplicate_hint"))
                     }
                 }

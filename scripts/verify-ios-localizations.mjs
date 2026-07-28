@@ -7,6 +7,12 @@ const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const locales = ["ja", "en", "zh-Hans", "ko"];
 const catalogPath = path.join(root, "ios/Resources/Localizable.xcstrings");
 const catalog = JSON.parse(readFileSync(catalogPath, "utf8"));
+const mediaTerms = {
+  ja: { video: /動画/, photo: /写真/ },
+  en: { video: /\bvideos?\b/i, photo: /\bphotos?\b/i },
+  "zh-Hans": { video: /视频/, photo: /照片/ },
+  ko: { video: /동영상/, photo: /사진/ },
+};
 
 assert.equal(catalog.sourceLanguage, "ja", "Japanese must remain the source language");
 assert.equal(catalog.version, "1.0");
@@ -68,7 +74,17 @@ for (const locale of locales) {
     path.join(root, `ios/Resources/Localization/${locale}.lproj/InfoPlist.strings`),
     "utf8",
   );
-  assert.match(mainInfo, /"NSPhotoLibraryUsageDescription"\s*=\s*"[^"\n]+";/);
+  const usageDescription = mainInfo.match(/"NSPhotoLibraryUsageDescription"\s*=\s*"([^"\n]+)";/)?.[1];
+  assert.ok(usageDescription, `${locale} photo library usage copy must exist`);
+  const duplicateDetail =
+    catalog.strings["upload.duplicates.all_detail"].localizations[locale].stringUnit.value;
+  for (const [surface, value] of [
+    ["photo library usage", usageDescription],
+    ["all-duplicates detail", duplicateDetail],
+  ]) {
+    assert.match(value, mediaTerms[locale].video, `${locale} ${surface} must mention videos`);
+    assert.doesNotMatch(value, mediaTerms[locale].photo, `${locale} ${surface} must not mention photos`);
+  }
 
   const widgetInfo = readFileSync(
     path.join(root, `ios/AfterimageUploadWidget/Localization/${locale}.lproj/InfoPlist.strings`),
@@ -76,6 +92,14 @@ for (const locale of locales) {
   );
   assert.match(widgetInfo, /"CFBundleDisplayName"\s*=\s*"[^"\n]+";/);
 }
+
+const mainInfoPlist = readFileSync(path.join(root, "ios/Resources/Info.plist"), "utf8");
+const baseUsageDescription = mainInfoPlist.match(
+  /<key>NSPhotoLibraryUsageDescription<\/key>\s*<string>([^<]+)<\/string>/,
+)?.[1];
+assert.ok(baseUsageDescription, "base photo library usage copy must exist");
+assert.match(baseUsageDescription, mediaTerms.ja.video, "base photo library usage copy must mention videos");
+assert.doesNotMatch(baseUsageDescription, mediaTerms.ja.photo, "base photo library usage copy must not mention photos");
 
 const project = readFileSync(path.join(root, "ios/project.yml"), "utf8");
 assert.match(project, /Resources\/Localizable\.xcstrings/);

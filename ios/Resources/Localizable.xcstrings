@@ -2997,30 +2997,30 @@
         }
       }
     },
-    "下の＋から写真や動画を選ぶと、\n音を変えずに軽くして保存します。": {
+    "下の＋から動画を選ぶと、\n音を変えずに軽くして保存します。": {
       "localizations": {
         "ja": {
           "stringUnit": {
             "state": "translated",
-            "value": "下の＋から写真や動画を選ぶと、\n音を変えずに軽くして保存します。"
+            "value": "下の＋から動画を選ぶと、\n音を変えずに軽くして保存します。"
           }
         },
         "en": {
           "stringUnit": {
             "state": "translated",
-            "value": "Choose a photo or video with the + button below.\nWe’ll optimize it while preserving the original audio."
+            "value": "Choose a video with the + button below.\nWe’ll optimize it while preserving the original audio."
           }
         },
         "zh-Hans": {
           "stringUnit": {
             "state": "translated",
-            "value": "通过下方的 + 选择照片或视频。\n我们会在保留原始音频的同时压缩并保存。"
+            "value": "通过下方的 + 选择视频。\n我们会在保留原始音频的同时压缩并保存。"
           }
         },
         "ko": {
           "stringUnit": {
             "state": "translated",
-            "value": "아래 + 버튼에서 사진이나 동영상을 선택하세요.\n소리는 그대로 유지하면서 용량을 줄여 저장합니다."
+            "value": "아래 + 버튼에서 동영상을 선택하세요.\n소리는 그대로 유지하면서 용량을 줄여 저장합니다."
           }
         }
       }
@@ -3193,30 +3193,30 @@
         }
       }
     },
-    "写真や動画を追加": {
+    "動画を追加": {
       "localizations": {
         "ja": {
           "stringUnit": {
             "state": "translated",
-            "value": "写真や動画を追加"
+            "value": "動画を追加"
           }
         },
         "en": {
           "stringUnit": {
             "state": "translated",
-            "value": "Add Photos or Videos"
+            "value": "Add Videos"
           }
         },
         "zh-Hans": {
           "stringUnit": {
             "state": "translated",
-            "value": "添加照片或视频"
+            "value": "添加视频"
           }
         },
         "ko": {
           "stringUnit": {
             "state": "translated",
-            "value": "사진 또는 동영상 추가"
+            "value": "동영상 추가"
           }
         }
       }
@@ -3870,25 +3870,25 @@
         "ja": {
           "stringUnit": {
             "state": "translated",
-            "value": "新しくアップロードする写真・動画はありません。"
+            "value": "新しくアップロードする動画はありません。"
           }
         },
         "en": {
           "stringUnit": {
             "state": "translated",
-            "value": "There are no new photos or videos to upload."
+            "value": "There are no new videos to upload."
           }
         },
         "zh-Hans": {
           "stringUnit": {
             "state": "translated",
-            "value": "没有新的照片或视频需要上传。"
+            "value": "没有新的视频需要上传。"
           }
         },
         "ko": {
           "stringUnit": {
             "state": "translated",
-            "value": "새로 업로드할 사진이나 동영상이 없습니다."
+            "value": "새로 업로드할 동영상이 없습니다."
           }
         }
       }
@@ -3982,25 +3982,25 @@
         "ja": {
           "stringUnit": {
             "state": "translated",
-            "value": "同じ写真・動画を選んでも重複して保存されません。"
+            "value": "同じ動画を選んでも重複して保存されません。"
           }
         },
         "en": {
           "stringUnit": {
             "state": "translated",
-            "value": "Selecting the same photo or video will not save a duplicate."
+            "value": "Selecting the same video will not save a duplicate."
           }
         },
         "zh-Hans": {
           "stringUnit": {
             "state": "translated",
-            "value": "即使选择相同的照片或视频，也不会重复保存。"
+            "value": "即使选择相同的视频，也不会重复保存。"
           }
         },
         "ko": {
           "stringUnit": {
             "state": "translated",
-            "value": "같은 사진이나 동영상을 선택해도 중복 저장되지 않습니다."
+            "value": "같은 동영상을 선택해도 중복 저장되지 않습니다."
           }
         }
       }
@@ -4010,25 +4010,25 @@
         "ja": {
           "stringUnit": {
             "state": "translated",
-            "value": "アップロード済みの写真・動画は自動でスキップします"
+            "value": "アップロード済みの動画は自動でスキップします"
           }
         },
         "en": {
           "stringUnit": {
             "state": "translated",
-            "value": "Previously uploaded photos and videos will be skipped automatically"
+            "value": "Previously uploaded videos will be skipped automatically"
           }
         },
         "zh-Hans": {
           "stringUnit": {
             "state": "translated",
-            "value": "已上传的照片和视频会自动跳过"
+            "value": "已上传的视频会自动跳过"
           }
         },
         "ko": {
           "stringUnit": {
             "state": "translated",
-            "value": "이미 업로드된 사진과 동영상은 자동으로 건너뜁니다"
+            "value": "이미 업로드된 동영상은 자동으로 건너뜁니다"
           }
         }
       }
