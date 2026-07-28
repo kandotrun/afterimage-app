@@ -1,8 +1,11 @@
 import SwiftUI
 
-/// One day of the lifelog: date heading, the day's words, the hero memory,
+/// One day of the lifelog: date heading, generated summary, hero memory,
 /// and the remaining moments as a small strip.
 struct DayStorySection: View {
+    @EnvironmentObject private var model: AppModel
+    @State private var dailySummary: DailySummaryResponse?
+
     let title: String
     let day: Date
     let readyVideos: [Asset]
@@ -14,11 +17,11 @@ struct DayStorySection: View {
             Text(title)
                 .font(.title3.weight(.semibold))
 
-            if let quote = story.quote {
-                Text("「\(quote)」")
-                    .font(.system(.title3, design: .serif))
+            if let summary = dailySummary?.summary, !summary.isEmpty {
+                Text(verbatim: summary)
+                    .font(.system(.body, design: .serif))
                     .foregroundStyle(.primary.opacity(0.82))
-                    .lineSpacing(4)
+                    .lineSpacing(3)
                     .lineLimit(3)
             }
 
@@ -64,6 +67,31 @@ struct DayStorySection: View {
                 }
                 .frame(height: 64)
             }
+        }
+        .task(id: summaryRequestID) {
+            await loadDailySummary()
+        }
+    }
+
+    private var summaryRequestID: String {
+        let sources = readyVideos.map {
+            "\($0.id):\($0.updatedAt.timeIntervalSinceReferenceDate):\($0.transcriptionStatus?.rawValue ?? "none")"
+        }.joined(separator: "|")
+        return "\(day.timeIntervalSinceReferenceDate)|\(sources)"
+    }
+
+    private func loadDailySummary() async {
+        guard let interval = Calendar.autoupdatingCurrent.dateInterval(of: .day, for: day) else {
+            dailySummary = nil
+            return
+        }
+        do {
+            let response = try await model.dailySummary(in: interval)
+            guard !Task.isCancelled else { return }
+            dailySummary = response
+        } catch {
+            guard !Task.isCancelled else { return }
+            dailySummary = nil
         }
     }
 

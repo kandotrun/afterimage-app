@@ -10,7 +10,9 @@
     "SESSION_TTL_SECONDS": "2592000",
     "PLAYBACK_GRANT_TTL_SECONDS": "300",
     "SINGLE_UPLOAD_MAX_BYTES": "5242880",
-    "MULTIPART_PART_SIZE_BYTES": "5242880"
+    "MULTIPART_PART_SIZE_BYTES": "5242880",
+    "QWENCLOUD_SUMMARY_BASE_URL": "https://token-plan.ap-southeast-1.maas.aliyuncs.com/compatible-mode/v1",
+    "QWENCLOUD_SUMMARY_MODEL": "qwen3.8-max-preview"
   },
   "d1_databases": [
     {

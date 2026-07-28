@@ -78,6 +78,15 @@ struct DailyPlaybackResponse: Codable, Equatable, Sendable {
     let clips: [DailyPlaybackClip]
 }
 
+struct DailySummaryResponse: Codable, Equatable, Sendable {
+    let startAt: Date
+    let endAt: Date
+    let summary: String?
+    let model: String?
+    let sourceTranscriptCount: Int
+    let generatedAt: Date?
+}
+
 struct DailyPlaybackClip: Codable, Identifiable, Hashable, Sendable {
     let asset: Asset
     let startMs: Int

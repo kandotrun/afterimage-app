@@ -9,6 +9,8 @@ const project = read("ios/project.yml");
 const dayStory = read("ios/Sources/Features/Timeline/DayStorySection.swift");
 const [dayStorySection, dayStoryHero = ""] = dayStory.split("private struct DayStoryHero");
 const timeline = read("ios/Sources/Features/Timeline/TimelineView.swift");
+const apiClient = read("ios/Sources/Networking/APIClient.swift");
+const apiModels = read("ios/Sources/Models/APIModels.swift");
 const mediaImporter = read("ios/Sources/Import/MediaImporter.swift");
 const privacy = read("ios/Resources/PrivacyInfo.xcprivacy");
 const login = read("ios/Sources/Features/Auth/LoginView.swift");
@@ -67,6 +69,18 @@ assert.doesNotMatch(
   /CaptureLocationChip/,
   "timeline location link must not be nested inside the hero NavigationLink",
 );
+assert.match(
+  dayStorySection,
+  /if let summary = dailySummary\?\.summary[\s\S]*?Text\(verbatim:\s*summary\)[\s\S]*?\.lineLimit\(3\)/,
+  "the generated daily summary must be shown above the hero and capped at three lines",
+);
+assert.doesNotMatch(
+  dayStorySection,
+  /story\.quote/,
+  "raw transcript quotes must not be rendered in the timeline",
+);
+assert.match(apiModels, /struct DailySummaryResponse:\s*Codable,\s*Equatable,\s*Sendable/);
+assert.match(apiClient, /components\.path\s*=\s*"\/v1\/days\/summary"/);
 assert.match(
   timeline,
   /PhotosPicker\([\s\S]*?photoLibrary:\s*\.shared\(\)[\s\S]*?\)\s*\{/,

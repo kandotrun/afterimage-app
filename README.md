@@ -19,8 +19,9 @@ iPhone 17 Pro / iOS 26.5 Simulator:
 - iOS 26 only, SwiftUI, Liquid Glass, PhotosPicker, AuthenticationServices, AVKit, Core Haptics
 - On-device optimization before upload: HEVC video + bitstream-passthrough audio in MOV; HEIC photos. R2 never receives the original file.
 - Cloudflare Workers + Hono
-- D1 for users, sessions, asset metadata, and multipart state
+- D1 for users, sessions, asset metadata, multipart state, and cached daily summaries
 - Private R2 for optimized media and thumbnails
+- Qwen Cloud Token Plan (`qwen3.8-max-preview`) for on-demand summaries of completed daily transcripts
 
 See [`AGENTS.md`](./AGENTS.md) for security and TDD rules.
 
@@ -61,6 +62,11 @@ cd backend
 npm run dev          # wrangler dev on :8787 (local D1 + R2, wrangler.dev.jsonc)
 npm run seed:dev     # dev user/session + sample media through the real upload flow
 ```
+
+Daily summaries require `QWENCLOUD_TOKEN_PLAN_API_KEY`. Keep it out of Git: use
+`backend/.dev.vars` locally and provision production with
+`npx wrangler secret put QWENCLOUD_TOKEN_PLAN_API_KEY --config wrangler.jsonc`.
+The endpoint and pinned model are non-secret vars in the Wrangler configs.
 
 The seed script prints a bearer token for the DEBUG-only launch arguments
 `-afterimageApiBase <url> -afterimageDevSession <token>` (plus
