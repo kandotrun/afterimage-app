@@ -1,8 +1,6 @@
-@preconcurrency import AVFoundation
 import CoreTransferable
 import CryptoKit
 import Foundation
-import ImageIO
 import PhotosUI
 import SwiftUI
 import UniformTypeIdentifiers
@@ -59,7 +57,8 @@ struct ImportedMedia: Sendable {
     let kind: MediaKind
     let url: URL
     let originalFilename: String
-    let capturedAt: Date?
+    let capturedAt: Date
+    var location: CaptureLocation? = nil
 
     var baseFilename: String {
         Self.sanitizedBaseFilename(from: originalFilename)
@@ -128,11 +127,10 @@ enum MediaImporter {
             guard let movie = try await item.loadTransferable(type: PickedMovie.self) else {
                 throw AfterimageError.unsupportedMedia
             }
-            return ImportedMedia(
+            return try await importedMedia(
                 kind: .video,
                 url: movie.url,
-                originalFilename: identity?.filename ?? movie.url.lastPathComponent,
-                capturedAt: await captureDate(for: .video, at: movie.url)
+                originalFilename: identity?.filename ?? movie.url.lastPathComponent
             )
         }
 
@@ -140,40 +138,41 @@ enum MediaImporter {
         guard isImage, let image = try await item.loadTransferable(type: PickedImage.self) else {
             throw AfterimageError.unsupportedMedia
         }
-        return ImportedMedia(
+        return try await importedMedia(
             kind: .image,
             url: image.url,
-            originalFilename: identity?.filename ?? image.url.lastPathComponent,
-            capturedAt: await captureDate(for: .image, at: image.url)
+            originalFilename: identity?.filename ?? image.url.lastPathComponent
         )
     }
 
     static func captureDate(for kind: MediaKind, at url: URL) async -> Date? {
-        switch kind {
-        case .image:
-            guard let source = CGImageSourceCreateWithURL(url as CFURL, nil),
-                  let rawProperties = CGImageSourceCopyPropertiesAtIndex(source, 0, nil) else {
-                return nil
-            }
-            let properties = rawProperties as NSDictionary
-            guard let exif = properties[kCGImagePropertyExifDictionary] as? NSDictionary,
-                  let dateTime = exif[kCGImagePropertyExifDateTimeOriginal] as? String else {
-                return nil
-            }
-            let formatter = DateFormatter()
-            formatter.calendar = Calendar(identifier: .gregorian)
-            formatter.locale = Locale(identifier: "en_US_POSIX")
-            if let offset = exif[kCGImagePropertyExifOffsetTimeOriginal] as? String {
-                formatter.dateFormat = "yyyy:MM:dd HH:mm:ssXXXXX"
-                return formatter.date(from: dateTime + offset)
-            }
-            formatter.dateFormat = "yyyy:MM:dd HH:mm:ss"
-            formatter.timeZone = .autoupdatingCurrent
-            return formatter.date(from: dateTime)
-        case .video:
-            let asset = AVURLAsset(url: url)
-            guard let metadata = try? await asset.load(.creationDate) else { return nil }
-            return try? await metadata.load(.dateValue)
+        await MediaEmbeddedCaptureDate.read(from: url, kind: kind)
+    }
+
+    private static func importedMedia(
+        kind: MediaKind,
+        url: URL,
+        originalFilename: String
+    ) async throws -> ImportedMedia {
+        do {
+            async let embeddedDate = captureDate(for: kind, at: url)
+            async let embeddedLocation = MediaEmbeddedCaptureLocation.read(from: url, kind: kind)
+            let capturedAt = try MediaCaptureDatePolicy.resolve(
+                embeddedDate: await embeddedDate
+            )
+            let location = MediaCaptureLocationPolicy.resolve(
+                embeddedLocation: await embeddedLocation
+            )
+            return ImportedMedia(
+                kind: kind,
+                url: url,
+                originalFilename: originalFilename,
+                capturedAt: capturedAt,
+                location: location
+            )
+        } catch {
+            try? FileManager.default.removeItem(at: url)
+            throw error
         }
     }
 

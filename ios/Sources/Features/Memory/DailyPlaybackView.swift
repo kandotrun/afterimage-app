@@ -180,6 +180,9 @@ struct DailyPlaybackView: View {
                         .foregroundStyle(.secondary)
                 }
             }
+            if let location = controller.activeClip?.asset.location {
+                CaptureLocationChip(location: location)
+            }
             ScrollView {
                 Text(verbatim: activeTranscript)
                     .font(.callout)

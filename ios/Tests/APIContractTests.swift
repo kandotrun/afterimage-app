@@ -13,6 +13,7 @@ final class APIContractTests: XCTestCase {
               "contentType": "video/quicktime",
               "byteSize": 1234,
               "capturedAt": "2026-07-27T01:02:03.000Z",
+              "location": { "latitude": 34.3853, "longitude": 132.4553 },
               "durationMs": 4200,
               "width": 1080,
               "height": 1920,
@@ -35,6 +36,7 @@ final class APIContractTests: XCTestCase {
         XCTAssertEqual(page.assets[0].mediaType, .video)
         XCTAssertNil(page.assets[0].thumbnailUrl)
         XCTAssertEqual(page.assets[0].durationMs, 4_200)
+        XCTAssertEqual(page.assets[0].location, CaptureLocation(latitude: 34.3853, longitude: 132.4553))
         XCTAssertEqual(page.assets[0].transcriptionStatus, .completed)
         XCTAssertEqual(page.assets[0].transcriptPreview, "海沿いを歩いた。風の音が強かった。")
         XCTAssertEqual(page.assets[0].transcriptUrl, "/v1/assets/asset-1/transcript")
@@ -92,6 +94,29 @@ final class APIContractTests: XCTestCase {
         let asset = try JSONDecoder.afterimage.decode(Asset.self, from: json)
         XCTAssertNil(asset.transcriptionStatus)
         XCTAssertNil(asset.transcriptUrl)
+        XCTAssertNil(asset.location)
+    }
+
+    func testCreateAssetEncodesCaptureLocation() throws {
+        let request = CreateAssetRequest(
+            mediaType: .image,
+            sourceFingerprint: "photos:asset-1",
+            filename: "memory.jpg",
+            contentType: "image/jpeg",
+            byteSize: 42,
+            width: 1920,
+            height: 1080,
+            durationMs: nil,
+            capturedAt: Date(timeIntervalSince1970: 1_774_761_600),
+            location: CaptureLocation(latitude: 34.3853, longitude: 132.4553)
+        )
+
+        let object = try XCTUnwrap(
+            JSONSerialization.jsonObject(with: JSONEncoder.afterimage.encode(request)) as? [String: Any]
+        )
+        let location = try XCTUnwrap(object["location"] as? [String: Double])
+        XCTAssertEqual(location["latitude"], 34.3853)
+        XCTAssertEqual(location["longitude"], 132.4553)
     }
 
     func testTranscriptResponseDecodes() throws {

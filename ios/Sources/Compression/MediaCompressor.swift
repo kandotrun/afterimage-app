@@ -80,6 +80,7 @@ struct OptimizedMedia: Sendable {
     let height: Int
     let durationMs: Int?
     let capturedAt: Date
+    var location: CaptureLocation? = nil
 
     func removeTemporaryFiles() {
         try? FileManager.default.removeItem(at: url)
@@ -164,7 +165,8 @@ actor MediaCompressor {
                 width: result.0,
                 height: result.1,
                 durationMs: nil,
-                capturedAt: media.capturedAt ?? Date()
+                capturedAt: media.capturedAt,
+                location: media.location
             )
         } catch {
             try? FileManager.default.removeItem(at: outputURL)
@@ -340,7 +342,8 @@ actor MediaCompressor {
             width: displayWidth,
             height: displayHeight,
             durationMs: Int((duration.seconds * 1_000).rounded()),
-            capturedAt: media.capturedAt ?? Date()
+            capturedAt: media.capturedAt,
+            location: media.location
         )
     }
 

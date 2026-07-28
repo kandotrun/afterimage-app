@@ -10,4 +10,9 @@ enum MemoryPagerPolicy {
         guard remaining > 0 else { return nil }
         return min(max(0, index), remaining - 1)
     }
+
+    static func visibleLocation(currentAsset: Asset?, openedAsset: Asset) -> CaptureLocation? {
+        guard let currentAsset else { return openedAsset.location }
+        return currentAsset.location
+    }
 }

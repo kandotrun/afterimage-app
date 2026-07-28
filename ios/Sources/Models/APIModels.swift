@@ -43,6 +43,7 @@ struct Asset: Codable, Identifiable, Hashable, Sendable {
     let height: Int?
     let durationMs: Int?
     let capturedAt: Date
+    var location: CaptureLocation? = nil
     let createdAt: Date
     let updatedAt: Date
     let thumbnailUrl: String?
@@ -53,7 +54,7 @@ struct Asset: Codable, Identifiable, Hashable, Sendable {
 
     private enum CodingKeys: String, CodingKey {
         case id, status, filename, contentType, byteSize, width, height, durationMs
-        case capturedAt, createdAt, updatedAt, thumbnailUrl, contentUrl
+        case capturedAt, location, createdAt, updatedAt, thumbnailUrl, contentUrl
         case transcriptionStatus, transcriptPreview, transcriptUrl
         case mediaType = "kind"
     }
@@ -117,10 +118,11 @@ struct CreateAssetRequest: Encodable, Sendable {
     let height: Int?
     let durationMs: Int?
     let capturedAt: Date
+    var location: CaptureLocation? = nil
 
     private enum CodingKeys: String, CodingKey {
         case mediaType = "kind"
-        case sourceFingerprint, filename, contentType, byteSize, width, height, durationMs, capturedAt
+        case sourceFingerprint, filename, contentType, byteSize, width, height, durationMs, capturedAt, location
     }
 }
 
@@ -226,6 +228,7 @@ enum AfterimageError: LocalizedError, Sendable {
     case api(status: Int, code: String, message: String)
     case missingCredential
     case unsupportedMedia
+    case captureDateUnavailable
     case compressionFailed(String)
     case uploadPlanInvalid
     case cancelled
@@ -252,6 +255,7 @@ enum AfterimageError: LocalizedError, Sendable {
             }
         case .missingCredential: L10n.string("error.missing_credential")
         case .unsupportedMedia: L10n.string("error.unsupported_media")
+        case .captureDateUnavailable: L10n.string("error.capture_date_unavailable")
         case let .compressionFailed(reason): L10n.format("error.compression_failed", reason as NSString)
         case .uploadPlanInvalid: L10n.string("error.upload_plan_invalid")
         case .cancelled: L10n.string("error.cancelled")

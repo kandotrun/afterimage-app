@@ -364,7 +364,8 @@ final class AppModel: ObservableObject {
                 width: optimized.width,
                 height: optimized.height,
                 durationMs: optimized.durationMs,
-                capturedAt: optimized.capturedAt
+                capturedAt: optimized.capturedAt,
+                location: optimized.location
             ))
             remoteAssetID = created.asset.id
             let context = try await api.backgroundUploadContext()

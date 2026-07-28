@@ -60,6 +60,8 @@ interface AssetRow {
   content_type: string;
   byte_size: number;
   captured_at: string;
+  latitude: number | null;
+  longitude: number | null;
   duration_ms: number | null;
   width: number | null;
   height: number | null;
@@ -158,6 +160,10 @@ const assetSchema = z.object({
   contentType: z.enum(contentTypes),
   byteSize: z.number().int().positive().max(50 * 1024 * 1024 * 1024),
   capturedAt: z.string().datetime({ offset: true }),
+  location: z.object({
+    latitude: z.number().min(-90).max(90),
+    longitude: z.number().min(-180).max(180),
+  }).optional(),
   durationMs: z.number().int().nonnegative().max(7 * 24 * 60 * 60 * 1000).optional(),
   width: z.number().int().positive().max(100_000).optional(),
   height: z.number().int().positive().max(100_000).optional(),
@@ -234,6 +240,9 @@ function assetJson(asset: AssetRow) {
     contentType: asset.content_type,
     byteSize: asset.byte_size,
     capturedAt: asset.captured_at,
+    location: asset.latitude !== null && asset.longitude !== null
+      ? { latitude: asset.latitude, longitude: asset.longitude }
+      : null,
     durationMs: asset.duration_ms,
     width: asset.width,
     height: asset.height,
@@ -253,7 +262,7 @@ function assetJson(asset: AssetRow) {
 async function findOwnedAsset(bindings: Env, assetId: string, userId: string): Promise<AssetRow | null> {
   return bindings.DB.prepare(
     `SELECT id, user_id, kind, filename, content_type, byte_size, captured_at,
-            duration_ms, width, height, status, object_key, thumbnail_key,
+            latitude, longitude, duration_ms, width, height, status, object_key, thumbnail_key,
             upload_mode, upload_id, part_size, created_at, updated_at,
             transcription_status, soniox_file_id, soniox_transcription_id,
             transcript, transcript_language, transcript_error, transcription_updated_at
@@ -657,7 +666,7 @@ export function createApp(overrides: Partial<AppDependencies> = {}) {
     }
     const asset = await context.env.DB.prepare(
       `SELECT a.id, a.user_id, a.kind, a.filename, a.content_type, a.byte_size, a.captured_at,
-              a.duration_ms, a.width, a.height, a.status, a.object_key, a.thumbnail_key,
+              a.latitude, a.longitude, a.duration_ms, a.width, a.height, a.status, a.object_key, a.thumbnail_key,
               a.upload_mode, a.upload_id, a.part_size, a.created_at, a.updated_at
          FROM media_grants g JOIN assets a ON a.id = g.asset_id AND a.user_id = g.user_id
         WHERE g.token_hash = ? AND g.expires_at > ? AND a.status = 'ready'`,
@@ -832,9 +841,9 @@ export function createApp(overrides: Partial<AppDependencies> = {}) {
       inserted = await context.env.DB.prepare(
         `INSERT OR IGNORE INTO assets (
           id, user_id, kind, source_fingerprint, filename, content_type, byte_size, captured_at,
-          duration_ms, width, height, status, object_key, thumbnail_key,
+          latitude, longitude, duration_ms, width, height, status, object_key, thumbnail_key,
           upload_mode, upload_id, part_size, created_at, updated_at
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'uploading', ?, NULL, ?, ?, ?, ?, ?)`,
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'uploading', ?, NULL, ?, ?, ?, ?, ?)`,
       ).bind(
         assetId,
         auth.userId,
@@ -844,6 +853,8 @@ export function createApp(overrides: Partial<AppDependencies> = {}) {
         parsed.data.contentType,
         parsed.data.byteSize,
         new Date(parsed.data.capturedAt).toISOString(),
+        parsed.data.location?.latitude ?? null,
+        parsed.data.location?.longitude ?? null,
         parsed.data.durationMs ?? null,
         parsed.data.width ?? null,
         parsed.data.height ?? null,
@@ -1313,7 +1324,7 @@ export function createApp(overrides: Partial<AppDependencies> = {}) {
     }
 
     const select = `SELECT id, user_id, kind, filename, content_type, byte_size, captured_at,
-      duration_ms, width, height, status, object_key, thumbnail_key,
+      latitude, longitude, duration_ms, width, height, status, object_key, thumbnail_key,
       upload_mode, upload_id, part_size, created_at, updated_at,
       transcription_status, soniox_file_id, soniox_transcription_id,
       transcript, transcript_language, transcript_error, transcription_updated_at FROM assets`;
@@ -1366,7 +1377,7 @@ export function createApp(overrides: Partial<AppDependencies> = {}) {
     if (rawCursor && !cursor) return errorResponse(context, 400, "invalid_cursor", "Timeline cursor is invalid.");
 
     const select = `SELECT id, user_id, kind, filename, content_type, byte_size, captured_at,
-      duration_ms, width, height, status, object_key, thumbnail_key,
+      latitude, longitude, duration_ms, width, height, status, object_key, thumbnail_key,
       upload_mode, upload_id, part_size, created_at, updated_at,
       transcription_status, soniox_file_id, soniox_transcription_id,
       transcript, transcript_language, transcript_error, transcription_updated_at FROM assets`;

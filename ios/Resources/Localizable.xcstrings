@@ -1,6 +1,34 @@
 {
   "sourceLanguage": "ja",
   "strings": {
+    "capture.location.accessibility": {
+      "localizations": {
+        "ja": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "撮影場所 %@"
+          }
+        },
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Capture location %@"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "拍摄地点 %@"
+          }
+        },
+        "ko": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "촬영 위치 %@"
+          }
+        }
+      }
+    },
     "AIに設定を頼む": {
       "localizations": {
         "ja": {
@@ -1929,6 +1957,34 @@
           "stringUnit": {
             "state": "translated",
             "value": "Apple 로그인 정보를 받을 수 없습니다."
+          }
+        }
+      }
+    },
+    "error.capture_date_unavailable": {
+      "localizations": {
+        "ja": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "写真・動画の撮影日時を取得できませんでした。撮影日時を保持した元ファイルを選んでください。"
+          }
+        },
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Couldn’t read the photo or video’s capture date. Choose the original file with its capture metadata."
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "无法读取照片或视频的拍摄时间。请选择保留拍摄元数据的原始文件。"
+          }
+        },
+        "ko": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "사진 또는 동영상의 촬영 시간을 읽을 수 없습니다. 촬영 메타데이터가 유지된 원본 파일을 선택해 주세요."
           }
         }
       }

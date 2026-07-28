@@ -7,6 +7,7 @@ const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const read = (relative) => readFileSync(path.join(root, relative), "utf8");
 const project = read("ios/project.yml");
 const dayStory = read("ios/Sources/Features/Timeline/DayStorySection.swift");
+const [dayStorySection, dayStoryHero = ""] = dayStory.split("private struct DayStoryHero");
 const timeline = read("ios/Sources/Features/Timeline/TimelineView.swift");
 const mediaImporter = read("ios/Sources/Import/MediaImporter.swift");
 const privacy = read("ios/Resources/PrivacyInfo.xcprivacy");
@@ -50,6 +51,21 @@ assert.doesNotMatch(
   dayStory,
   /AuthenticatedThumbnail\(asset:\s*asset\)[\s\S]{0,240}?\.aspectRatio\([\s\S]{0,40}?contentMode:\s*\.fill\)/,
   "thumbnail aspect ratios must not participate in layout sizing",
+);
+assert.doesNotMatch(
+  swift,
+  /opensMaps:\s*false/,
+  "every displayed capture location must link to Apple Maps",
+);
+assert.match(
+  dayStorySection,
+  /story\.hero\.location[\s\S]*?CaptureLocationChip\(location:\s*location\)/,
+  "timeline location must be a standalone Apple Maps link",
+);
+assert.doesNotMatch(
+  dayStoryHero,
+  /CaptureLocationChip/,
+  "timeline location link must not be nested inside the hero NavigationLink",
 );
 assert.match(
   timeline,
