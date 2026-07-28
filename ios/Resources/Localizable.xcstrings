@@ -2366,6 +2366,62 @@
         }
       }
     },
+    "notification.daily_post.body": {
+      "localizations": {
+        "ja": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "まだ今日の投稿がありません。写真や動画を一つ残してみませんか？"
+          }
+        },
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "You haven’t posted today. Add a photo or video to remember it."
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "今天还没有发布内容。留下一张照片或一段视频吧。"
+          }
+        },
+        "ko": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "오늘 아직 게시물이 없어요. 사진이나 동영상으로 기억을 남겨 보세요."
+          }
+        }
+      }
+    },
+    "notification.daily_post.title": {
+      "localizations": {
+        "ja": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "今日の記憶を残しましょう"
+          }
+        },
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Save today’s memory"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "记录今天的回忆"
+          }
+        },
+        "ko": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "오늘의 기억을 남겨 보세요"
+          }
+        }
+      }
+    },
     "playback.failed": {
       "localizations": {
         "ja": {
