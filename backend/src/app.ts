@@ -5,13 +5,6 @@ import {
   verifyAppleIdentityToken as verifyAppleIdentityTokenAgainstApple,
   type AppleIdentity,
 } from "./apple";
-import {
-  uploadToSoniox,
-  createTranscription,
-  getTranscriptionStatus,
-  getTranscript,
-  cleanupSoniox,
-} from "./soniox";
 import { handleMcpRequest } from "./mcp";
 import { createGpuJobRoutes } from "./gpu-jobs";
 import {
@@ -24,6 +17,7 @@ import {
 import { registerDailyWeatherRoutes } from "./weather";
 
 export type { AppleIdentity } from "./apple";
+export { pollTranscriptions } from "./transcription";
 
 type VerifyAppleIdentityToken = (
   identityToken: string,
@@ -518,85 +512,6 @@ function authMiddleware(now: () => Date): MiddlewareHandler<AppEnvironment> {
     });
     await next();
   };
-}
-
-interface TranscriptionPollRow {
-  id: string;
-  user_id: string;
-  object_key: string;
-  filename: string;
-  content_type: string;
-  transcription_status: string;
-  soniox_file_id: string | null;
-  soniox_transcription_id: string | null;
-}
-
-/**
- * Poll pending/processing video assets and advance their Soniox transcription state.
- * Called from the scheduled handler every 5 minutes.
- */
-export async function pollTranscriptions(bindings: Env, now = new Date()) {
-  if (!bindings.SONIOX_API_KEY) return { processed: 0 };
-  const nowIso = now.toISOString();
-
-  // Start pending jobs and check every in-flight job on each five-minute tick.
-  // Soniox concurrency is released only after completed jobs are observed and cleaned up.
-  const pending = await bindings.DB.prepare(
-    `SELECT id, user_id, object_key, filename, content_type,
-            transcription_status, soniox_file_id, soniox_transcription_id
-       FROM assets
-      WHERE kind = 'video' AND status = 'ready'
-        AND transcription_status IN ('pending', 'processing')
-      ORDER BY transcription_updated_at ASC LIMIT 10`,
-  ).all<TranscriptionPollRow>();
-
-  let processed = 0;
-  for (const asset of pending.results) {
-    try {
-      if (asset.transcription_status === "pending" || !asset.soniox_transcription_id) {
-        // Upload media to Soniox and create transcription job.
-        const object = await bindings.MEDIA.get(asset.object_key);
-        if (!object) {
-          await bindings.DB.prepare(
-            "UPDATE assets SET transcription_status = 'failed', transcript_error = 'media_not_found', transcription_updated_at = ? WHERE id = ?",
-          ).bind(nowIso, asset.id).run();
-          continue;
-        }
-        const bytes = await object.arrayBuffer();
-        const fileId = await uploadToSoniox(bindings, bytes, asset.filename, asset.content_type);
-        const transcriptionId = await createTranscription(bindings, fileId);
-        await bindings.DB.prepare(
-          `UPDATE assets SET transcription_status = 'processing', soniox_file_id = ?, soniox_transcription_id = ?, transcription_updated_at = ?
-            WHERE id = ? AND transcription_status IN ('pending', 'processing')`,
-        ).bind(fileId, transcriptionId, nowIso, asset.id).run();
-        processed++;
-      } else {
-        // Check status of an in-flight Soniox transcription.
-        const status = await getTranscriptionStatus(bindings, asset.soniox_transcription_id);
-        if (status.status === "completed") {
-          const transcript = await getTranscript(bindings, asset.soniox_transcription_id);
-          await bindings.DB.prepare(
-            `UPDATE assets SET transcription_status = 'completed', transcript = ?, transcript_language = ?,
-              transcript_error = NULL, transcription_updated_at = ?
-              WHERE id = ? AND transcription_status = 'processing'`,
-          ).bind(transcript.text || "", transcript.language || null, nowIso, asset.id).run();
-          await cleanupSoniox(bindings, asset.soniox_transcription_id, asset.soniox_file_id);
-          processed++;
-        } else if (status.status === "error") {
-          await bindings.DB.prepare(
-            `UPDATE assets SET transcription_status = 'failed', transcript_error = ?, transcription_updated_at = ?
-              WHERE id = ? AND transcription_status = 'processing'`,
-          ).bind(status.error_message || "soniox_error", nowIso, asset.id).run();
-          await cleanupSoniox(bindings, asset.soniox_transcription_id, asset.soniox_file_id);
-          processed++;
-        }
-        // queued/processing: leave for next poll.
-      }
-    } catch (error) {
-      console.error(JSON.stringify({ event: "transcription_poll_error", assetId: asset.id, message: String(error) }));
-    }
-  }
-  return { processed };
 }
 
 export async function cleanupExpiredState(bindings: Env, now = new Date()) {

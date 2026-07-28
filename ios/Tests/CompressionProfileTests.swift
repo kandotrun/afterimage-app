@@ -36,4 +36,12 @@ final class CompressionProfileTests: XCTestCase {
         XCTAssertEqual(PhotoCompressionProfile.afterimage.fileExtension, "heic")
         XCTAssertEqual(PhotoCompressionProfile.afterimage.contentType, "image/heic")
     }
+
+    func testVideoAudioSelectionKeepsOnlyThePrimaryPassthroughTrack() {
+        XCTAssertEqual(
+            VideoAudioTrackSelection.select(["primary", "alternate"]),
+            ["primary"]
+        )
+        XCTAssertEqual(VideoAudioTrackSelection.select([String]()), [])
+    }
 }

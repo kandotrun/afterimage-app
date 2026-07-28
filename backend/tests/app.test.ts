@@ -1737,7 +1737,7 @@ describe("asset upload and private timeline", () => {
 });
 
 describe("scheduled transcription polling", () => {
-  it("checks a newly processing Soniox job on the next five-minute tick", async () => {
+  it("checks a newly processing Soniox job on the next one-minute tick", async () => {
     await signIn("transcription-poll-owner");
     const user = await env.DB.prepare("SELECT id FROM users WHERE apple_subject = ?")
       .bind("transcription-poll-owner").first<{ id: string }>();

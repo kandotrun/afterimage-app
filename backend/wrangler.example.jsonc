@@ -13,7 +13,9 @@
     "SINGLE_UPLOAD_MAX_BYTES": "5242880",
     "MULTIPART_PART_SIZE_BYTES": "8388608",
     "QWENCLOUD_SUMMARY_BASE_URL": "https://token-plan.ap-southeast-1.maas.aliyuncs.com/compatible-mode/v1",
-    "QWENCLOUD_SUMMARY_MODEL": "qwen3.8-max-preview"
+    "QWENCLOUD_SUMMARY_MODEL": "qwen3.8-max-preview",
+    "TRANSCRIPTION_MEDIA_BASE_URL": "https://afterimage.example.com",
+    "SONIOX_DIRECT_UPLOAD_MAX_BYTES": "104857600"
   },
   "d1_databases": [
     {
@@ -30,7 +32,7 @@
     }
   ],
   "triggers": {
-    "crons": ["17 3 * * *"]
+    "crons": ["* * * * *", "17 3 * * *"]
   },
   "observability": {
     "enabled": true,
