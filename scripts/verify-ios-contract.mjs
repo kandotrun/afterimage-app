@@ -7,6 +7,8 @@ const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const read = (relative) => readFileSync(path.join(root, relative), "utf8");
 const project = read("ios/project.yml");
 const dayStory = read("ios/Sources/Features/Timeline/DayStorySection.swift");
+const timeline = read("ios/Sources/Features/Timeline/TimelineView.swift");
+const mediaImporter = read("ios/Sources/Import/MediaImporter.swift");
 const privacy = read("ios/Resources/PrivacyInfo.xcprivacy");
 const login = read("ios/Sources/Features/Auth/LoginView.swift");
 const appIconContents = read("ios/Resources/Assets.xcassets/AppIcon.appiconset/Contents.json");
@@ -48,6 +50,21 @@ assert.doesNotMatch(
   dayStory,
   /AuthenticatedThumbnail\(asset:\s*asset\)[\s\S]{0,240}?\.aspectRatio\([\s\S]{0,40}?contentMode:\s*\.fill\)/,
   "thumbnail aspect ratios must not participate in layout sizing",
+);
+assert.match(
+  timeline,
+  /PhotosPicker\([\s\S]*?photoLibrary:\s*\.shared\(\)[\s\S]*?\)\s*\{/,
+  "media picker must provide stable photo library item identifiers",
+);
+assert.doesNotMatch(
+  mediaImporter,
+  /PHAsset\.fetchAssets/,
+  "media import must not request full photo library access",
+);
+assert.doesNotMatch(
+  timeline,
+  /upload\.duplicates\.hint_(?:title|detail)/,
+  "upload dock must not show a permanent duplicate-upload hint",
 );
 for (const symbol of [
   "GlassEffectContainer",

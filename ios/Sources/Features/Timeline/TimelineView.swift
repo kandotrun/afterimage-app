@@ -159,20 +159,6 @@ private struct UploadDock: View {
             if let summary = model.importSelectionSummary {
                 ImportSelectionSummaryView(summary: summary)
                     .transition(.move(edge: .bottom).combined(with: .opacity))
-            } else if model.upload == nil {
-                VStack(alignment: .trailing, spacing: 2) {
-                    Label {
-                        Text(verbatim: L10n.string("upload.duplicates.hint_title"))
-                    } icon: {
-                        Image(systemName: "checkmark.circle")
-                    }
-                    .font(.caption.weight(.semibold))
-                    Text(verbatim: L10n.string("upload.duplicates.hint_detail"))
-                        .font(.caption2)
-                }
-                .foregroundStyle(.secondary)
-                .padding(.trailing, 8)
-                .accessibilityElement(children: .combine)
             }
 
             GlassEffectContainer(spacing: 14) {
@@ -191,7 +177,8 @@ private struct UploadDock: View {
                             selection: $selection,
                             maxSelectionCount: 12,
                             matching: .any(of: [.images, .videos]),
-                            preferredItemEncoding: .current
+                            preferredItemEncoding: .current,
+                            photoLibrary: .shared()
                         ) {
                             Label("追加", systemImage: "plus")
                                 .font(.headline)

@@ -1,7 +1,6 @@
 import CoreTransferable
 import CryptoKit
 import Foundation
-import Photos
 import PhotosUI
 import SwiftUI
 import UniformTypeIdentifiers
@@ -42,9 +41,10 @@ enum ImportSelectionPolicy {
         identities: [ImportIdentity?],
         existing: Set<String>
     ) -> ImportSelectionPlan {
+        var seen = existing
         let uploadIndexes = identities.indices.filter { index in
             guard let identity = identities[index] else { return true }
-            return !existing.contains(identity.sourceFingerprint)
+            return seen.insert(identity.sourceFingerprint).inserted
         }
         return ImportSelectionPlan(
             uploadIndexes: uploadIndexes,
@@ -120,7 +120,6 @@ enum MediaImporter {
     }
 
     static func load(_ item: PhotosPickerItem) async throws -> ImportedMedia {
-        let capturedAt = creationDate(for: item.itemIdentifier)
         let identity = identity(for: item)
         let isMovie = item.supportedContentTypes.contains { $0.conforms(to: .movie) }
         if isMovie {
@@ -131,7 +130,7 @@ enum MediaImporter {
                 kind: .video,
                 url: movie.url,
                 originalFilename: identity?.filename ?? movie.url.lastPathComponent,
-                capturedAt: capturedAt
+                capturedAt: nil
             )
         }
 
@@ -143,7 +142,7 @@ enum MediaImporter {
             kind: .image,
             url: image.url,
             originalFilename: identity?.filename ?? image.url.lastPathComponent,
-            capturedAt: capturedAt
+            capturedAt: nil
         )
     }
 
@@ -155,10 +154,5 @@ enum MediaImporter {
             return .image
         }
         return nil
-    }
-
-    private static func creationDate(for identifier: String?) -> Date? {
-        guard let identifier else { return nil }
-        return PHAsset.fetchAssets(withLocalIdentifiers: [identifier], options: nil).firstObject?.creationDate
     }
 }
