@@ -1770,7 +1770,7 @@ describe("MCP personal access tokens", () => {
     expect(mcp.status).toBe(401);
   });
 
-  it("exposes only the owner's completed transcriptions through read-only tools", async () => {
+  it("exposes only agent-enabled owner video memories through read-only tools", async () => {
     const owner = await signIn("mcp-tools-owner");
     await signIn("mcp-tools-other");
     const ownerUser = await env.DB.prepare("SELECT id FROM users WHERE apple_subject = ?")
@@ -1778,14 +1778,17 @@ describe("MCP personal access tokens", () => {
     const otherUser = await env.DB.prepare("SELECT id FROM users WHERE apple_subject = ?")
       .bind("mcp-tools-other").first<{ id: string }>();
     const ownerAssetId = crypto.randomUUID();
+    const silentAssetId = crypto.randomUUID();
+    const disabledAssetId = crypto.randomUUID();
     const otherAssetId = crypto.randomUUID();
+    const silentAnalysisJobId = crypto.randomUUID();
     await env.DB.batch([
       env.DB.prepare(
         `INSERT INTO assets (
           id, user_id, kind, filename, content_type, byte_size, captured_at, duration_ms,
           status, object_key, upload_mode, created_at, updated_at,
           transcription_status, transcript, transcript_language, transcription_updated_at
-        ) VALUES (?, ?, 'video', ?, 'video/mp4', 100, ?, 12000,
+        ) VALUES (?, ?, 'video', ?, 'video/mp4', 11, ?, 12000,
           'ready', ?, 'single', ?, ?, 'completed', ?, 'ja', ?)`,
       ).bind(
         ownerAssetId,
@@ -1796,6 +1799,62 @@ describe("MCP personal access tokens", () => {
         NOW.toISOString(),
         NOW.toISOString(),
         "海辺で今日の計画を話した。",
+        NOW.toISOString(),
+      ),
+      env.DB.prepare(
+        `INSERT INTO assets (
+          id, user_id, kind, filename, content_type, byte_size, captured_at, duration_ms,
+          status, object_key, upload_mode, created_at, updated_at, transcription_status
+        ) VALUES (?, ?, 'video', ?, 'video/mp4', 12, ?, 20000,
+          'ready', ?, 'single', ?, ?, 'pending')`,
+      ).bind(
+        silentAssetId,
+        ownerUser!.id,
+        "silent.mp4",
+        "2026-07-27T06:30:00.000Z",
+        `users/${ownerUser!.id}/assets/${silentAssetId}/media`,
+        NOW.toISOString(),
+        NOW.toISOString(),
+      ),
+      env.DB.prepare(
+        `INSERT INTO video_analyses (
+          asset_id, job_id, model_id, model_revision, backend, coverage_mode,
+          summary, created_at, updated_at
+        ) VALUES (?, ?, 'microsoft/Mage-VL', 'pinned-revision', 'frames', 'full', ?, ?, ?)`,
+      ).bind(
+        silentAssetId,
+        silentAnalysisJobId,
+        "机の上に鍵を置く様子。",
+        NOW.toISOString(),
+        NOW.toISOString(),
+      ),
+      env.DB.prepare(
+        `INSERT INTO video_analysis_ranges (
+          analysis_asset_id, position, start_ms, end_ms
+        ) VALUES (?, 0, 0, 20000)`,
+      ).bind(silentAssetId),
+      env.DB.prepare(
+        `INSERT INTO video_analysis_segments (
+          analysis_asset_id, position, start_ms, end_ms, caption
+        ) VALUES (?, 0, 500, 1500, ?)`,
+      ).bind(silentAssetId, "机の上に鍵を置いた。"),
+      env.DB.prepare(
+        `INSERT INTO assets (
+          id, user_id, kind, filename, content_type, byte_size, captured_at, duration_ms,
+          status, object_key, upload_mode, created_at, updated_at,
+          transcription_status, transcript, transcript_language, transcription_updated_at,
+          agent_access_enabled
+        ) VALUES (?, ?, 'video', ?, 'video/mp4', 12, ?, 9000,
+          'ready', ?, 'single', ?, ?, 'completed', ?, 'ja', ?, 0)`,
+      ).bind(
+        disabledAssetId,
+        ownerUser!.id,
+        "disabled.mp4",
+        "2026-07-27T06:15:00.000Z",
+        `users/${ownerUser!.id}/assets/${disabledAssetId}/media`,
+        NOW.toISOString(),
+        NOW.toISOString(),
+        "共有しない秘密の記憶。",
         NOW.toISOString(),
       ),
       env.DB.prepare(
@@ -1817,6 +1876,8 @@ describe("MCP personal access tokens", () => {
         NOW.toISOString(),
       ),
     ]);
+    await env.MEDIA.put(`users/${ownerUser!.id}/assets/${ownerAssetId}/media`, "owner-video");
+    await env.MEDIA.put(`users/${ownerUser!.id}/assets/${silentAssetId}/media`, "silent-video");
 
     const created = await owner.app.request("/v1/mcp/tokens", {
       method: "POST",
@@ -1843,6 +1904,12 @@ describe("MCP personal access tokens", () => {
     expect(tools.result.tools.map((tool: { name: string }) => tool.name)).toEqual([
       "list_transcriptions",
       "get_transcription",
+      "search_memories",
+      "get_memory",
+      "get_video",
+      "get_video_frame",
+      "get_video_clip",
+      "get_video_derivative",
     ]);
     expect(tools.result.tools).toEqual(expect.arrayContaining([
       expect.objectContaining({
@@ -1859,6 +1926,7 @@ describe("MCP personal access tokens", () => {
       expect.objectContaining({ id: ownerAssetId, filename: "owner.mp4" }),
     ]);
     expect(JSON.stringify(listed)).not.toContain("他人だけの秘密");
+    expect(JSON.stringify(listed)).not.toContain("共有しない秘密");
 
     const ownDetail = await callMcp(3, "tools/call", {
       name: "get_transcription",
@@ -1875,6 +1943,136 @@ describe("MCP personal access tokens", () => {
     });
     expect(otherDetail.result).toMatchObject({ isError: true });
     expect(JSON.stringify(otherDetail)).not.toContain("他人だけの秘密");
+
+    const searched = await callMcp(5, "tools/call", {
+      name: "search_memories",
+      arguments: { query: "鍵", limit: 10 },
+    });
+    expect(searched.result.structuredContent.items).toEqual([
+      expect.objectContaining({
+        id: silentAssetId,
+        filename: "silent.mp4",
+        visualSummary: "机の上に鍵を置く様子。",
+        videoAnalysisStatus: "completed",
+      }),
+    ]);
+    expect(JSON.stringify(searched)).not.toContain("共有しない秘密");
+    expect(JSON.stringify(searched)).not.toContain("他人だけの秘密");
+
+    const memory = await callMcp(6, "tools/call", {
+      name: "get_memory",
+      arguments: { assetId: silentAssetId },
+    });
+    expect(memory.result.structuredContent).toMatchObject({
+      id: silentAssetId,
+      transcript: null,
+      videoAnalysis: {
+        status: "completed",
+        summary: "机の上に鍵を置く様子。",
+        coverage: [{ startMs: 0, endMs: 20000 }],
+        segments: [{ startMs: 500, endMs: 1500, caption: "机の上に鍵を置いた。" }],
+      },
+    });
+
+    const video = await callMcp(7, "tools/call", {
+      name: "get_video",
+      arguments: { assetId: ownerAssetId },
+    });
+    expect(video.result.structuredContent).toMatchObject({
+      id: ownerAssetId,
+      mimeType: "video/mp4",
+      byteSize: 11,
+      acceptsRanges: true,
+    });
+    expect(video.result.content).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        type: "resource_link",
+        mimeType: "video/mp4",
+        size: 11,
+      }),
+    ]));
+    const videoUri = video.result.content.find(
+      (content: { type: string; uri?: string }) => content.type === "resource_link",
+    )?.uri;
+    const rangedVideo = await owner.app.request(videoUri, {
+      headers: { range: "bytes=0-4" },
+    }, env);
+    expect(rangedVideo.status).toBe(206);
+    expect(new TextDecoder().decode(await rangedVideo.arrayBuffer())).toBe("owner");
+
+    const frame = await callMcp(8, "tools/call", {
+      name: "get_video_frame",
+      arguments: { assetId: silentAssetId, timeMs: 750 },
+    });
+    expect(frame.result.structuredContent).toMatchObject({
+      status: "queued",
+      kind: "frame",
+      startMs: 750,
+      endMs: 750,
+      retryAfterMs: 15000,
+    });
+    expect(frame.result.structuredContent.derivativeId).toEqual(expect.any(String));
+
+    const clip = await callMcp(9, "tools/call", {
+      name: "get_video_clip",
+      arguments: { assetId: silentAssetId, startMs: 1000, endMs: 3000 },
+    });
+    expect(clip.result.structuredContent).toMatchObject({
+      status: "queued",
+      kind: "clip",
+      startMs: 1000,
+      endMs: 3000,
+    });
+
+    const derivative = await callMcp(10, "tools/call", {
+      name: "get_video_derivative",
+      arguments: { derivativeId: frame.result.structuredContent.derivativeId },
+    });
+    expect(derivative.result.structuredContent).toMatchObject({
+      status: "queued",
+      derivativeId: frame.result.structuredContent.derivativeId,
+    });
+
+    const frameObjectKey = `users/${ownerUser!.id}/assets/${silentAssetId}/derivatives/frame.jpg`;
+    await env.MEDIA.put(frameObjectKey, "jpeg");
+    await env.DB.prepare(
+      `UPDATE media_derivatives
+          SET status = 'ready', object_key = ?, content_type = 'image/jpeg', byte_size = 4
+        WHERE id = ?`,
+    ).bind(frameObjectKey, frame.result.structuredContent.derivativeId).run();
+    const readyDerivative = await callMcp(11, "tools/call", {
+      name: "get_video_derivative",
+      arguments: { derivativeId: frame.result.structuredContent.derivativeId },
+    });
+    expect(readyDerivative.result.structuredContent).toMatchObject({
+      status: "ready",
+      mimeType: "image/jpeg",
+      byteSize: 4,
+      acceptsRanges: true,
+    });
+    expect(readyDerivative.result.content).toEqual(expect.arrayContaining([
+      expect.objectContaining({ type: "resource_link", mimeType: "image/jpeg", size: 4 }),
+    ]));
+
+    const oversizedClip = await callMcp(12, "tools/call", {
+      name: "get_video_clip",
+      arguments: { assetId: silentAssetId, startMs: 0, endMs: 61000 },
+    });
+    expect(oversizedClip.result).toMatchObject({ isError: true });
+
+    const disabledMemory = await callMcp(13, "tools/call", {
+      name: "get_memory",
+      arguments: { assetId: disabledAssetId },
+    });
+    expect(disabledMemory.result).toMatchObject({ isError: true });
+    expect(JSON.stringify(disabledMemory)).not.toContain("共有しない秘密");
+
+    const disabledTranscription = await callMcp(14, "tools/call", {
+      name: "get_transcription",
+      arguments: { assetId: disabledAssetId },
+    });
+    expect(disabledTranscription.result).toMatchObject({ isError: true });
+    expect(JSON.stringify(disabledTranscription)).not.toContain("共有しない秘密");
   });
 });
 
