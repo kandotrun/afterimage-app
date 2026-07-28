@@ -51,6 +51,18 @@ final class ImportIdentityTests: XCTestCase {
         )
     }
 
+    func testSelectionPlanUploadsOnlyFirstOccurrenceOfRepeatedIdentity() {
+        let repeated = ImportIdentity(localIdentifier: "REPEATED/L0/001", kind: .video)
+
+        let plan = ImportSelectionPolicy.plan(
+            identities: [repeated, repeated],
+            existing: []
+        )
+
+        XCTAssertEqual(plan.uploadIndexes, [0])
+        XCTAssertEqual(plan.skippedCount, 1)
+    }
+
     func testAllExistingSelectionProducesNoUploadIndexes() {
         let first = ImportIdentity(localIdentifier: "FIRST/L0/001", kind: .video)
         let second = ImportIdentity(localIdentifier: "SECOND/L0/001", kind: .video)
