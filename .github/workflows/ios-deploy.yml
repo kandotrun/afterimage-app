@@ -48,7 +48,12 @@ jobs:
             -scheme afterimage \
             -destination 'platform=iOS Simulator,id=${{ steps.simulator.outputs.id }}' \
             -derivedDataPath DerivedData \
+            -parallel-testing-enabled NO \
+            -maximum-concurrent-test-simulator-destinations 1 \
+            -jobs 1 \
+            -collect-test-diagnostics never \
             CODE_SIGNING_ALLOWED=NO \
+            CC="$GITHUB_WORKSPACE/scripts/xcode-clang-probe" \
             | tee xcodebuild.log
 
   deploy:
@@ -110,6 +115,7 @@ jobs:
             -authenticationKeyIssuerID "$ASC_ISSUER_ID" \
             OTHER_CODE_SIGN_FLAGS="--keychain ${{ steps.signing_keychain.outputs.path }}" \
             CURRENT_PROJECT_VERSION=${{ github.run_number }} \
+            CC="$GITHUB_WORKSPACE/scripts/xcode-clang-probe" \
             | tee archive.log
       - name: Export and upload to TestFlight
         working-directory: ios

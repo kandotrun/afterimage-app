@@ -7,12 +7,14 @@ on:
       - "ios/**"
       - "scripts/verify-ios-contract.mjs"
       - "scripts/verify-ios-localizations.mjs"
+      - "scripts/xcode-clang-probe"
       - ".github/workflows/ios.yml"
   pull_request:
     paths:
       - "ios/**"
       - "scripts/verify-ios-contract.mjs"
       - "scripts/verify-ios-localizations.mjs"
+      - "scripts/xcode-clang-probe"
       - ".github/workflows/ios.yml"
 
 permissions:
@@ -56,7 +58,12 @@ jobs:
             -destination 'platform=iOS Simulator,id=${{ steps.simulator.outputs.id }}' \
             -derivedDataPath DerivedData \
             -resultBundlePath TestResults.xcresult \
+            -parallel-testing-enabled NO \
+            -maximum-concurrent-test-simulator-destinations 1 \
+            -jobs 1 \
+            -collect-test-diagnostics never \
             CODE_SIGNING_ALLOWED=NO \
+            CC="$GITHUB_WORKSPACE/scripts/xcode-clang-probe" \
             | tee xcodebuild.log
       - name: Verify bundled privacy manifest
         run: |

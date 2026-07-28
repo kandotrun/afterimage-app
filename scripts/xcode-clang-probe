@@ -1,0 +1,11 @@
+#!/bin/zsh
+
+real_clang=/Applications/Xcode.app/Contents/Developer/Toolchains/XcodeDefault.xctoolchain/usr/bin/clang
+
+if [[ " $* " == *" -E "* && " $* " == *" -dM "* ]]; then
+    set -o pipefail
+    "$real_clang" "$@" 2>/dev/null | /usr/bin/grep -E '^#define (__apple_build_version__|__clang_version__) '
+    exit $?
+fi
+
+exec "$real_clang" "$@"
