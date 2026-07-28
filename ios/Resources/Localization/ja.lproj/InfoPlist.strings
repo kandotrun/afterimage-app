@@ -1,2 +1,3 @@
 "CFBundleDisplayName" = "afterimage";
 "NSPhotoLibraryUsageDescription" = "動画を、あなたの記憶としてafterimageへ保存します。";
+"NSLocationWhenInUseUsageDescription" = "その日の天気を記録するため、アプリ使用中の現在地を一度だけ利用します。正確な位置は保存しません。";

@@ -24,6 +24,8 @@
     <string>26.0</string>
     <key>NSPhotoLibraryUsageDescription</key>
     <string>動画を、あなたの記憶としてafterimageへ保存します。</string>
+    <key>NSLocationWhenInUseUsageDescription</key>
+    <string>その日の天気を記録するため、アプリ使用中の現在地を一度だけ利用します。正確な位置は保存しません。</string>
     <key>ITSAppUsesNonExemptEncryption</key>
     <false/>
     <key>NSSupportsLiveActivities</key>

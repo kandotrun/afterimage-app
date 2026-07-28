@@ -75,7 +75,11 @@ for (const locale of locales) {
     "utf8",
   );
   const usageDescription = mainInfo.match(/"NSPhotoLibraryUsageDescription"\s*=\s*"([^"\n]+)";/)?.[1];
+  const locationUsageDescription = mainInfo.match(
+    /"NSLocationWhenInUseUsageDescription"\s*=\s*"([^"\n]+)";/,
+  )?.[1];
   assert.ok(usageDescription, `${locale} photo library usage copy must exist`);
+  assert.ok(locationUsageDescription, `${locale} location usage copy must exist`);
   const duplicateDetail =
     catalog.strings["upload.duplicates.all_detail"].localizations[locale].stringUnit.value;
   for (const [surface, value] of [

@@ -31,6 +31,7 @@ struct TimelineView: View {
                                 if let story = DayStoryPolicy.story(for: section.assets) {
                                     DayStorySection(
                                         title: section.title,
+                                        weather: model.weather(for: section.day),
                                         day: section.day,
                                         readyVideos: section.readyVideos,
                                         story: story,
@@ -47,6 +48,7 @@ struct TimelineView: View {
                 }
                 .refreshable { try? await model.refreshTimeline() }
             }
+            .task { await model.recordTodayWeather() }
             .navigationTitle("ライブラリ")
             .navigationDestination(for: DailyPlaybackRoute.self) { route in
                 DailyPlaybackView(day: route.day)

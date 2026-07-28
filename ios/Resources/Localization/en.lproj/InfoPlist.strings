@@ -1,2 +1,3 @@
 "CFBundleDisplayName" = "afterimage";
 "NSPhotoLibraryUsageDescription" = "Allow access to save selected videos as private memories in afterimage.";
+"NSLocationWhenInUseUsageDescription" = "Allow one-time access to your location while using the app to record the day’s weather. Your precise location is not stored.";
