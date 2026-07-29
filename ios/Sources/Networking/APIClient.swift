@@ -98,6 +98,24 @@ actor APIClient {
         return try await decode(request)
     }
 
+    func searchMemories(query: String, cursor: String? = nil, limit: Int = 20) async throws -> MemorySearchPage {
+        var components = URLComponents()
+        components.path = "/v1/memories/search"
+        var items = [
+            URLQueryItem(name: "q", value: query),
+            URLQueryItem(name: "limit", value: String(limit)),
+        ]
+        if let cursor { items.append(URLQueryItem(name: "cursor", value: cursor)) }
+        components.queryItems = items
+        let request = try makeRequest(path: components.string ?? "/v1/memories/search", method: "GET")
+        return try await decode(request)
+    }
+
+    func videoAnalysis(assetID: String) async throws -> VideoAnalysisResponse {
+        let request = try makeRequest(path: "/v1/assets/\(assetID)/analysis", method: "GET")
+        return try await decode(request)
+    }
+
     func dailyWeather(in range: ClosedRange<String>) async throws -> [DailyWeather] {
         var components = URLComponents()
         components.path = "/v1/weather/days"

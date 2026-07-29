@@ -2,6 +2,10 @@ import Foundation
 
 /// Pure paging decisions for the memory detail pager.
 enum MemoryPagerPolicy {
+    static func assets(openedAsset: Asset, timelineAssets: [Asset], standalone: Bool) -> [Asset] {
+        standalone ? [openedAsset] : timelineAssets
+    }
+
     /// Selection after deleting the item at `index` from a list that had
     /// `count` items. Returns the index into the remaining list, or nil when
     /// nothing remains and the pager should dismiss.

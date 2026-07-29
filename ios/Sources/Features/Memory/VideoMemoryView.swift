@@ -8,6 +8,8 @@ struct VideoMemoryView: View {
     let isActive: Bool
     @Binding var chromeVisible: Bool
     @Binding var showTranscript: Bool
+    @Binding var showAnalysis: Bool
+    @Binding var requestedSeek: MemorySeekRequest?
 
     @StateObject private var controller = VideoPlaybackController()
     @State private var chrome = PlayerChrome()
@@ -69,6 +71,12 @@ struct VideoMemoryView: View {
             default:
                 break
             }
+        }
+        .onChange(of: controller.duration) { _, _ in
+            applyRequestedSeek()
+        }
+        .onChange(of: requestedSeek) { _, _ in
+            applyRequestedSeek()
         }
     }
 
@@ -148,6 +156,15 @@ struct VideoMemoryView: View {
                     .buttonStyle(.glass)
                     .accessibilityLabel("文字起こし")
                 }
+
+                Button {
+                    showAnalysis = true
+                } label: {
+                    Image(systemName: "sparkles.rectangle.stack")
+                        .frame(width: 40, height: 40)
+                }
+                .buttonStyle(.glass)
+                .accessibilityLabel(L10n.string("memory.analysis.open"))
             }
             .tint(.white)
         }
@@ -165,6 +182,21 @@ struct VideoMemoryView: View {
         guard poster == nil, asset.thumbnailUrl != nil,
               let data = try? await model.thumbnailData(for: asset) else { return }
         poster = UIImage(data: data)
+    }
+
+    private func applyRequestedSeek() {
+        guard isActive,
+              controller.duration > 0,
+              let requestedSeek,
+              let seconds = MemorySeekPolicy.seconds(
+                  startMs: requestedSeek.startMs,
+                  assetID: requestedSeek.assetID,
+                  pageAssetID: asset.id
+              ) else { return }
+        controller.scrubBegan()
+        controller.scrub(to: seconds)
+        controller.scrubEnded()
+        self.requestedSeek = nil
     }
 }
 

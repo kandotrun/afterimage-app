@@ -11,7 +11,7 @@ import {
   configuredDailySummaryModel,
   DAILY_SUMMARY_MAX_CHARACTERS,
   generateDailySummary as generateQwenDailySummary,
-  type DailyTranscriptSource,
+  type DailyMemorySource,
   type GeneratedDailySummary,
 } from "./qwen-summary";
 import { registerDailyWeatherRoutes } from "./weather";
@@ -26,7 +26,7 @@ type VerifyAppleIdentityToken = (
 
 type GenerateDailySummary = (
   bindings: Env,
-  transcripts: DailyTranscriptSource[],
+  sources: DailyMemorySource[],
 ) => Promise<GeneratedDailySummary>;
 
 interface AppDependencies {
@@ -101,18 +101,64 @@ interface MediaBodyRow {
 }
 
 interface DailySummaryCacheRow {
-  transcript_digest: string;
+  source_digest: string;
   source_transcript_count: number;
+  source_visual_analysis_count: number;
   summary: string;
   model: string;
   generated_at: string;
 }
 
-interface DailySummaryTranscriptRow {
+interface DailySummaryMemoryRow {
   id: string;
   captured_at: string;
-  transcript: string;
+  transcript: string | null;
   transcription_updated_at: string | null;
+  visual_summary: string | null;
+  visual_updated_at: string | null;
+  visual_model_id: string | null;
+  visual_model_revision: string | null;
+  visual_backend: "frames" | "codec" | null;
+  visual_coverage_mode: "full" | "sampled" | null;
+}
+
+interface DailySummaryBoundsRow {
+  source_count: number;
+  source_transcript_count: number;
+  source_visual_analysis_count: number;
+  source_rows: number;
+  source_characters: number;
+}
+
+interface DailySummaryVisualSegmentRow extends VideoAnalysisSegmentRow {
+  analysis_asset_id: string;
+}
+
+interface MemorySearchRow extends AssetRow {
+  visual_summary: string | null;
+  matched_segment_position: number | null;
+  matched_segment_start_ms: number | null;
+  matched_segment_end_ms: number | null;
+  matched_segment_caption: string | null;
+}
+
+interface VideoAnalysisRow {
+  model_id: string;
+  model_revision: string;
+  backend: "frames" | "codec";
+  coverage_mode: "full" | "sampled";
+  summary: string;
+  updated_at: string;
+}
+
+interface VideoAnalysisRangeRow {
+  position: number;
+  start_ms: number;
+  end_ms: number;
+}
+
+interface VideoAnalysisSegmentRow extends VideoAnalysisRangeRow {
+  caption: string;
 }
 
 interface UploadPartRow {
@@ -157,6 +203,12 @@ const agentAccessSchema = z.object({
   enabled: z.boolean(),
 }).strict();
 
+const memorySearchSchema = z.object({
+  q: z.string().trim().min(1).max(200),
+  cursor: z.string().max(512).optional(),
+  limit: z.coerce.number().int().min(1).max(50).default(20),
+});
+
 const contentTypes = [
   "image/heic",
   "image/heif",
@@ -177,8 +229,9 @@ const dailyPlaybackQuerySchema = z.object({
 const MAX_DAILY_PLAYBACK_SPAN_MS = 48 * 60 * 60 * 1_000;
 const MAX_DAILY_PLAYBACK_CLIPS = 200;
 const MAX_DAILY_PLAYBACK_TRANSCRIPT_CHARS = 500_000;
-const MAX_DAILY_SUMMARY_TRANSCRIPTS = 200;
-const MAX_DAILY_SUMMARY_TRANSCRIPT_CHARS = 200_000;
+const MAX_DAILY_SUMMARY_SOURCES = 200;
+const MAX_DAILY_SUMMARY_SOURCE_ROWS = 1_000;
+const MAX_DAILY_SUMMARY_SOURCE_CHARACTERS = 200_000;
 const MIN_DAILY_SUMMARY_RANGE_MS = 22 * 60 * 60 * 1_000;
 const MAX_DAILY_SUMMARY_RANGE_MS = 26 * 60 * 60 * 1_000;
 
@@ -279,26 +332,46 @@ function mcpTokenJson(token: McpTokenRow) {
   };
 }
 
-function ownerVideoAnalysisStatusSql(): string {
+function ownerVideoAnalysisStatusSql(assetAlias = "assets"): string {
   return `CASE
-    WHEN assets.kind <> 'video' OR assets.agent_access_enabled = 0 THEN NULL
+    WHEN ${assetAlias}.kind <> 'video' OR ${assetAlias}.agent_access_enabled = 0 THEN NULL
     WHEN EXISTS (
-      SELECT 1 FROM video_analyses va WHERE va.asset_id = assets.id
+      SELECT 1 FROM video_analyses va WHERE va.asset_id = ${assetAlias}.id
     ) THEN 'completed'
     WHEN EXISTS (
       SELECT 1 FROM gpu_jobs j
-       WHERE j.asset_id = assets.id AND j.kind = 'analysis' AND j.status = 'leased'
+       WHERE j.asset_id = ${assetAlias}.id AND j.kind = 'analysis' AND j.status = 'leased'
     ) THEN 'processing'
     WHEN EXISTS (
       SELECT 1 FROM gpu_jobs j
-       WHERE j.asset_id = assets.id AND j.kind = 'analysis' AND j.status = 'queued'
+       WHERE j.asset_id = ${assetAlias}.id AND j.kind = 'analysis' AND j.status = 'queued'
     ) THEN 'queued'
     WHEN EXISTS (
       SELECT 1 FROM gpu_jobs j
-       WHERE j.asset_id = assets.id AND j.kind = 'analysis' AND j.status = 'failed'
+       WHERE j.asset_id = ${assetAlias}.id AND j.kind = 'analysis' AND j.status = 'failed'
     ) THEN 'failed'
     ELSE NULL
   END AS video_analysis_status`;
+}
+
+function likePattern(query: string): string {
+  return `%${query.replaceAll("\\", "\\\\").replaceAll("%", "\\%").replaceAll("_", "\\_")}%`;
+}
+
+function searchExcerpt(text: string, query: string): string {
+  const normalized = text.replace(/\s+/g, " ").trim();
+  if (normalized.length <= 240) return normalized;
+  const index = normalized.toLocaleLowerCase().indexOf(query.toLocaleLowerCase());
+  if (index < 0) return `${normalized.slice(0, 239)}…`;
+  const start = Math.max(0, index - 80);
+  const end = Math.min(normalized.length, start + 240);
+  return `${start > 0 ? "…" : ""}${normalized.slice(start, end)}${end < normalized.length ? "…" : ""}`;
+}
+
+function setPrivateResponseHeaders(context: Context<AppEnvironment>): void {
+  context.header("Cache-Control", "private, no-store");
+  context.header("Pragma", "no-cache");
+  context.header("Vary", "Authorization");
 }
 
 function assetJson(asset: AssetRow) {
@@ -1394,6 +1467,7 @@ export function createApp(overrides: Partial<AppDependencies> = {}) {
 
   api.get("/days/summary", async (context) => {
     const auth = context.get("auth");
+    setPrivateResponseHeaders(context);
     const parsed = dailyPlaybackQuerySchema.safeParse({
       startAt: context.req.query("startAt"),
       endAt: context.req.query("endAt"),
@@ -1411,76 +1485,168 @@ export function createApp(overrides: Partial<AppDependencies> = {}) {
 
     const startIso = startAt.toISOString();
     const endIso = endAt.toISOString();
-    const rangeWhere = `user_id = ? AND kind = 'video' AND status = 'ready'
-      AND transcription_status = 'completed' AND transcript IS NOT NULL AND length(trim(transcript)) > 0
-      AND julianday(captured_at) >= julianday(?) AND julianday(captured_at) < julianday(?)`;
+    const transcriptWhere = "a.transcription_status = 'completed' AND a.transcript IS NOT NULL AND length(trim(a.transcript)) > 0";
+    const rangeWhere = `a.user_id = ? AND a.kind = 'video' AND a.status = 'ready'
+      AND julianday(a.captured_at) >= julianday(?) AND julianday(a.captured_at) < julianday(?)`;
     const bounds = await context.env.DB.prepare(
-      `SELECT COUNT(*) AS transcript_count, COALESCE(SUM(length(transcript)), 0) AS transcript_chars
-         FROM assets WHERE ${rangeWhere}`,
-    ).bind(auth.userId, startIso, endIso).first<{ transcript_count: number; transcript_chars: number }>();
-    const transcriptCount = Number(bounds?.transcript_count ?? 0);
-    const transcriptChars = Number(bounds?.transcript_chars ?? 0);
-    if (transcriptCount > MAX_DAILY_SUMMARY_TRANSCRIPTS || transcriptChars > MAX_DAILY_SUMMARY_TRANSCRIPT_CHARS) {
+      `WITH source_assets AS (
+         SELECT a.id,
+                CASE WHEN ${transcriptWhere} THEN a.transcript ELSE NULL END AS transcript,
+                va.summary AS visual_summary
+           FROM assets a
+           LEFT JOIN video_analyses va
+             ON va.asset_id = a.id AND a.agent_access_enabled = 1
+          WHERE ${rangeWhere}
+            AND ((${transcriptWhere}) OR va.asset_id IS NOT NULL)
+       ), segment_totals AS (
+         SELECT COUNT(*) AS row_count, COALESCE(SUM(length(segment.caption)), 0) AS character_count
+           FROM video_analysis_segments segment
+           JOIN source_assets source
+             ON source.id = segment.analysis_asset_id AND source.visual_summary IS NOT NULL
+       )
+       SELECT COUNT(*) AS source_count,
+              COALESCE(SUM(CASE WHEN transcript IS NOT NULL THEN 1 ELSE 0 END), 0) AS source_transcript_count,
+              COALESCE(SUM(CASE WHEN visual_summary IS NOT NULL THEN 1 ELSE 0 END), 0) AS source_visual_analysis_count,
+              COUNT(*) + (SELECT row_count FROM segment_totals) AS source_rows,
+              COALESCE(SUM(length(COALESCE(transcript, '')) + length(COALESCE(visual_summary, ''))), 0)
+                + (SELECT character_count FROM segment_totals) AS source_characters
+         FROM source_assets`,
+    ).bind(auth.userId, startIso, endIso).first<DailySummaryBoundsRow>();
+    const sourceCount = Number(bounds?.source_count ?? 0);
+    const sourceRows = Number(bounds?.source_rows ?? 0);
+    const sourceCharacters = Number(bounds?.source_characters ?? 0);
+    if (
+      sourceCount > MAX_DAILY_SUMMARY_SOURCES
+      || sourceRows > MAX_DAILY_SUMMARY_SOURCE_ROWS
+      || sourceCharacters > MAX_DAILY_SUMMARY_SOURCE_CHARACTERS
+    ) {
       return errorResponse(context, 413, "daily_summary_too_large", "This day is too large to summarize.");
     }
 
-    const setPrivateHeaders = () => {
-      context.header("Cache-Control", "private, no-store");
-      context.header("Pragma", "no-cache");
-      context.header("Vary", "Authorization");
-    };
-    if (transcriptCount === 0) {
+    if (sourceCount === 0) {
       await context.env.DB.prepare(
         "DELETE FROM daily_summaries WHERE user_id = ? AND start_at = ? AND end_at = ?",
       ).bind(auth.userId, startIso, endIso).run();
-      setPrivateHeaders();
       return context.json({
         startAt: startIso,
         endAt: endIso,
         summary: null,
         model: null,
         sourceTranscriptCount: 0,
+        sourceVisualAnalysisCount: 0,
         generatedAt: null,
       });
     }
 
-    const rows = await context.env.DB.prepare(
-      `SELECT id, captured_at, transcript, transcription_updated_at
-         FROM assets WHERE ${rangeWhere}
-        ORDER BY julianday(captured_at) ASC, id ASC LIMIT ?`,
-    ).bind(auth.userId, startIso, endIso, MAX_DAILY_SUMMARY_TRANSCRIPTS).all<DailySummaryTranscriptRow>();
-    const transcripts: DailyTranscriptSource[] = rows.results.map((row) => ({
+    const [memoryRows, visualSegments] = await Promise.all([
+      context.env.DB.prepare(
+        `SELECT a.id, a.captured_at,
+                CASE WHEN ${transcriptWhere} THEN a.transcript ELSE NULL END AS transcript,
+                CASE WHEN ${transcriptWhere} THEN a.transcription_updated_at ELSE NULL END AS transcription_updated_at,
+                va.summary AS visual_summary, va.updated_at AS visual_updated_at,
+                va.model_id AS visual_model_id, va.model_revision AS visual_model_revision,
+                va.backend AS visual_backend, va.coverage_mode AS visual_coverage_mode
+           FROM assets a
+           LEFT JOIN video_analyses va
+             ON va.asset_id = a.id AND a.agent_access_enabled = 1
+          WHERE ${rangeWhere}
+            AND ((${transcriptWhere}) OR va.asset_id IS NOT NULL)
+          ORDER BY julianday(a.captured_at) ASC, a.id ASC
+          LIMIT ?`,
+      ).bind(auth.userId, startIso, endIso, MAX_DAILY_SUMMARY_SOURCES + 1).all<DailySummaryMemoryRow>(),
+      context.env.DB.prepare(
+        `SELECT segment.analysis_asset_id, segment.position,
+                segment.start_ms, segment.end_ms, segment.caption
+           FROM video_analysis_segments segment
+           JOIN assets a ON a.id = segment.analysis_asset_id
+          WHERE ${rangeWhere} AND a.agent_access_enabled = 1
+          ORDER BY segment.analysis_asset_id, segment.position
+          LIMIT ?`,
+      ).bind(auth.userId, startIso, endIso, MAX_DAILY_SUMMARY_SOURCE_ROWS + 1).all<DailySummaryVisualSegmentRow>(),
+    ]);
+    if (
+      memoryRows.results.length > MAX_DAILY_SUMMARY_SOURCES
+      || memoryRows.results.length + visualSegments.results.length > MAX_DAILY_SUMMARY_SOURCE_ROWS
+    ) {
+      return errorResponse(context, 413, "daily_summary_too_large", "This day is too large to summarize.");
+    }
+
+    const segmentsByAsset = new Map<string, DailySummaryVisualSegmentRow[]>();
+    for (const segment of visualSegments.results) {
+      const segments = segmentsByAsset.get(segment.analysis_asset_id) ?? [];
+      segments.push(segment);
+      segmentsByAsset.set(segment.analysis_asset_id, segments);
+    }
+
+    const sources: DailyMemorySource[] = memoryRows.results.map((row) => ({
       capturedAt: row.captured_at,
-      text: row.transcript,
+      transcript: row.transcript,
+      visualSummary: row.visual_summary,
+      visualSegments: (segmentsByAsset.get(row.id) ?? []).map((segment) => ({
+        startMs: segment.start_ms,
+        endMs: segment.end_ms,
+        caption: segment.caption,
+      })),
     }));
-    const transcriptDigest = await sha256Hex(JSON.stringify(rows.results.map((row) => [
-      row.id,
-      row.captured_at,
-      row.transcription_updated_at,
-      row.transcript,
-    ])));
+    const fetchedCharacters = sources.reduce((total, source) => total
+      + Array.from(source.transcript ?? "").length
+      + Array.from(source.visualSummary ?? "").length
+      + source.visualSegments.reduce((segmentTotal, segment) => segmentTotal + Array.from(segment.caption).length, 0), 0);
+    if (fetchedCharacters > MAX_DAILY_SUMMARY_SOURCE_CHARACTERS) {
+      return errorResponse(context, 413, "daily_summary_too_large", "This day is too large to summarize.");
+    }
+
+    const sourceTranscriptCount = memoryRows.results.filter((row) => row.transcript !== null).length;
+    const sourceVisualAnalysisCount = memoryRows.results.filter((row) => row.visual_summary !== null).length;
+    const digestSources = sourceVisualAnalysisCount === 0
+      ? memoryRows.results.map((row) => [
+        row.id,
+        row.captured_at,
+        row.transcription_updated_at,
+        row.transcript,
+      ])
+      : memoryRows.results.map((row) => [
+        row.id,
+        row.captured_at,
+        row.transcription_updated_at,
+        row.transcript,
+        row.visual_updated_at,
+        row.visual_model_id,
+        row.visual_model_revision,
+        row.visual_backend,
+        row.visual_coverage_mode,
+        row.visual_summary,
+        (segmentsByAsset.get(row.id) ?? []).map((segment) => [
+          segment.position,
+          segment.start_ms,
+          segment.end_ms,
+          segment.caption,
+        ]),
+      ]);
+    const sourceDigest = await sha256Hex(JSON.stringify(digestSources));
     const model = configuredDailySummaryModel(context.env);
     const cached = await context.env.DB.prepare(
-      `SELECT transcript_digest, source_transcript_count, summary, model, generated_at
+      `SELECT source_digest, source_transcript_count, source_visual_analysis_count,
+              summary, model, generated_at
          FROM daily_summaries
-        WHERE user_id = ? AND transcript_digest = ? AND model = ?
+        WHERE user_id = ? AND source_digest = ? AND model = ?
         ORDER BY generated_at DESC LIMIT 1`,
-    ).bind(auth.userId, transcriptDigest, model).first<DailySummaryCacheRow>();
-    if (cached?.transcript_digest === transcriptDigest && cached.model === model) {
-      setPrivateHeaders();
+    ).bind(auth.userId, sourceDigest, model).first<DailySummaryCacheRow>();
+    if (cached?.source_digest === sourceDigest && cached.model === model) {
       return context.json({
         startAt: startIso,
         endAt: endIso,
         summary: cached.summary,
         model: cached.model,
         sourceTranscriptCount: cached.source_transcript_count,
+        sourceVisualAnalysisCount: cached.source_visual_analysis_count,
         generatedAt: cached.generated_at,
       });
     }
 
     let generated: GeneratedDailySummary;
     try {
-      generated = await dependencies.generateDailySummary(context.env, transcripts);
+      generated = await dependencies.generateDailySummary(context.env, sources);
     } catch {
       console.error(JSON.stringify({ event: "daily_summary_generation_failed", model }));
       return errorResponse(context, 503, "summary_unavailable", "The daily summary is temporarily unavailable.");
@@ -1499,11 +1665,13 @@ export function createApp(overrides: Partial<AppDependencies> = {}) {
     const generatedAt = dependencies.now().toISOString();
     await context.env.DB.prepare(
       `INSERT INTO daily_summaries (
-        user_id, start_at, end_at, transcript_digest, source_transcript_count, summary, model, generated_at
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+        user_id, start_at, end_at, source_digest, source_transcript_count,
+        source_visual_analysis_count, summary, model, generated_at
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
       ON CONFLICT(user_id, start_at, end_at) DO UPDATE SET
-        transcript_digest = excluded.transcript_digest,
+        source_digest = excluded.source_digest,
         source_transcript_count = excluded.source_transcript_count,
+        source_visual_analysis_count = excluded.source_visual_analysis_count,
         summary = excluded.summary,
         model = excluded.model,
         generated_at = excluded.generated_at`,
@@ -1511,20 +1679,21 @@ export function createApp(overrides: Partial<AppDependencies> = {}) {
       auth.userId,
       startIso,
       endIso,
-      transcriptDigest,
-      transcripts.length,
+      sourceDigest,
+      sourceTranscriptCount,
+      sourceVisualAnalysisCount,
       summary,
       model,
       generatedAt,
     ).run();
 
-    setPrivateHeaders();
     return context.json({
       startAt: startIso,
       endAt: endIso,
       summary,
       model,
-      sourceTranscriptCount: transcripts.length,
+      sourceTranscriptCount,
+      sourceVisualAnalysisCount,
       generatedAt,
     });
   });
@@ -1604,6 +1773,175 @@ export function createApp(overrides: Partial<AppDependencies> = {}) {
       clipCount: clips.length,
       durationMs: offsetMs,
       clips,
+    });
+  });
+
+  api.get("/memories/search", async (context) => {
+    setPrivateResponseHeaders(context);
+    const parsed = memorySearchSchema.safeParse({
+      q: context.req.query("q"),
+      cursor: context.req.query("cursor"),
+      limit: context.req.query("limit"),
+    });
+    if (!parsed.success) {
+      return errorResponse(context, 400, "invalid_search", "Search query must be 1-200 characters and limit 1-50.");
+    }
+    const decodedCursor = decodeCursor(parsed.data.cursor);
+    if (parsed.data.cursor && !decodedCursor) {
+      return errorResponse(context, 400, "invalid_cursor", "The pagination cursor is invalid.");
+    }
+
+    const auth = context.get("auth");
+    const pattern = likePattern(parsed.data.q);
+    const clauses = [
+      "a.user_id = ?",
+      "a.kind = 'video'",
+      "a.status = 'ready'",
+      `(
+        a.filename LIKE ? ESCAPE '\\' COLLATE NOCASE
+        OR (a.transcription_status = 'completed' AND a.transcript LIKE ? ESCAPE '\\' COLLATE NOCASE)
+        OR va.summary LIKE ? ESCAPE '\\' COLLATE NOCASE
+        OR matched_segment.analysis_asset_id IS NOT NULL
+      )`,
+    ];
+    const values: unknown[] = [pattern, auth.userId, pattern, pattern, pattern];
+    if (decodedCursor) {
+      clauses.push("(a.captured_at < ? OR (a.captured_at = ? AND a.id < ?))");
+      values.push(decodedCursor[0], decodedCursor[0], decodedCursor[1]);
+    }
+    values.push(parsed.data.limit + 1);
+
+    const result = await context.env.DB.prepare(
+      `SELECT a.id, a.user_id, a.kind, a.filename, a.content_type, a.byte_size, a.captured_at,
+              a.latitude, a.longitude, a.duration_ms, a.width, a.height, a.status,
+              a.object_key, a.thumbnail_key, a.upload_mode, a.upload_id, a.part_size,
+              a.created_at, a.updated_at, a.transcription_status, a.soniox_file_id,
+              a.soniox_transcription_id, a.transcript, a.transcript_language,
+              a.transcript_error, a.transcription_updated_at, a.agent_access_enabled,
+              ${ownerVideoAnalysisStatusSql("a")}, va.summary AS visual_summary,
+              matched_segment.position AS matched_segment_position,
+              matched_segment.start_ms AS matched_segment_start_ms,
+              matched_segment.end_ms AS matched_segment_end_ms,
+              matched_segment.caption AS matched_segment_caption
+         FROM assets a
+         LEFT JOIN video_analyses va
+           ON va.asset_id = a.id AND a.agent_access_enabled = 1
+         LEFT JOIN video_analysis_segments matched_segment
+           ON matched_segment.analysis_asset_id = a.id
+          AND va.asset_id IS NOT NULL
+          AND matched_segment.position = (
+            SELECT MIN(segment.position)
+              FROM video_analysis_segments segment
+             WHERE segment.analysis_asset_id = a.id
+               AND segment.caption LIKE ? ESCAPE '\\' COLLATE NOCASE
+          )
+        WHERE ${clauses.join(" AND ")}
+        ORDER BY a.captured_at DESC, a.id DESC
+        LIMIT ?`,
+    ).bind(...values).all<MemorySearchRow>();
+
+    const rows = result.results.slice(0, parsed.data.limit);
+    const items = rows.map((row) => {
+      const match = row.matched_segment_caption
+        ? {
+          kind: "visual",
+          text: row.matched_segment_caption,
+          startMs: row.matched_segment_start_ms,
+          endMs: row.matched_segment_end_ms,
+        }
+        : row.visual_summary?.toLocaleLowerCase().includes(parsed.data.q.toLocaleLowerCase())
+        ? {
+          kind: "visual",
+          text: searchExcerpt(row.visual_summary, parsed.data.q),
+          startMs: null,
+          endMs: null,
+        }
+        : row.transcription_status === "completed"
+          && row.transcript
+          && row.transcript.toLocaleLowerCase().includes(parsed.data.q.toLocaleLowerCase())
+        ? {
+          kind: "transcript",
+          text: searchExcerpt(row.transcript, parsed.data.q),
+          startMs: null,
+          endMs: null,
+        }
+        : {
+          kind: "filename",
+          text: row.filename,
+          startMs: null,
+          endMs: null,
+        };
+      return {
+        asset: assetJson(row),
+        match,
+        visualSummary: row.visual_summary,
+      };
+    });
+    const last = rows.at(-1);
+    return context.json({
+      items,
+      nextCursor: result.results.length > parsed.data.limit && last ? encodeCursor(last) : null,
+    });
+  });
+
+  api.get("/assets/:assetId/analysis", async (context) => {
+    setPrivateResponseHeaders(context);
+    const auth = context.get("auth");
+    const asset = await findOwnedAsset(context.env, context.req.param("assetId"), auth.userId);
+    if (!asset || asset.kind !== "video" || asset.status !== "ready") {
+      return errorResponse(context, 404, "asset_not_found", "Asset was not found.");
+    }
+
+    const requestedStatus = asset.video_analysis_status ?? "unavailable";
+    const [analysis, coverage, segments] = requestedStatus === "completed"
+      ? await Promise.all([
+        context.env.DB.prepare(
+          `SELECT va.model_id, va.model_revision, va.backend, va.coverage_mode,
+                  va.summary, va.updated_at
+             FROM video_analyses va
+             JOIN assets a ON a.id = va.asset_id
+            WHERE va.asset_id = ? AND a.user_id = ? AND a.kind = 'video'
+              AND a.status = 'ready' AND a.agent_access_enabled = 1`,
+        ).bind(asset.id, auth.userId).first<VideoAnalysisRow>(),
+        context.env.DB.prepare(
+          `SELECT range_item.position, range_item.start_ms, range_item.end_ms
+             FROM video_analysis_ranges range_item
+             JOIN assets a ON a.id = range_item.analysis_asset_id
+            WHERE range_item.analysis_asset_id = ? AND a.user_id = ?
+              AND a.kind = 'video' AND a.status = 'ready' AND a.agent_access_enabled = 1
+            ORDER BY range_item.position`,
+        ).bind(asset.id, auth.userId).all<VideoAnalysisRangeRow>(),
+        context.env.DB.prepare(
+          `SELECT segment.position, segment.start_ms, segment.end_ms, segment.caption
+             FROM video_analysis_segments segment
+             JOIN assets a ON a.id = segment.analysis_asset_id
+            WHERE segment.analysis_asset_id = ? AND a.user_id = ?
+              AND a.kind = 'video' AND a.status = 'ready' AND a.agent_access_enabled = 1
+            ORDER BY segment.position`,
+        ).bind(asset.id, auth.userId).all<VideoAnalysisSegmentRow>(),
+      ])
+      : [null, { results: [] as VideoAnalysisRangeRow[] }, { results: [] as VideoAnalysisSegmentRow[] }];
+    const status = analysis ? "completed" : requestedStatus === "completed" ? "unavailable" : requestedStatus;
+    return context.json({
+      assetId: asset.id,
+      status,
+      summary: analysis?.summary ?? null,
+      modelId: analysis?.model_id ?? null,
+      modelRevision: analysis?.model_revision ?? null,
+      backend: analysis?.backend ?? null,
+      coverageMode: analysis?.coverage_mode ?? null,
+      coverage: coverage.results.map((range) => ({
+        position: range.position,
+        startMs: range.start_ms,
+        endMs: range.end_ms,
+      })),
+      segments: segments.results.map((segment) => ({
+        position: segment.position,
+        startMs: segment.start_ms,
+        endMs: segment.end_ms,
+        caption: segment.caption,
+      })),
+      updatedAt: analysis?.updated_at ?? null,
     });
   });
 

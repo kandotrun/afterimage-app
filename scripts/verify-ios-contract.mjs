@@ -17,6 +17,14 @@ const weatherTemperatureFormatter = read(
 );
 const timeline = read("ios/Sources/Features/Timeline/TimelineView.swift");
 const appModel = read("ios/Sources/App/AppModel.swift");
+const memoryDetail = read("ios/Sources/Features/Memory/MemoryDetailView.swift");
+const memorySearch = (() => {
+  try {
+    return read("ios/Sources/Features/Search/MemorySearchView.swift");
+  } catch {
+    return "";
+  }
+})();
 const apiClient = read("ios/Sources/Networking/APIClient.swift");
 const apiModels = read("ios/Sources/Models/APIModels.swift");
 const mediaImporter = read("ios/Sources/Import/MediaImporter.swift");
@@ -104,7 +112,42 @@ assert.doesNotMatch(
   "raw transcript quotes must not be rendered in the timeline",
 );
 assert.match(apiModels, /struct DailySummaryResponse:\s*Codable,\s*Equatable,\s*Sendable/);
+assert.match(apiModels, /let sourceVisualAnalysisCount:\s*Int/);
 assert.match(apiClient, /components\.path\s*=\s*"\/v1\/days\/summary"/);
+for (const symbol of [
+  "struct MemorySearchPage: Codable, Equatable, Sendable",
+  "struct MemorySearchResult: Codable, Identifiable, Hashable, Sendable",
+  "struct MemorySearchView: View",
+  "MemorySearchPolicy.query",
+]) {
+  assert.ok(swift.includes(symbol), `missing Mage iOS contract symbol: ${symbol}`);
+}
+assert.match(apiClient, /components\.path\s*=\s*"\/v1\/memories\/search"/);
+assert.match(timeline, /Button\s*\{\s*isShowingMemorySearch\s*=\s*true[\s\S]*?Image\(systemName:\s*"magnifyingglass"\)/);
+assert.match(timeline, /\.sheet\(isPresented:\s*\$isShowingMemorySearch\)\s*\{\s*MemorySearchView\(\)\s*\}/);
+assert.match(memorySearch, /Task\.sleep\(for:\s*\.milliseconds\(300\)\)/);
+assert.match(memorySearch, /searchTask\?\.cancel\(\)/);
+assert.match(memorySearch, /paginationTask\?\.cancel\(\)/);
+assert.match(memorySearch, /result\.match\.kind/);
+assert.match(memorySearch, /result\.match\.text/);
+assert.match(memorySearch, /result\.match\.startMs/);
+assert.match(memorySearch, /result\.visualSummary/);
+assert.match(memorySearch, /nextCursor\s*=\s*page\.nextCursor/);
+assert.match(memorySearch, /MemoryDetailView\([\s\S]*?asset:\s*result\.asset,[\s\S]*?standalone:\s*true,[\s\S]*?initialSeekMs:\s*result\.match\.startMs/);
+assert.match(memoryDetail, /MemoryPagerPolicy\.assets\([\s\S]*?standalone:\s*standalone/);
+for (const symbol of [
+  "struct VideoAnalysisResponse: Codable, Equatable, Sendable",
+  "struct VideoAnalysisSheet: View",
+  "VideoAnalysisPollingPolicy.shouldPoll",
+  "MemorySeekPolicy.seconds",
+]) {
+  assert.ok(swift.includes(symbol), `missing Mage iOS contract symbol: ${symbol}`);
+}
+assert.match(apiClient, /"\/v1\/assets\/\\\(assetID\)\/analysis"/);
+assert.match(swift, /Task\.sleep\(for:\s*\.seconds\([5-9]\)\)/);
+assert.match(swift, /controller\.scrubBegan\(\)[\s\S]*?controller\.scrub\(to:\s*seconds\)[\s\S]*?controller\.scrubEnded\(\)/);
+assert.match(swift, /@Binding var requestedSeek: MemorySeekRequest\?/);
+assert.match(swift, /MemorySeekRequest\(assetID:\s*currentAsset\.id,\s*startMs:\s*startMs\)/);
 assert.match(
   timeline,
   /\.photosPicker\([\s\S]*?isPresented:\s*\$isShowingLibrary[\s\S]*?photoLibrary:\s*\.shared\(\)[\s\S]*?\)/,
