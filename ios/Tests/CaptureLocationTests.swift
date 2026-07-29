@@ -33,14 +33,72 @@ final class CaptureLocationTests: XCTestCase {
         XCTAssertNil(MediaEmbeddedCaptureLocation.parseISO6709("+34.3853+181.0000/"))
     }
 
-    func testFormatsCoordinatesAndBuildsAppleMapsURL() throws {
+    func testBuildsAppleMapsURL() throws {
         let location = CaptureLocation(latitude: 34.3853, longitude: 132.4553)
 
-        XCTAssertEqual(location.coordinateLabel, "34.38530, 132.45530")
         let url = try XCTUnwrap(location.appleMapsURL)
         let components = try XCTUnwrap(URLComponents(url: url, resolvingAgainstBaseURL: false))
         XCTAssertEqual(components.scheme, "https")
         XCTAssertEqual(components.host, "maps.apple.com")
         XCTAssertEqual(components.queryItems?.first(where: { $0.name == "ll" })?.value, "34.385300,132.455300")
+    }
+
+    func testReadablePlaceNamePrefersShortAddress() {
+        XCTAssertEqual(
+            CapturePlaceNameFormatter.label(
+                shortAddress: "広島市西区楠木町4丁目",
+                cityWithContext: "広島市, 日本",
+                fullAddress: "日本、〒733-0002 広島県広島市西区楠木町4丁目",
+                pointOfInterestName: "楠木町"
+            ),
+            "広島市西区楠木町4丁目"
+        )
+    }
+
+    func testReadablePlaceNameFallsBackToContextualCity() {
+        XCTAssertEqual(
+            CapturePlaceNameFormatter.label(
+                shortAddress: "   ",
+                cityWithContext: "広島市, 日本",
+                fullAddress: nil,
+                pointOfInterestName: nil
+            ),
+            "広島市, 日本"
+        )
+    }
+
+    func testReadablePlaceNameNormalizesMultilineFullAddress() {
+        XCTAssertEqual(
+            CapturePlaceNameFormatter.label(
+                shortAddress: nil,
+                cityWithContext: nil,
+                fullAddress: "1 Infinite Loop\nCupertino, CA",
+                pointOfInterestName: nil
+            ),
+            "1 Infinite Loop, Cupertino, CA"
+        )
+    }
+
+    func testReadablePlaceNameFallsBackToPointOfInterest() {
+        XCTAssertEqual(
+            CapturePlaceNameFormatter.label(
+                shortAddress: nil,
+                cityWithContext: nil,
+                fullAddress: nil,
+                pointOfInterestName: "横川駅"
+            ),
+            "横川駅"
+        )
+    }
+
+    func testReadablePlaceNameRejectsBlankValues() {
+        XCTAssertNil(
+            CapturePlaceNameFormatter.label(
+                shortAddress: " ",
+                cityWithContext: "\n",
+                fullAddress: nil,
+                pointOfInterestName: ""
+            )
+        )
     }
 }

@@ -25,6 +25,7 @@ const memorySearch = (() => {
     return "";
   }
 })();
+const captureLocationChip = read("ios/Sources/Features/Memory/CaptureLocationChip.swift");
 const apiClient = read("ios/Sources/Networking/APIClient.swift");
 const apiModels = read("ios/Sources/Models/APIModels.swift");
 const mediaImporter = read("ios/Sources/Import/MediaImporter.swift");
@@ -90,6 +91,20 @@ assert.doesNotMatch(
   swift,
   /opensMaps:\s*false/,
   "every displayed capture location must link to Apple Maps",
+);
+assert.ok(
+  swift.includes("MKReverseGeocodingRequest"),
+  "capture locations must resolve to a user-readable place name",
+);
+assert.doesNotMatch(
+  captureLocationChip,
+  /coordinateLabel/,
+  "capture location chips must not expose raw coordinates",
+);
+assert.match(
+  captureLocationChip,
+  /L10n\.string\("capture\.location\.open_maps"\)/,
+  "capture location chips must keep a readable Maps fallback while geocoding",
 );
 assert.match(
   dayStorySection,

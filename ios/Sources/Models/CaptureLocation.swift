@@ -4,15 +4,6 @@ struct CaptureLocation: Codable, Hashable, Sendable {
     let latitude: Double
     let longitude: Double
 
-    var coordinateLabel: String {
-        String(
-            format: "%.5f, %.5f",
-            locale: Locale(identifier: "en_US_POSIX"),
-            latitude,
-            longitude
-        )
-    }
-
     var appleMapsURL: URL? {
         var components = URLComponents()
         components.scheme = "https"
