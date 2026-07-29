@@ -93,13 +93,13 @@ assert.match(apiModels, /struct DailySummaryResponse:\s*Codable,\s*Equatable,\s*
 assert.match(apiClient, /components\.path\s*=\s*"\/v1\/days\/summary"/);
 assert.match(
   timeline,
-  /PhotosPicker\([\s\S]*?photoLibrary:\s*\.shared\(\)[\s\S]*?\)\s*\{/,
-  "media picker must provide stable photo library item identifiers",
+  /\.photosPicker\([\s\S]*?isPresented:\s*\$isShowingLibrary[\s\S]*?photoLibrary:\s*\.shared\(\)[\s\S]*?\)/,
+  "media picker must be presented outside the menu and provide stable photo library item identifiers",
 );
 assert.match(
   timeline,
-  /Menu\s*\{[\s\S]*?PhotosPicker\([\s\S]*?photoLibrary:\s*\.shared\(\)[\s\S]*?\}\s*\}\s*label:\s*\{\s*Image\(systemName:\s*"plus"\)[\s\S]*?\}\s*\.buttonStyle\(\.glassProminent\)\s*\.buttonBorderShape\(\.circle\)/,
-  "upload source menu must be an icon-only circular prominent glass button",
+  /Menu\s*\{[\s\S]*?Button\([\s\S]*?camera\.source\.record[\s\S]*?Button\([\s\S]*?camera\.source\.library[\s\S]*?isShowingLibrary\s*=\s*true[\s\S]*?\}\s*label:\s*\{\s*Image\(systemName:\s*"plus"\)[\s\S]*?\}\s*\.buttonStyle\(\.glassProminent\)\s*\.buttonBorderShape\(\.circle\)/,
+  "upload source menu must trigger the external picker from an icon-only circular prominent glass button",
 );
 assert.doesNotMatch(
   mediaImporter,
