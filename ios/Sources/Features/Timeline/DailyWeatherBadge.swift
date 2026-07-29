@@ -59,8 +59,7 @@ struct DailyWeatherBadge: View {
     }
 
     private func temperature(_ celsius: Double) -> String {
-        Measurement(value: celsius, unit: UnitTemperature.celsius)
-            .formatted(.measurement(width: .abbreviated, usage: .weather))
+        DailyWeatherTemperatureFormatter.string(celsius: celsius)
     }
 }
 
