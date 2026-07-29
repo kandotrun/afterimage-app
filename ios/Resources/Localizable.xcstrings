@@ -4,6 +4,29 @@
     "accessibility.upload_preview": {"localizations":{"ja":{"stringUnit":{"state":"translated","value":"アップロード中の動画プレビュー（音声なし）"}},"en":{"stringUnit":{"state":"translated","value":"Silent preview of the video being uploaded"}},"zh-Hans":{"stringUnit":{"state":"translated","value":"正在上传的视频静音预览"}},"ko":{"stringUnit":{"state":"translated","value":"업로드 중인 동영상 무음 미리보기"}}}},
     "upload.action.cancel": {"localizations":{"ja":{"stringUnit":{"state":"translated","value":"アップロードをキャンセル"}},"en":{"stringUnit":{"state":"translated","value":"Cancel upload"}},"zh-Hans":{"stringUnit":{"state":"translated","value":"取消上传"}},"ko":{"stringUnit":{"state":"translated","value":"업로드 취소"}}}},
     "upload.status.saving": {"localizations":{"ja":{"stringUnit":{"state":"translated","value":"あなたの afterimageへ保存しています"}},"en":{"stringUnit":{"state":"translated","value":"Saving to your afterimage"}},"zh-Hans":{"stringUnit":{"state":"translated","value":"正在保存到你的 afterimage"}},"ko":{"stringUnit":{"state":"translated","value":"내 afterimage에 저장하는 중"}}}},
+    "timeline.one_year_ago": {"localizations":{"ja":{"stringUnit":{"state":"translated","value":"1年前のきょう"}},"en":{"stringUnit":{"state":"translated","value":"One year ago today"}},"zh-Hans":{"stringUnit":{"state":"translated","value":"一年前的今天"}},"ko":{"stringUnit":{"state":"translated","value":"1년 전 오늘"}}}},
+    "timeline.today_empty_hint": {"localizations":{"ja":{"stringUnit":{"state":"translated","value":"今日の残像は、これから。"}},"en":{"stringUnit":{"state":"translated","value":"Today's afterimage is still to come."}},"zh-Hans":{"stringUnit":{"state":"translated","value":"今天的残像，还在路上。"}},"ko":{"stringUnit":{"state":"translated","value":"오늘의 잔상은 이제부터."}}}},
+    "daily.playback.ended_title": {"localizations":{"ja":{"stringUnit":{"state":"translated","value":"この日は、ここまで。"}},"en":{"stringUnit":{"state":"translated","value":"That was this day."}},"zh-Hans":{"stringUnit":{"state":"translated","value":"这一天，到这里。"}},"ko":{"stringUnit":{"state":"translated","value":"이 날은 여기까지."}}}},
+    "upload.finished_moment": {"localizations":{"ja":{"stringUnit":{"state":"translated","value":"今日の残像を受け取りました"}},"en":{"stringUnit":{"state":"translated","value":"Today's afterimage is saved"}},"zh-Hans":{"stringUnit":{"state":"translated","value":"已收下今天的残像"}},"ko":{"stringUnit":{"state":"translated","value":"오늘의 잔상을 간직했습니다"}}}},
+    "notification.invite.title": {"localizations":{"ja":{"stringUnit":{"state":"translated","value":"おやすみ前のお知らせ"}},"en":{"stringUnit":{"state":"translated","value":"A gentle nightly nudge"}},"zh-Hans":{"stringUnit":{"state":"translated","value":"睡前的小提醒"}},"ko":{"stringUnit":{"state":"translated","value":"잠들기 전 알림"}}}},
+    "notification.invite.body": {"localizations":{"ja":{"stringUnit":{"state":"translated","value":"夜10時ごろ、今日をひと言残すお誘いを届けます。通知はいつでもオフにできます。"}},"en":{"stringUnit":{"state":"translated","value":"Around 10 p.m., we'll invite you to keep one moment from the day. You can turn this off anytime."}},"zh-Hans":{"stringUnit":{"state":"translated","value":"晚上10点左右，我们会邀请你留下今天的一个瞬间。随时可以关闭。"}},"ko":{"stringUnit":{"state":"translated","value":"밤 10시쯤, 오늘의 한 장면을 남기도록 초대해 드립니다. 언제든지 끌 수 있습니다."}}}},
+    "notification.invite.accept": {"localizations":{"ja":{"stringUnit":{"state":"translated","value":"通知を受け取る"}},"en":{"stringUnit":{"state":"translated","value":"Turn On Reminders"}},"zh-Hans":{"stringUnit":{"state":"translated","value":"接收通知"}},"ko":{"stringUnit":{"state":"translated","value":"알림 받기"}}}},
+    "notification.invite.decline": {"localizations":{"ja":{"stringUnit":{"state":"translated","value":"今はしない"}},"en":{"stringUnit":{"state":"translated","value":"Not Now"}},"zh-Hans":{"stringUnit":{"state":"translated","value":"暂不需要"}},"ko":{"stringUnit":{"state":"translated","value":"나중에"}}}},
+    "weather.attribution.fallback": {"localizations":{"ja":{"stringUnit":{"state":"translated","value":" Weather"}},"en":{"stringUnit":{"state":"translated","value":" Weather"}},"zh-Hans":{"stringUnit":{"state":"translated","value":" Weather"}},"ko":{"stringUnit":{"state":"translated","value":" Weather"}}}},
+    "weather.summary.accessibility_with_condition": {"localizations":{"ja":{"stringUnit":{"state":"translated","value":"天気、%1$@、現在%2$@、最高%3$@、最低%4$@"}},"en":{"stringUnit":{"state":"translated","value":"Weather, %1$@, now %2$@, high %3$@, low %4$@"}},"zh-Hans":{"stringUnit":{"state":"translated","value":"天气，%1$@，当前%2$@，最高%3$@，最低%4$@"}},"ko":{"stringUnit":{"state":"translated","value":"날씨, %1$@, 현재 %2$@, 최고 %3$@, 최저 %4$@"}}}},
+    "weather.condition.clear": {"localizations":{"ja":{"stringUnit":{"state":"translated","value":"晴れ"}},"en":{"stringUnit":{"state":"translated","value":"Clear"}},"zh-Hans":{"stringUnit":{"state":"translated","value":"晴"}},"ko":{"stringUnit":{"state":"translated","value":"맑음"}}}},
+    "weather.condition.cloudy": {"localizations":{"ja":{"stringUnit":{"state":"translated","value":"くもり"}},"en":{"stringUnit":{"state":"translated","value":"Cloudy"}},"zh-Hans":{"stringUnit":{"state":"translated","value":"多云"}},"ko":{"stringUnit":{"state":"translated","value":"흐림"}}}},
+    "weather.condition.rain": {"localizations":{"ja":{"stringUnit":{"state":"translated","value":"雨"}},"en":{"stringUnit":{"state":"translated","value":"Rain"}},"zh-Hans":{"stringUnit":{"state":"translated","value":"雨"}},"ko":{"stringUnit":{"state":"translated","value":"비"}}}},
+    "weather.condition.snow": {"localizations":{"ja":{"stringUnit":{"state":"translated","value":"雪"}},"en":{"stringUnit":{"state":"translated","value":"Snow"}},"zh-Hans":{"stringUnit":{"state":"translated","value":"雪"}},"ko":{"stringUnit":{"state":"translated","value":"눈"}}}},
+    "weather.condition.storm": {"localizations":{"ja":{"stringUnit":{"state":"translated","value":"雷雨"}},"en":{"stringUnit":{"state":"translated","value":"Storm"}},"zh-Hans":{"stringUnit":{"state":"translated","value":"雷雨"}},"ko":{"stringUnit":{"state":"translated","value":"뇌우"}}}},
+    "weather.condition.fog": {"localizations":{"ja":{"stringUnit":{"state":"translated","value":"霧"}},"en":{"stringUnit":{"state":"translated","value":"Fog"}},"zh-Hans":{"stringUnit":{"state":"translated","value":"雾"}},"ko":{"stringUnit":{"state":"translated","value":"안개"}}}},
+    "weather.condition.wind": {"localizations":{"ja":{"stringUnit":{"state":"translated","value":"強風"}},"en":{"stringUnit":{"state":"translated","value":"Windy"}},"zh-Hans":{"stringUnit":{"state":"translated","value":"大风"}},"ko":{"stringUnit":{"state":"translated","value":"강풍"}}}},
+    "playback.scrub": {"localizations":{"ja":{"stringUnit":{"state":"translated","value":"再生位置"}},"en":{"stringUnit":{"state":"translated","value":"Playback position"}},"zh-Hans":{"stringUnit":{"state":"translated","value":"播放位置"}},"ko":{"stringUnit":{"state":"translated","value":"재생 위치"}}}},
+    "playback.position_accessibility": {"localizations":{"ja":{"stringUnit":{"state":"translated","value":"%1$@ / %2$@"}},"en":{"stringUnit":{"state":"translated","value":"%1$@ of %2$@"}},"zh-Hans":{"stringUnit":{"state":"translated","value":"%1$@ / %2$@"}},"ko":{"stringUnit":{"state":"translated","value":"%1$@ / %2$@"}}}},
+    "camera.accessibility.recording_duration": {"localizations":{"ja":{"stringUnit":{"state":"translated","value":"録画時間 %@"}},"en":{"stringUnit":{"state":"translated","value":"Recording time %@"}},"zh-Hans":{"stringUnit":{"state":"translated","value":"录制时长 %@"}},"ko":{"stringUnit":{"state":"translated","value":"녹화 시간 %@"}}}},
+    "この残像を削除しますか？": {"localizations":{"ja":{"stringUnit":{"state":"translated","value":"この残像を削除しますか？"}},"en":{"stringUnit":{"state":"translated","value":"Delete this afterimage?"}},"zh-Hans":{"stringUnit":{"state":"translated","value":"要删除这条残像吗？"}},"ko":{"stringUnit":{"state":"translated","value":"이 잔상을 삭제할까요?"}}}},
+    "サーバーに保存された写真・動画も完全に削除され、元に戻せません。": {"localizations":{"ja":{"stringUnit":{"state":"translated","value":"サーバーに保存された写真・動画も完全に削除され、元に戻せません。"}},"en":{"stringUnit":{"state":"translated","value":"It will also be permanently deleted from the server. This cannot be undone."}},"zh-Hans":{"stringUnit":{"state":"translated","value":"服务器上保存的照片和视频也会被永久删除，且无法恢复。"}},"ko":{"stringUnit":{"state":"translated","value":"서버에 저장된 사진과 동영상도 완전히 삭제되며 되돌릴 수 없습니다."}}}},
+    "最初の残像を残そう": {"localizations":{"ja":{"stringUnit":{"state":"translated","value":"最初の残像を残そう"}},"en":{"stringUnit":{"state":"translated","value":"Leave your first afterimage"}},"zh-Hans":{"stringUnit":{"state":"translated","value":"留下你的第一道残像"}},"ko":{"stringUnit":{"state":"translated","value":"첫 잔상을 남겨보세요"}}}},
     "timeline.refresh_failed": {"localizations":{"ja":{"stringUnit":{"state":"translated","value":"更新できませんでした。あとでもう一度お試しください。"}},"en":{"stringUnit":{"state":"translated","value":"Couldn't refresh. Please try again in a moment."}},"zh-Hans":{"stringUnit":{"state":"translated","value":"无法刷新。请稍后再试。"}},"ko":{"stringUnit":{"state":"translated","value":"새로고침하지 못했습니다. 잠시 후 다시 시도해 주세요."}}}},
     "timeline.pagination_failed": {"localizations":{"ja":{"stringUnit":{"state":"translated","value":"続きを読み込めませんでした"}},"en":{"stringUnit":{"state":"translated","value":"Couldn't load more days"}},"zh-Hans":{"stringUnit":{"state":"translated","value":"无法加载更多内容"}},"ko":{"stringUnit":{"state":"translated","value":"이어지는 기록을 불러오지 못했습니다"}}}},
     "timeline.load_failed_title": {"localizations":{"ja":{"stringUnit":{"state":"translated","value":"思い出を読み込めませんでした"}},"en":{"stringUnit":{"state":"translated","value":"Couldn't load your memories"}},"zh-Hans":{"stringUnit":{"state":"translated","value":"无法加载你的记忆"}},"ko":{"stringUnit":{"state":"translated","value":"기억을 불러오지 못했습니다"}}}},
@@ -13,9 +36,9 @@
     "upload.resume": {"localizations":{"ja":{"stringUnit":{"state":"translated","value":"アップロードを再開"}},"en":{"stringUnit":{"state":"translated","value":"Resume Upload"}},"zh-Hans":{"stringUnit":{"state":"translated","value":"继续上传"}},"ko":{"stringUnit":{"state":"translated","value":"업로드 재개"}}}},
     "upload.discard": {"localizations":{"ja":{"stringUnit":{"state":"translated","value":"アップロードを破棄"}},"en":{"stringUnit":{"state":"translated","value":"Discard Upload"}},"zh-Hans":{"stringUnit":{"state":"translated","value":"放弃上传"}},"ko":{"stringUnit":{"state":"translated","value":"업로드 삭제"}}}},
     "upload.batch_failures": {"localizations":{"ja":{"stringUnit":{"state":"translated","value":"%lld件を保存できませんでした"}},"en":{"stringUnit":{"state":"translated","value":"%lld items couldn't be saved"}},"zh-Hans":{"stringUnit":{"state":"translated","value":"有%lld个项目未能保存"}},"ko":{"stringUnit":{"state":"translated","value":"%lld개 항목을 저장하지 못했습니다"}}}},
-    "transcript.pending_title": {"localizations":{"ja":{"stringUnit":{"state":"translated","value":"文字起こしを準備しています"}},"en":{"stringUnit":{"state":"translated","value":"Preparing the transcript"}},"zh-Hans":{"stringUnit":{"state":"translated","value":"正在准备文字记录"}},"ko":{"stringUnit":{"state":"translated","value":"받아쓰기를 준비하고 있습니다"}}}},
+    "transcript.pending_title": {"localizations":{"ja":{"stringUnit":{"state":"translated","value":"ことばを書き起こしています"}},"en":{"stringUnit":{"state":"translated","value":"Preparing the transcript"}},"zh-Hans":{"stringUnit":{"state":"translated","value":"正在准备文字记录"}},"ko":{"stringUnit":{"state":"translated","value":"받아쓰기를 준비하고 있습니다"}}}},
     "transcript.pending_detail": {"localizations":{"ja":{"stringUnit":{"state":"translated","value":"書き起こしができたら、ここに表示されます。"}},"en":{"stringUnit":{"state":"translated","value":"It will appear here once it's ready."}},"zh-Hans":{"stringUnit":{"state":"translated","value":"完成后会显示在这里。"}},"ko":{"stringUnit":{"state":"translated","value":"준비되면 여기에 표시됩니다."}}}},
-    "transcript.failed_title": {"localizations":{"ja":{"stringUnit":{"state":"translated","value":"文字起こしできませんでした"}},"en":{"stringUnit":{"state":"translated","value":"Couldn't transcribe this video"}},"zh-Hans":{"stringUnit":{"state":"translated","value":"无法完成文字记录"}},"ko":{"stringUnit":{"state":"translated","value":"받아쓰기에 실패했습니다"}}}},
+    "transcript.failed_title": {"localizations":{"ja":{"stringUnit":{"state":"translated","value":"ことばを残せませんでした"}},"en":{"stringUnit":{"state":"translated","value":"Couldn't transcribe this video"}},"zh-Hans":{"stringUnit":{"state":"translated","value":"无法完成文字记录"}},"ko":{"stringUnit":{"state":"translated","value":"받아쓰기에 실패했습니다"}}}},
     "サインアウトしますか？": {"localizations":{"ja":{"stringUnit":{"state":"translated","value":"サインアウトしますか？"}},"en":{"stringUnit":{"state":"translated","value":"Sign out?"}},"zh-Hans":{"stringUnit":{"state":"translated","value":"要退出登录吗？"}},"ko":{"stringUnit":{"state":"translated","value":"로그아웃할까요?"}}}},
     "記録はサーバーに残ります。サインインし直せば、いつでも戻れます。": {"localizations":{"ja":{"stringUnit":{"state":"translated","value":"記録はサーバーに残ります。サインインし直せば、いつでも戻れます。"}},"en":{"stringUnit":{"state":"translated","value":"Your records stay on the server. Sign back in anytime to return to them."}},"zh-Hans":{"stringUnit":{"state":"translated","value":"你的记录会保留在服务器上，重新登录即可随时回来。"}},"ko":{"stringUnit":{"state":"translated","value":"기록은 서버에 남아 있습니다. 다시 로그인하면 언제든 돌아올 수 있습니다."}}}},
     "アップロード中の動画は中断されます。記録済みの内容はサーバーに残ります。": {"localizations":{"ja":{"stringUnit":{"state":"translated","value":"アップロード中の動画は中断されます。記録済みの内容はサーバーに残ります。"}},"en":{"stringUnit":{"state":"translated","value":"The video currently uploading will be interrupted. Everything already saved stays on the server."}},"zh-Hans":{"stringUnit":{"state":"translated","value":"正在上传的视频将被中断。已保存的内容会保留在服务器上。"}},"ko":{"stringUnit":{"state":"translated","value":"업로드 중인 동영상은 중단됩니다. 이미 저장된 내용은 서버에 남아 있습니다."}}}},
@@ -31,7 +54,7 @@
     "camera.action.record": {"localizations":{"ja":{"stringUnit":{"state":"translated","value":"撮影開始"}},"en":{"stringUnit":{"state":"translated","value":"Record"}},"zh-Hans":{"stringUnit":{"state":"translated","value":"开始录制"}},"ko":{"stringUnit":{"state":"translated","value":"촬영 시작"}}}},
     "camera.action.record_without_audio": {"localizations":{"ja":{"stringUnit":{"state":"translated","value":"音声なしで撮影"}},"en":{"stringUnit":{"state":"translated","value":"Record Without Audio"}},"zh-Hans":{"stringUnit":{"state":"translated","value":"无声录制"}},"ko":{"stringUnit":{"state":"translated","value":"소리 없이 촬영"}}}},
     "camera.action.retake": {"localizations":{"ja":{"stringUnit":{"state":"translated","value":"撮り直す"}},"en":{"stringUnit":{"state":"translated","value":"Retake"}},"zh-Hans":{"stringUnit":{"state":"translated","value":"重新拍摄"}},"ko":{"stringUnit":{"state":"translated","value":"다시 촬영"}}}},
-    "camera.action.retry": {"localizations":{"ja":{"stringUnit":{"state":"translated","value":"再試行"}},"en":{"stringUnit":{"state":"translated","value":"Try Again"}},"zh-Hans":{"stringUnit":{"state":"translated","value":"重试"}},"ko":{"stringUnit":{"state":"translated","value":"다시 시도"}}}},
+    "camera.action.retry": {"localizations":{"ja":{"stringUnit":{"state":"translated","value":"もう一度"}},"en":{"stringUnit":{"state":"translated","value":"Try Again"}},"zh-Hans":{"stringUnit":{"state":"translated","value":"重试"}},"ko":{"stringUnit":{"state":"translated","value":"다시 시도"}}}},
     "camera.action.stop": {"localizations":{"ja":{"stringUnit":{"state":"translated","value":"撮影停止"}},"en":{"stringUnit":{"state":"translated","value":"Stop"}},"zh-Hans":{"stringUnit":{"state":"translated","value":"停止录制"}},"ko":{"stringUnit":{"state":"translated","value":"촬영 중지"}}}},
     "camera.action.switch_camera": {"localizations":{"ja":{"stringUnit":{"state":"translated","value":"カメラを切り替える"}},"en":{"stringUnit":{"state":"translated","value":"Switch Camera"}},"zh-Hans":{"stringUnit":{"state":"translated","value":"切换摄像头"}},"ko":{"stringUnit":{"state":"translated","value":"카메라 전환"}}}},
     "camera.action.use_video": {"localizations":{"ja":{"stringUnit":{"state":"translated","value":"この動画を使う"}},"en":{"stringUnit":{"state":"translated","value":"Use Video"}},"zh-Hans":{"stringUnit":{"state":"translated","value":"使用此视频"}},"ko":{"stringUnit":{"state":"translated","value":"이 동영상 사용"}}}},
@@ -347,34 +370,6 @@
         }
       }
     },
-    "R2上の写真・動画も完全に削除されます。": {
-      "localizations": {
-        "ja": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "R2上の写真・動画も完全に削除されます。"
-          }
-        },
-        "en": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Photos and videos stored in R2 will also be permanently deleted."
-          }
-        },
-        "zh-Hans": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "R2 中保存的照片和视频也会被永久删除。"
-          }
-        },
-        "ko": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "R2에 저장된 사진과 동영상도 완전히 삭제됩니다."
-          }
-        }
-      }
-    },
     "accessibility.disconnect_agent": {
       "localizations": {
         "ja": {
@@ -492,7 +487,7 @@
         "ja": {
           "stringUnit": {
             "state": "translated",
-            "value": "afterimageが見つかりませんでした。"
+            "value": "残像が見つかりませんでした。"
           }
         },
         "en": {
@@ -504,13 +499,13 @@
         "zh-Hans": {
           "stringUnit": {
             "state": "translated",
-            "value": "找不到这条 afterimage。"
+            "value": "找不到这条残像。"
           }
         },
         "ko": {
           "stringUnit": {
             "state": "translated",
-            "value": "이 afterimage를 찾을 수 없습니다."
+            "value": "이 잔상을 찾을 수 없습니다."
           }
         }
       }
@@ -2367,86 +2362,30 @@
     "memory.analysis.segments": {"localizations":{"ja":{"stringUnit":{"state":"translated","value":"タイムライン"}},"en":{"stringUnit":{"state":"translated","value":"Timeline"}},"zh-Hans":{"stringUnit":{"state":"translated","value":"时间线"}},"ko":{"stringUnit":{"state":"translated","value":"타임라인"}}}},
     "memory.analysis.completed_empty": {"localizations":{"ja":{"stringUnit":{"state":"translated","value":"映像の説明はありません。"}},"en":{"stringUnit":{"state":"translated","value":"No visual description is available."}},"zh-Hans":{"stringUnit":{"state":"translated","value":"暂无画面描述。"}},"ko":{"stringUnit":{"state":"translated","value":"영상 설명이 없습니다."}}}},
     "memory.analysis.seek_at": {"localizations":{"ja":{"stringUnit":{"state":"translated","value":"%@から再生"}},"en":{"stringUnit":{"state":"translated","value":"Play from %@"}},"zh-Hans":{"stringUnit":{"state":"translated","value":"从%@开始播放"}},"ko":{"stringUnit":{"state":"translated","value":"%@부터 재생"}}}},
-    "memory.kind.photo": {
-      "localizations": {
-        "ja": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "一枚の記憶"
-          }
-        },
-        "en": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "A photo memory"
-          }
-        },
-        "zh-Hans": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "一张照片的记忆"
-          }
-        },
-        "ko": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "한 장의 추억"
-          }
-        }
-      }
-    },
-    "memory.kind.video": {
-      "localizations": {
-        "ja": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "音のある記憶"
-          }
-        },
-        "en": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "A memory with sound"
-          }
-        },
-        "zh-Hans": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "一段有声音的记忆"
-          }
-        },
-        "ko": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "소리가 있는 추억"
-          }
-        }
-      }
-    },
     "notification.daily_post.body": {
       "localizations": {
         "ja": {
           "stringUnit": {
             "state": "translated",
-            "value": "まだ今日の投稿がありません。写真や動画を一つ残してみませんか？"
+            "value": "今日はまだ何も残していません。今日のワンシーンを動画で残してみませんか？"
           }
         },
         "en": {
           "stringUnit": {
             "state": "translated",
-            "value": "You haven’t posted today. Add a photo or video to remember it."
+            "value": "Nothing from today yet. Capture one moment on video before the day ends."
           }
         },
         "zh-Hans": {
           "stringUnit": {
             "state": "translated",
-            "value": "今天还没有发布内容。留下一张照片或一段视频吧。"
+            "value": "今天还没有留下任何记录。用视频记下今天的一个瞬间吧。"
           }
         },
         "ko": {
           "stringUnit": {
             "state": "translated",
-            "value": "오늘 아직 게시물이 없어요. 사진이나 동영상으로 기억을 남겨 보세요."
+            "value": "오늘은 아직 아무것도 남기지 않았어요. 오늘의 한 장면을 동영상으로 남겨 보실래요?"
           }
         }
       }
@@ -2736,25 +2675,25 @@
         "ja": {
           "stringUnit": {
             "state": "translated",
-            "value": "完了しました"
+            "value": "記憶として残りました"
           }
         },
         "en": {
           "stringUnit": {
             "state": "translated",
-            "value": "Upload complete"
+            "value": "Saved to your memories"
           }
         },
         "zh-Hans": {
           "stringUnit": {
             "state": "translated",
-            "value": "上传完成"
+            "value": "已留存为记忆"
           }
         },
         "ko": {
           "stringUnit": {
             "state": "translated",
-            "value": "업로드 완료"
+            "value": "기억으로 남았습니다"
           }
         }
       }
@@ -2866,7 +2805,7 @@
         "ko": {
           "stringUnit": {
             "state": "translated",
-            "value": "추억을 불러오는 중"
+            "value": "기억을 받아오는 중"
           }
         }
       }
@@ -2876,25 +2815,25 @@
         "ja": {
           "stringUnit": {
             "state": "translated",
-            "value": "アップロードを再試行します"
+            "value": "もう一度届けています"
           }
         },
         "en": {
           "stringUnit": {
             "state": "translated",
-            "value": "Retrying upload"
+            "value": "Sending it again"
           }
         },
         "zh-Hans": {
           "stringUnit": {
             "state": "translated",
-            "value": "正在重试上传"
+            "value": "正在再次送达"
           }
         },
         "ko": {
           "stringUnit": {
             "state": "translated",
-            "value": "업로드 재시도 중"
+            "value": "다시 전하는 중입니다"
           }
         }
       }
@@ -2904,7 +2843,7 @@
         "ja": {
           "stringUnit": {
             "state": "translated",
-            "value": "あなたのafterimageへ保存しています"
+            "value": "あなたの残像として保存しています"
           }
         },
         "en": {
@@ -2916,13 +2855,13 @@
         "zh-Hans": {
           "stringUnit": {
             "state": "translated",
-            "value": "正在保存到你的 afterimage"
+            "value": "正在保存为你的残像"
           }
         },
         "ko": {
           "stringUnit": {
             "state": "translated",
-            "value": "내 afterimage에 저장하는 중"
+            "value": "내 잔상으로 저장하는 중"
           }
         }
       }
@@ -2932,25 +2871,25 @@
         "ja": {
           "stringUnit": {
             "state": "translated",
-            "value": "再試行を待っています"
+            "value": "少し置いて、もう一度試します"
           }
         },
         "en": {
           "stringUnit": {
             "state": "translated",
-            "value": "Waiting to retry"
+            "value": "Trying again in a moment"
           }
         },
         "zh-Hans": {
           "stringUnit": {
             "state": "translated",
-            "value": "正在等待重试"
+            "value": "稍后会再试一次"
           }
         },
         "ko": {
           "stringUnit": {
             "state": "translated",
-            "value": "재시도 대기 중"
+            "value": "잠시 후 다시 시도합니다"
           }
         }
       }
@@ -3011,62 +2950,6 @@
         }
       }
     },
-    "ことばを残しています…": {
-      "localizations": {
-        "ja": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "ことばを残しています…"
-          }
-        },
-        "en": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Transcribing…"
-          }
-        },
-        "zh-Hans": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "正在转写…"
-          }
-        },
-        "ko": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "텍스트로 변환하는 중…"
-          }
-        }
-      }
-    },
-    "ことばを残せませんでした": {
-      "localizations": {
-        "ja": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "ことばを残せませんでした"
-          }
-        },
-        "en": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Couldn’t transcribe this memory"
-          }
-        },
-        "zh-Hans": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "无法转写这段记忆"
-          }
-        },
-        "ko": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "이 추억을 텍스트로 변환하지 못했습니다"
-          }
-        }
-      }
-    },
     "このAIとの接続を解除しますか？": {
       "localizations": {
         "ja": {
@@ -3091,34 +2974,6 @@
           "stringUnit": {
             "state": "translated",
             "value": "이 AI와의 연결을 해제할까요?"
-          }
-        }
-      }
-    },
-    "このafterimageを削除しますか？": {
-      "localizations": {
-        "ja": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "このafterimageを削除しますか？"
-          }
-        },
-        "en": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Delete this afterimage?"
-          }
-        },
-        "zh-Hans": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "要删除这条 afterimage 吗？"
-          }
-        },
-        "ko": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "이 afterimage를 삭제할까요?"
           }
         }
       }
@@ -3459,34 +3314,6 @@
         }
       }
     },
-    "再試行": {
-      "localizations": {
-        "ja": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "再試行"
-          }
-        },
-        "en": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Try Again"
-          }
-        },
-        "zh-Hans": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "重试"
-          }
-        },
-        "ko": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "다시 시도"
-          }
-        }
-      }
-    },
     "再読み込み": {
       "localizations": {
         "ja": {
@@ -3539,34 +3366,6 @@
           "stringUnit": {
             "state": "translated",
             "value": "사진과 동영상은 비공개로 저장되며 동영상의 소리는 변경하지 않습니다."
-          }
-        }
-      }
-    },
-    "写真に残した瞬間": {
-      "localizations": {
-        "ja": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "写真に残した瞬間"
-          }
-        },
-        "en": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "A moment captured in a photo"
-          }
-        },
-        "zh-Hans": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "照片记录的瞬间"
-          }
-        },
-        "ko": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "사진으로 남긴 순간"
           }
         }
       }
@@ -3963,62 +3762,6 @@
         }
       }
     },
-    "映像と音で残した記憶": {
-      "localizations": {
-        "ja": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "映像と音で残した記憶"
-          }
-        },
-        "en": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "A memory captured in sight and sound"
-          }
-        },
-        "zh-Hans": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "用画面与声音记录的记忆"
-          }
-        },
-        "ko": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "영상과 소리로 남긴 추억"
-          }
-        }
-      }
-    },
-    "最初のafterimageを残そう": {
-      "localizations": {
-        "ja": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "最初のafterimageを残そう"
-          }
-        },
-        "en": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Save your first afterimage"
-          }
-        },
-        "zh-Hans": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "记录你的第一条 afterimage"
-          }
-        },
-        "ko": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "첫 afterimage를 남겨보세요"
-          }
-        }
-      }
-    },
     "解除すると、設定済みのAIはすぐに文字起こしを読めなくなります。": {
       "localizations": {
         "ja": {
@@ -4192,25 +3935,25 @@
         "ja": {
           "stringUnit": {
             "state": "translated",
-            "value": "アップロード済みか確認しています"
+            "value": "すでに残した記憶か確かめています"
           }
         },
         "en": {
           "stringUnit": {
             "state": "translated",
-            "value": "Checking for previous uploads"
+            "value": "Checking your memories"
           }
         },
         "zh-Hans": {
           "stringUnit": {
             "state": "translated",
-            "value": "正在检查是否已上传"
+            "value": "正在确认是否已留下这段记忆"
           }
         },
         "ko": {
           "stringUnit": {
             "state": "translated",
-            "value": "업로드 여부를 확인하는 중입니다"
+            "value": "이미 남긴 기억인지 확인하는 중입니다"
           }
         }
       }
@@ -4534,7 +4277,7 @@
         "en": {
           "stringUnit": {
             "state": "translated",
-            "value": "Retry"
+            "value": "Try Again"
           }
         },
         "zh-Hans": {
@@ -4696,7 +4439,7 @@
         "ja": {
           "stringUnit": {
             "state": "translated",
-            "value": "再生中の字幕"
+            "value": "この動画のことば"
           }
         },
         "en": {
@@ -4724,7 +4467,7 @@
         "ja": {
           "stringUnit": {
             "state": "translated",
-            "value": "文字起こしを処理しています。"
+            "value": "ことばを残しています…"
           }
         },
         "en": {
@@ -4752,7 +4495,7 @@
         "ja": {
           "stringUnit": {
             "state": "translated",
-            "value": "文字起こしに失敗しました。"
+            "value": "ことばを残せませんでした"
           }
         },
         "en": {
@@ -4780,7 +4523,7 @@
         "ja": {
           "stringUnit": {
             "state": "translated",
-            "value": "この動画の字幕はありません。"
+            "value": "この動画にことばはありません"
           }
         },
         "en": {

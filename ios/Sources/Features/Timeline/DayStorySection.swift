@@ -140,7 +140,7 @@ private struct DayStoryHero: View {
             }
             .overlay {
                 LinearGradient(
-                    colors: [.clear, .black.opacity(0.5)],
+                    colors: [.clear, .black.opacity(0.78)],
                     startPoint: .center,
                     endPoint: .bottom
                 )

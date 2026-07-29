@@ -4,6 +4,8 @@ import UIKit
 
 struct VideoMemoryView: View {
     @EnvironmentObject private var model: AppModel
+    @Environment(\.accessibilityVoiceOverEnabled) private var voiceOverEnabled
+    @Environment(\.accessibilitySwitchControlEnabled) private var switchControlEnabled
     let asset: Asset
     let isActive: Bool
     @Binding var chromeVisible: Bool
@@ -51,6 +53,9 @@ struct VideoMemoryView: View {
             await controller.activate { try await model.playbackGrant(for: asset) }
             while !Task.isCancelled {
                 try? await Task.sleep(for: .milliseconds(250))
+                // Auto-hide would strand assistive-tech users with no way to
+                // bring the controls back; keep chrome pinned for them.
+                if voiceOverEnabled || switchControlEnabled { continue }
                 withAnimation(.easeInOut(duration: 0.2)) {
                     chrome.apply(.clockTicked(at: Date()))
                 }
@@ -94,7 +99,7 @@ struct VideoMemoryView: View {
                 Text(message)
                     .font(.callout)
                     .multilineTextAlignment(.center)
-                Button("再試行") {
+                Button(L10n.string("action.retry")) {
                     Task { await controller.activate { try await model.playbackGrant(for: asset) } }
                 }
                 .buttonStyle(.glass)
@@ -124,6 +129,7 @@ struct VideoMemoryView: View {
                 HStack(spacing: 10) {
                     Text(PlaybackClock.label(controller.position))
                         .font(.caption.weight(.semibold).monospacedDigit())
+                        .accessibilityHidden(true)
                     Slider(
                         value: Binding(
                             get: { controller.position },
@@ -139,8 +145,17 @@ struct VideoMemoryView: View {
                             chrome.apply(.scrubEnded)
                         }
                     }
+                    .accessibilityLabel(L10n.string("playback.scrub"))
+                    .accessibilityValue(
+                        L10n.format(
+                            "playback.position_accessibility",
+                            PlaybackClock.label(controller.position) as NSString,
+                            PlaybackClock.label(controller.duration) as NSString
+                        )
+                    )
                     Text(PlaybackClock.label(controller.duration))
                         .font(.caption.weight(.semibold).monospacedDigit())
+                        .accessibilityHidden(true)
                 }
                 .padding(.horizontal, 14)
                 .frame(height: 52)

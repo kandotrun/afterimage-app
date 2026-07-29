@@ -90,6 +90,14 @@ struct ImportSelectionSummary: Equatable {
     }
 }
 
+/// A day from a previous year resurfacing on the timeline.
+struct OneYearAgoStory: Equatable {
+    let day: Date
+    let clipCount: Int
+    let durationMs: Int
+    let firstAsset: Asset
+}
+
 @MainActor
 final class AppModel: ObservableObject {
     @Published private(set) var isAuthenticated = false
@@ -105,6 +113,9 @@ final class AppModel: ObservableObject {
     @Published var upload: UploadPresentation?
     @Published private(set) var importSelectionSummary: ImportSelectionSummary?
     @Published private(set) var backgroundUploadNeedsRetry = false
+    @Published private(set) var uploadCompletedAt: Date?
+    @Published private(set) var oneYearAgoStory: OneYearAgoStory?
+    @Published var reminderInvite = false
     @Published var notice: AppNotice?
 
     private let api: APIClient
@@ -120,6 +131,9 @@ final class AppModel: ObservableObject {
     private var shouldRepeatDailyWeatherRecording = false
     private var timelineRefreshTask: Task<Void, Error>?
     private var transientNoticeTask: Task<Void, Never>?
+    private var uploadCompletedClearTask: Task<Void, Never>?
+    private var oneYearAgoLoadedForDay: Date?
+    private static let reminderInviteOfferedKey = "daily-post-reminder.invite-offered"
 
     init(
         api: APIClient,
@@ -327,6 +341,31 @@ final class AppModel: ObservableObject {
 
     func weather(for day: Date) -> DailyWeather? {
         dailyWeather[DailyWeatherDate.localDate(for: day)]
+    }
+
+    /// Lets the same day from one year ago come back to meet its owner.
+    /// Cached per calendar day so scrolling never refetches it.
+    func loadOneYearAgoStory() async {
+        let calendar = Calendar.autoupdatingCurrent
+        let today = calendar.startOfDay(for: .now)
+        guard oneYearAgoLoadedForDay != today else { return }
+        guard let day = calendar.date(byAdding: .year, value: -1, to: today),
+              let interval = calendar.dateInterval(of: .day, for: day) else { return }
+        guard let playback = try? await api.dailyPlayback(
+            startAt: interval.start,
+            endAt: interval.end
+        ) else { return }
+        oneYearAgoLoadedForDay = today
+        guard playback.clipCount > 0, let first = playback.clips.first?.asset else {
+            oneYearAgoStory = nil
+            return
+        }
+        oneYearAgoStory = OneYearAgoStory(
+            day: interval.start,
+            clipCount: playback.clipCount,
+            durationMs: playback.durationMs,
+            firstAsset: first
+        )
     }
 
     func recordTodayWeather() async {
@@ -692,6 +731,7 @@ final class AppModel: ObservableObject {
                                     await self.postReminderScheduler.recordPost()
                                     try? await self.refreshTimelineEnsuringFresh()
                                     self.haptics.play(.success)
+                                    self.celebrateUploadCompletion()
                                     continuation.resume()
                                 case .failure(let error):
                                     continuation.resume(throwing: error)
@@ -777,6 +817,7 @@ final class AppModel: ObservableObject {
                         await self.postReminderScheduler.recordPost()
                         try? await self.refreshTimelineEnsuringFresh()
                         self.haptics.play(.success)
+                        self.celebrateUploadCompletion()
                     case .failure(let error):
                         if case .some(.cancelled) = error as? AfterimageError {
                             self.backgroundUploadNeedsRetry = false
@@ -823,6 +864,8 @@ final class AppModel: ObservableObject {
         assets = []
         dailyWeather = [:]
         nextCursor = nil
+        oneYearAgoStory = nil
+        oneYearAgoLoadedForDay = nil
         isAuthenticated = false
         await postReminderScheduler.clear()
     }
@@ -847,6 +890,39 @@ final class AppModel: ObservableObject {
         if handleIfSessionExpired(error) { return }
         let message = (error as? LocalizedError)?.errorDescription ?? error.localizedDescription
         notice = AppNotice(title: L10n.string("error.generic_title"), message: message)
+    }
+
+    /// The moment a memory is safely kept deserves more than a disappearing pill:
+    /// show a short "received" moment, then offer the nightly reminder once.
+    private func celebrateUploadCompletion() {
+        uploadCompletedClearTask?.cancel()
+        uploadCompletedAt = Date()
+        uploadCompletedClearTask = Task { [weak self] in
+            try? await Task.sleep(for: .seconds(2.5))
+            guard !Task.isCancelled else { return }
+            self?.uploadCompletedAt = nil
+        }
+        Task { await maybeOfferReminderInvite() }
+    }
+
+    private func maybeOfferReminderInvite() async {
+        guard !UserDefaults.standard.bool(forKey: Self.reminderInviteOfferedKey) else { return }
+        guard await postReminderScheduler.authorizationStatus() == .notDetermined else {
+            UserDefaults.standard.set(true, forKey: Self.reminderInviteOfferedKey)
+            return
+        }
+        reminderInvite = true
+    }
+
+    func acceptReminderInvite() async {
+        UserDefaults.standard.set(true, forKey: Self.reminderInviteOfferedKey)
+        reminderInvite = false
+        _ = await postReminderScheduler.requestPermission()
+    }
+
+    func declineReminderInvite() {
+        UserDefaults.standard.set(true, forKey: Self.reminderInviteOfferedKey)
+        reminderInvite = false
     }
 
     private func showTransient(_ message: String) {
