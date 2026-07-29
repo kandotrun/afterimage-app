@@ -19,15 +19,29 @@ struct TimelineView: View {
         }
     }
 
+    private var standaloneTodayWeather: DailyWeather? {
+        TimelineWeatherPresentationPolicy.standaloneTodayWeather(
+            weather: model.weather(for: .now),
+            assetDates: model.assets.map(\.capturedAt)
+        )
+    }
+
     var body: some View {
         NavigationStack {
             MemoryBackdrop {
                 ScrollView {
-                    if sections.isEmpty && !model.isLoadingTimeline {
+                    if sections.isEmpty && standaloneTodayWeather == nil && !model.isLoadingTimeline {
                         EmptyTimelineView()
                             .padding(.top, 120)
                     } else {
                         LazyVStack(alignment: .leading, spacing: 40) {
+                            if let weather = standaloneTodayWeather {
+                                StandaloneDailyWeatherSection(
+                                    title: L10n.string("timeline.today"),
+                                    weather: weather
+                                )
+                                .padding(.horizontal, 20)
+                            }
                             ForEach(sections) { section in
                                 if let story = DayStoryPolicy.story(for: section.assets) {
                                     DayStorySection(

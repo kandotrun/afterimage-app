@@ -63,3 +63,17 @@ struct DailyWeatherBadge: View {
             .formatted(.measurement(width: .abbreviated, usage: .weather))
     }
 }
+
+struct StandaloneDailyWeatherSection: View {
+    let title: String
+    let weather: DailyWeather
+
+    var body: some View {
+        HStack(alignment: .top, spacing: 12) {
+            Text(title)
+                .font(.title3.weight(.semibold))
+            Spacer(minLength: 8)
+            DailyWeatherBadge(weather: weather)
+        }
+    }
+}
