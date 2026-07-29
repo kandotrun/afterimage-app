@@ -70,6 +70,7 @@
         }
       }
     },
+    "capture.location.open_maps": {"localizations":{"ja":{"stringUnit":{"state":"translated","value":"マップで見る"}},"en":{"stringUnit":{"state":"translated","value":"View in Maps"}},"zh-Hans":{"stringUnit":{"state":"translated","value":"在地图中查看"}},"ko":{"stringUnit":{"state":"translated","value":"지도에서 보기"}}}},
     "AIに設定を頼む": {
       "localizations": {
         "ja": {
