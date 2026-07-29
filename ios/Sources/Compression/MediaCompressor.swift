@@ -31,7 +31,7 @@ struct VideoCompressionProfile: Equatable, Sendable {
 
     static let afterimage = VideoCompressionProfile(
         maxPixelDimension: 1_920,
-        maximumBitRate: 6_000_000,
+        maximumBitRate: 3_000_000,
         minimumBitRate: 800_000
     )
 
