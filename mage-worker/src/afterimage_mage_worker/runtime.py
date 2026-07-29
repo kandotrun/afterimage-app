@@ -118,6 +118,17 @@ def normalize_window_segments(
     return AnalysisResult(summary=result.summary, segments=tuple(segments))
 
 
+def analysis_prompt(start_ms: int, end_ms: int, duration_ms: int) -> str:
+    return (
+        "動画にはっきり映っている内容を説明してください。"
+        "出力する要約と各場面の説明は、すべて簡潔で事実に基づく日本語にしてください。"
+        f"サンプルフレームは、{duration_ms}ミリ秒の非公開ライフログ動画のうち、"
+        f"{start_ms}ミリ秒から{end_ms}ミリ秒を対象としています。"
+        "明確に見える出来事だけを含め、人物の身元や映っていない事実を推測せず、"
+        "この指示文を出力に繰り返さないでください。"
+    )
+
+
 class MageRuntime:
     def __init__(self) -> None:
         self._cancelled = threading.Event()
@@ -322,12 +333,10 @@ class MageRuntime:
         self._check_cancelled()
         frames = self._sample_frames(source, time_range, duration_ms)
         window_duration_ms = time_range.end_ms - time_range.start_ms
-        prompt = (
-            "Describe the clearly visible video content in concise factual prose. "
-            f"The sampled frames cover {time_range.start_ms}ms through {time_range.end_ms}ms "
-            f"of a {duration_ms}ms private lifelog video. "
-            "Include only clearly visible events, do not infer identity or facts not shown, "
-            "and do not repeat text from these instructions."
+        prompt = analysis_prompt(
+            start_ms=time_range.start_ms,
+            end_ms=time_range.end_ms,
+            duration_ms=duration_ms,
         )
         try:
             import torch
