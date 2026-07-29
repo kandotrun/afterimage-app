@@ -447,6 +447,17 @@ final class AppModel: ObservableObject {
         try await api.dailySummary(startAt: interval.start, endAt: interval.end)
     }
 
+    func searchMemories(query: String, cursor: String? = nil) async throws -> MemorySearchPage {
+        guard let query = MemorySearchPolicy.query(from: query) else {
+            throw AfterimageError.invalidConfiguration
+        }
+        return try await api.searchMemories(query: query, cursor: cursor)
+    }
+
+    func videoAnalysis(for asset: Asset) async throws -> VideoAnalysisResponse {
+        try await api.videoAnalysis(assetID: asset.id)
+    }
+
     func transcript(for asset: Asset) async throws -> TranscriptResponse {
         try await api.transcript(assetID: asset.id)
     }

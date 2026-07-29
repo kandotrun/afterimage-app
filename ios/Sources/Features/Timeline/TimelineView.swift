@@ -7,6 +7,7 @@ struct TimelineView: View {
     @State private var selection: [PhotosPickerItem] = []
     @State private var pendingOpen: Asset?
     @State private var pendingDay: DailyPlaybackRoute?
+    @State private var isShowingMemorySearch = false
     @State private var isShowingAIConnection = false
     @State private var cameraRoute: CameraRoute?
     @Namespace private var zoomTransition
@@ -104,6 +105,14 @@ struct TimelineView: View {
             }
             .toolbar {
                 ToolbarItem(placement: .topBarTrailing) {
+                    Button {
+                        isShowingMemorySearch = true
+                    } label: {
+                        Image(systemName: "magnifyingglass")
+                    }
+                    .accessibilityLabel(L10n.string("memory.search.open"))
+                }
+                ToolbarItem(placement: .topBarTrailing) {
                     Menu {
                         Button("AI連携", systemImage: "brain.head.profile") {
                             isShowingAIConnection = true
@@ -125,6 +134,9 @@ struct TimelineView: View {
             }
             .sheet(isPresented: $isShowingAIConnection) {
                 AIConnectionView()
+            }
+            .sheet(isPresented: $isShowingMemorySearch) {
+                MemorySearchView()
             }
             .fullScreenCover(item: $cameraRoute) { _ in
                 CameraCaptureView()

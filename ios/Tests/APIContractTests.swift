@@ -230,6 +230,7 @@ final class APIContractTests: XCTestCase {
           "summary": "検査書類を確認し、昼食後に車の設定を見直した。",
           "model": "qwen3.8-max-preview",
           "sourceTranscriptCount": 10,
+          "sourceVisualAnalysisCount": 4,
           "generatedAt": "2026-07-28T00:05:00.000Z"
         }
         """.data(using: .utf8)!
@@ -237,6 +238,7 @@ final class APIContractTests: XCTestCase {
         XCTAssertEqual(generated.summary, "検査書類を確認し、昼食後に車の設定を見直した。")
         XCTAssertEqual(generated.model, "qwen3.8-max-preview")
         XCTAssertEqual(generated.sourceTranscriptCount, 10)
+        XCTAssertEqual(generated.sourceVisualAnalysisCount, 4)
         XCTAssertNotNil(generated.generatedAt)
 
         let emptyJSON = """
@@ -246,6 +248,7 @@ final class APIContractTests: XCTestCase {
           "summary": null,
           "model": null,
           "sourceTranscriptCount": 0,
+          "sourceVisualAnalysisCount": 0,
           "generatedAt": null
         }
         """.data(using: .utf8)!
@@ -253,7 +256,131 @@ final class APIContractTests: XCTestCase {
         XCTAssertNil(empty.summary)
         XCTAssertNil(empty.model)
         XCTAssertEqual(empty.sourceTranscriptCount, 0)
+        XCTAssertEqual(empty.sourceVisualAnalysisCount, 0)
         XCTAssertNil(empty.generatedAt)
+    }
+
+    func testMemorySearchDecodesTranscriptAndVisualMatches() throws {
+        let json = """
+        {
+          "items": [
+            {
+              "asset": {
+                "id": "asset-search-1",
+                "kind": "video",
+                "filename": "harbor.mov",
+                "contentType": "video/quicktime",
+                "byteSize": 1200,
+                "capturedAt": "2026-07-27T01:02:03.000Z",
+                "durationMs": 120000,
+                "width": 1920,
+                "height": 1080,
+                "status": "ready",
+                "contentUrl": "/v1/assets/asset-search-1/content",
+                "thumbnailUrl": "/v1/assets/asset-search-1/thumbnail",
+                "transcriptionStatus": "completed",
+                "transcriptPreview": "港を歩いた",
+                "transcriptUrl": "/v1/assets/asset-search-1/transcript",
+                "videoAnalysisStatus": "completed",
+                "createdAt": "2026-07-27T01:03:00.000Z",
+                "updatedAt": "2026-07-27T01:04:00.000Z"
+              },
+              "match": {
+                "kind": "visual",
+                "text": "赤い船が港を横切る",
+                "startMs": 42000,
+                "endMs": 48000
+              },
+              "visualSummary": "港と赤い船が映っている"
+            },
+            {
+              "asset": {
+                "id": "asset-search-2",
+                "kind": "video",
+                "filename": "meeting.mov",
+                "contentType": "video/quicktime",
+                "byteSize": 800,
+                "capturedAt": "2026-07-26T01:02:03.000Z",
+                "durationMs": 60000,
+                "width": 1920,
+                "height": 1080,
+                "status": "ready",
+                "contentUrl": "/v1/assets/asset-search-2/content",
+                "thumbnailUrl": null,
+                "transcriptionStatus": "completed",
+                "transcriptPreview": "次の議題",
+                "transcriptUrl": "/v1/assets/asset-search-2/transcript",
+                "videoAnalysisStatus": "processing",
+                "createdAt": "2026-07-26T01:03:00.000Z",
+                "updatedAt": "2026-07-26T01:04:00.000Z"
+              },
+              "match": {
+                "kind": "transcript",
+                "text": "次の議題を確認します"
+              },
+              "visualSummary": null
+            }
+          ],
+          "nextCursor": "cursor-2"
+        }
+        """.data(using: .utf8)!
+
+        let page = try JSONDecoder.afterimage.decode(MemorySearchPage.self, from: json)
+        XCTAssertEqual(page.items.count, 2)
+        XCTAssertEqual(page.items[0].match.kind, .visual)
+        XCTAssertEqual(page.items[0].match.startMs, 42_000)
+        XCTAssertEqual(page.items[0].match.endMs, 48_000)
+        XCTAssertEqual(page.items[0].visualSummary, "港と赤い船が映っている")
+        XCTAssertEqual(page.items[1].match.kind, .transcript)
+        XCTAssertNil(page.items[1].match.startMs)
+        XCTAssertEqual(page.nextCursor, "cursor-2")
+    }
+
+    func testVideoAnalysisDecodesCompletedAndUnavailableResponses() throws {
+        let completedJSON = """
+        {
+          "assetId": "asset-search-1",
+          "status": "completed",
+          "summary": "港で赤い船を見た",
+          "modelId": "microsoft/Mage-VL",
+          "modelRevision": "revision",
+          "backend": "frames",
+          "coverageMode": "windows",
+          "coverage": [
+            { "position": 0, "startMs": 0, "endMs": 60000 }
+          ],
+          "segments": [
+            { "position": 0, "startMs": 42000, "endMs": 48000, "caption": "赤い船が横切る" }
+          ],
+          "updatedAt": "2026-07-27T01:04:00.000Z"
+        }
+        """.data(using: .utf8)!
+
+        let completed = try JSONDecoder.afterimage.decode(VideoAnalysisResponse.self, from: completedJSON)
+        XCTAssertEqual(completed.status, .completed)
+        XCTAssertEqual(completed.coverage.first?.endMs, 60_000)
+        XCTAssertEqual(completed.segments.first?.startMs, 42_000)
+        XCTAssertEqual(completed.segments.first?.caption, "赤い船が横切る")
+
+        let unavailableJSON = """
+        {
+          "assetId": "asset-search-2",
+          "status": "unavailable",
+          "summary": null,
+          "modelId": null,
+          "modelRevision": null,
+          "backend": null,
+          "coverageMode": null,
+          "coverage": [],
+          "segments": []
+        }
+        """.data(using: .utf8)!
+
+        let unavailable = try JSONDecoder.afterimage.decode(VideoAnalysisResponse.self, from: unavailableJSON)
+        XCTAssertEqual(unavailable.status, .unavailable)
+        XCTAssertTrue(unavailable.coverage.isEmpty)
+        XCTAssertTrue(unavailable.segments.isEmpty)
+        XCTAssertNil(unavailable.updatedAt)
     }
 
     func testDailyWeatherPageDecodesStoredSnapshot() throws {

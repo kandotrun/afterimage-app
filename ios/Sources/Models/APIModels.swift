@@ -24,6 +24,7 @@ enum VideoAnalysisStatus: String, Codable, Hashable, Sendable {
     case processing
     case completed
     case failed
+    case unavailable
 }
 
 struct UserProfile: Codable, Equatable, Sendable {
@@ -109,6 +110,60 @@ struct TimelinePage: Codable, Equatable, Sendable {
     }
 }
 
+enum MemorySearchMatchKind: String, Codable, Hashable, Sendable {
+    case filename
+    case transcript
+    case visual
+}
+
+struct MemorySearchMatch: Codable, Equatable, Hashable, Sendable {
+    let kind: MemorySearchMatchKind
+    let text: String
+    let startMs: Int?
+    let endMs: Int?
+}
+
+struct MemorySearchResult: Codable, Identifiable, Hashable, Sendable {
+    let asset: Asset
+    let match: MemorySearchMatch
+    let visualSummary: String?
+
+    var id: String { asset.id }
+}
+
+struct MemorySearchPage: Codable, Equatable, Sendable {
+    let items: [MemorySearchResult]
+    let nextCursor: String?
+}
+
+struct VideoAnalysisCoverage: Codable, Equatable, Hashable, Sendable {
+    let position: Int
+    let startMs: Int
+    let endMs: Int
+}
+
+struct VideoAnalysisSegment: Codable, Identifiable, Equatable, Hashable, Sendable {
+    let position: Int
+    let startMs: Int
+    let endMs: Int
+    let caption: String
+
+    var id: Int { position }
+}
+
+struct VideoAnalysisResponse: Codable, Equatable, Sendable {
+    let assetId: String
+    let status: VideoAnalysisStatus
+    let summary: String?
+    let modelId: String?
+    let modelRevision: String?
+    let backend: String?
+    let coverageMode: String?
+    let coverage: [VideoAnalysisCoverage]
+    let segments: [VideoAnalysisSegment]
+    let updatedAt: Date?
+}
+
 struct DailyPlaybackResponse: Codable, Equatable, Sendable {
     let startAt: Date
     let endAt: Date
@@ -123,6 +178,7 @@ struct DailySummaryResponse: Codable, Equatable, Sendable {
     let summary: String?
     let model: String?
     let sourceTranscriptCount: Int
+    let sourceVisualAnalysisCount: Int
     let generatedAt: Date?
 }
 

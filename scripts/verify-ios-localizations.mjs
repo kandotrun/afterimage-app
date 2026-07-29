@@ -18,6 +18,43 @@ assert.equal(catalog.sourceLanguage, "ja", "Japanese must remain the source lang
 assert.equal(catalog.version, "1.0");
 assert.ok(Object.keys(catalog.strings).length > 0, "localization catalog must not be empty");
 
+for (const key of [
+  "memory.search.open",
+  "memory.search.title",
+  "memory.search.prompt",
+  "memory.search.initial_title",
+  "memory.search.initial_detail",
+  "memory.search.loading",
+  "memory.search.empty_title",
+  "memory.search.empty_detail",
+  "memory.search.error_title",
+  "memory.search.match.filename",
+  "memory.search.match.transcript",
+  "memory.search.match.visual",
+  "memory.search.visual_summary",
+  "memory.search.open_result",
+  "memory.search.seek_at",
+  "memory.analysis.open",
+  "memory.analysis.title",
+  "memory.analysis.loading",
+  "memory.analysis.queued_title",
+  "memory.analysis.queued_detail",
+  "memory.analysis.processing_title",
+  "memory.analysis.processing_detail",
+  "memory.analysis.failed_title",
+  "memory.analysis.failed_detail",
+  "memory.analysis.unavailable_title",
+  "memory.analysis.unavailable_detail",
+  "memory.analysis.error_title",
+  "memory.analysis.retry",
+  "memory.analysis.summary",
+  "memory.analysis.segments",
+  "memory.analysis.completed_empty",
+  "memory.analysis.seek_at",
+]) {
+  assert.ok(catalog.strings[key], `missing Mage localization key: ${key}`);
+}
+
 for (const [key, entry] of Object.entries(catalog.strings)) {
   const placeholderSignatures = new Map();
   for (const locale of locales) {
