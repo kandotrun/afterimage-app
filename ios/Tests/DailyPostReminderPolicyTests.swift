@@ -69,6 +69,13 @@ final class DailyPostReminderPolicyTests: XCTestCase {
         XCTAssertEqual(dates, [try date(year: 2026, month: 7, day: 28, hour: 22)])
     }
 
+    func testReminderIdentifiersAreRecognizedForNotificationRouting() {
+        XCTAssertTrue(
+            DailyPostReminderPolicy.isReminder(identifier: "daily-post-reminder.1785301427")
+        )
+        XCTAssertFalse(DailyPostReminderPolicy.isReminder(identifier: "some.other.notification"))
+    }
+
     func testTriggerComponentsRetainTheUsersCalendar() throws {
         var japaneseCalendar = Calendar(identifier: .japanese)
         japaneseCalendar.timeZone = TimeZone(identifier: "Asia/Tokyo")!

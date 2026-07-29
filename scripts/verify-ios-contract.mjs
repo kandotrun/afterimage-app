@@ -303,7 +303,7 @@ assert.match(
 );
 assert.match(
   timeline,
-  /Button\("再読み込み"[\s\S]{0,240}?refreshTimeline\(\)[\s\S]{0,120}?recordTodayWeather\(\)/,
+  /Button\("再読み込み"[\s\S]{0,240}?refreshTimeline(?:ReportingFailure)?\(\)[\s\S]{0,120}?recordTodayWeather\(\)/,
   "account-menu reload must record missing daily weather after refreshing assets",
 );
 assert.match(

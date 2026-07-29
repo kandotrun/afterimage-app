@@ -13,6 +13,7 @@ final class DayPreviewPlaybackControllerTests: XCTestCase {
         var calls: [String] = []
         var failingIDs: Set<String> = []
         var cancellingIDs: Set<String> = []
+        var expiresIn: TimeInterval = 300
 
         func load(_ asset: Asset) async throws -> ResolvedPlaybackGrant {
             calls.append(asset.id)
@@ -24,7 +25,7 @@ final class DayPreviewPlaybackControllerTests: XCTestCase {
             }
             return ResolvedPlaybackGrant(
                 url: URL(fileURLWithPath: "/tmp/\(asset.id).mp4"),
-                expiresAt: Date().addingTimeInterval(300)
+                expiresAt: Date().addingTimeInterval(expiresIn)
             )
         }
     }
@@ -55,16 +56,16 @@ final class DayPreviewPlaybackControllerTests: XCTestCase {
         }
     }
 
-    func testNextIndexAdvancesAndWrapsForContinuousPreview() {
+    func testNextIndexAdvancesOnceAndRestsAtTheEndOfTheDay() {
         XCTAssertEqual(DayPreviewPlaybackController.nextIndex(after: 0, count: 2), 1)
-        XCTAssertEqual(DayPreviewPlaybackController.nextIndex(after: 1, count: 2), 0)
+        XCTAssertNil(DayPreviewPlaybackController.nextIndex(after: 1, count: 2))
     }
 
     func testNextIndexIsNilWithoutVideos() {
         XCTAssertNil(DayPreviewPlaybackController.nextIndex(after: 0, count: 0))
     }
 
-    func testCompletionAdvancesAndWrapsAcrossAllAssets() async throws {
+    func testCompletionPlaysEachClipOnceThenRestsOnTheLastFrame() async throws {
         let loader = GrantLoader()
         let controller = makeController()
 
@@ -83,7 +84,48 @@ final class DayPreviewPlaybackControllerTests: XCTestCase {
             name: AVPlayerItem.didPlayToEndTimeNotification,
             object: secondItem
         )
-        await waitUntil { loader.calls == ["first", "second", "first"] }
+        for _ in 0..<50 { await Task.yield() }
+        XCTAssertEqual(loader.calls, ["first", "second"], "the preview must not loop the day again")
+        XCTAssertTrue(
+            controller.player.currentItem === secondItem,
+            "the preview must rest on the last clip's final frame"
+        )
+        controller.deactivate()
+    }
+
+    func testReactivationReusesAnUnexpiredGrant() async {
+        let loader = GrantLoader()
+        let controller = makeController()
+
+        await controller.activate(assets: [asset(id: "first")]) {
+            try await loader.load($0)
+        }
+        XCTAssertEqual(loader.calls, ["first"])
+
+        controller.deactivate()
+        await controller.activate(assets: [asset(id: "first")]) {
+            try await loader.load($0)
+        }
+
+        XCTAssertEqual(loader.calls, ["first"], "an unexpired grant must be reused across activations")
+        XCTAssertNotNil(controller.player.currentItem)
+        controller.deactivate()
+    }
+
+    func testReactivationRefreshesAnExpiringGrant() async {
+        let loader = GrantLoader()
+        loader.expiresIn = 5
+        let controller = makeController()
+
+        await controller.activate(assets: [asset(id: "first")]) {
+            try await loader.load($0)
+        }
+        controller.deactivate()
+        await controller.activate(assets: [asset(id: "first")]) {
+            try await loader.load($0)
+        }
+
+        XCTAssertEqual(loader.calls, ["first", "first"], "grants inside the safety margin must be refreshed")
         controller.deactivate()
     }
 

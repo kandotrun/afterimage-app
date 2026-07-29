@@ -38,6 +38,18 @@ enum CameraBackgroundAction: Equatable, Sendable {
     case waitForFinalization
 }
 
+enum CameraScenePhaseChange: Equatable, Sendable {
+    case active
+    case inactive
+    case background
+}
+
+enum CameraSceneChangeAction: Equatable, Sendable {
+    case resume
+    case ignore
+    case suspend
+}
+
 enum CameraCapturePolicy {
     static func startAction(cameraPermission: CameraPermission) -> CameraStartAction {
         switch cameraPermission {
@@ -63,6 +75,17 @@ enum CameraCapturePolicy {
             .recordWithoutAudio
         case .denied:
             .confirmSilentRecording
+        }
+    }
+
+    /// `.inactive` covers Control Center, the notification shade, and incoming-call
+    /// banners — moments where the system camera keeps recording, so we must too.
+    /// Only a real `.background` transition suspends capture.
+    static func sceneChangeAction(for change: CameraScenePhaseChange) -> CameraSceneChangeAction {
+        switch change {
+        case .active: .resume
+        case .inactive: .ignore
+        case .background: .suspend
         }
     }
 

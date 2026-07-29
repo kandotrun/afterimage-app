@@ -57,6 +57,14 @@ enum UploadCancellationCleanup {
     }
 }
 
+/// Distinguishes "nothing yet" from "nothing could be loaded" so an offline
+/// launch never masquerades as an empty library.
+enum TimelineLoadState: Equatable {
+    case loading
+    case loaded
+    case failed
+}
+
 struct ImportSelectionSummary: Equatable {
     let selectedCount: Int
     let skippedCount: Int
@@ -89,6 +97,11 @@ final class AppModel: ObservableObject {
     @Published private(set) var assets: [Asset] = []
     @Published private(set) var dailyWeather: [String: DailyWeather] = [:]
     @Published private(set) var isLoadingTimeline = false
+    @Published private(set) var timelineLoadState: TimelineLoadState = .loading
+    @Published private(set) var isLoadingMore = false
+    @Published private(set) var paginationFailed = false
+    @Published private(set) var timelineGeneration = 0
+    @Published private(set) var transientNotice: String?
     @Published var upload: UploadPresentation?
     @Published private(set) var importSelectionSummary: ImportSelectionSummary?
     @Published private(set) var backgroundUploadNeedsRetry = false
@@ -105,6 +118,8 @@ final class AppModel: ObservableObject {
     private var uploadTask: Task<Void, Never>?
     private var isRecordingDailyWeather = false
     private var shouldRepeatDailyWeatherRecording = false
+    private var timelineRefreshTask: Task<Void, Error>?
+    private var transientNoticeTask: Task<Void, Never>?
 
     init(
         api: APIClient,
@@ -152,12 +167,7 @@ final class AppModel: ObservableObject {
             do {
                 try await refreshTimeline()
             } catch {
-                if (error as? AfterimageError)?.invalidatesSession == true {
-                    await clearLocalSession()
-                    await api.setBearerToken(nil)
-                } else {
-                    show(error: error)
-                }
+                show(error: error)
             }
         } catch {
             isAuthenticated = false
@@ -231,27 +241,70 @@ final class AppModel: ObservableObject {
 
         try? await api.revokeSession()
         await clearLocalSession()
+        await api.setBearerToken(nil)
         haptics.play(.selection)
     }
 
     func refreshTimeline() async throws {
-        guard !isLoadingTimeline else { return }
+        if let task = timelineRefreshTask {
+            try await task.value
+            return
+        }
+        let task = Task { try await fetchTimeline() }
+        timelineRefreshTask = task
+        defer { timelineRefreshTask = nil }
+        try await task.value
+    }
+
+    /// Waits out any in-flight refresh and fetches again, so callers reacting to
+    /// a server-side change (a finished upload) are guaranteed to observe it.
+    func refreshTimelineEnsuringFresh() async throws {
+        if let task = timelineRefreshTask {
+            _ = try? await task.value
+        }
+        try await refreshTimeline()
+    }
+
+    func refreshTimelineReportingFailure() async {
+        do {
+            try await refreshTimeline()
+        } catch {
+            if handleIfSessionExpired(error) { return }
+            showTransient(L10n.string("timeline.refresh_failed"))
+        }
+    }
+
+    private func fetchTimeline() async throws {
         isLoadingTimeline = true
         defer { isLoadingTimeline = false }
-        let page = try await api.timeline()
-        let readyAssets = page.assets.filter { $0.status == .ready }
-        assets = readyAssets
-        nextCursor = page.nextCursor
-        await loadDailyWeather(for: assets)
-        await postReminderScheduler.refresh(
-            observedLastPostedAt: readyAssets.map(\.createdAt).max()
-        )
+        do {
+            let page = try await api.timeline()
+            let readyAssets = page.assets.filter { $0.status == .ready }
+            assets = readyAssets
+            nextCursor = page.nextCursor
+            timelineLoadState = .loaded
+            paginationFailed = false
+            timelineGeneration += 1
+            await loadDailyWeather(for: assets)
+            await postReminderScheduler.refresh(
+                observedLastPostedAt: readyAssets.map(\.createdAt).max()
+            )
+        } catch {
+            if assets.isEmpty {
+                timelineLoadState = .failed
+            }
+            throw error
+        }
     }
 
     func loadMoreIfNeeded(after asset: Asset) async {
-        guard asset.id == assets.last?.id, let cursor = nextCursor, !isLoadingTimeline else { return }
-        isLoadingTimeline = true
-        defer { isLoadingTimeline = false }
+        guard asset.id == assets.last?.id,
+              let cursor = nextCursor,
+              !paginationFailed,
+              !isLoadingMore,
+              !isLoadingTimeline else { return }
+        isLoadingMore = true
+        defer { isLoadingMore = false }
         do {
             let page = try await api.timeline(cursor: cursor)
             let existing = Set(assets.map(\.id))
@@ -261,8 +314,15 @@ final class AppModel: ObservableObject {
             await loadDailyWeather(for: additions)
             await recordTodayWeather()
         } catch {
-            show(error: error)
+            if handleIfSessionExpired(error) { return }
+            paginationFailed = true
         }
+    }
+
+    func retryPagination() async {
+        paginationFailed = false
+        guard let last = assets.last else { return }
+        await loadMoreIfNeeded(after: last)
     }
 
     func weather(for day: Date) -> DailyWeather? {
@@ -354,6 +414,7 @@ final class AppModel: ObservableObject {
                 if plan.uploadIndexes.isEmpty {
                     self.haptics.play(.selection)
                 } else {
+                    var failedItemCount = 0
                     for (position, index) in plan.uploadIndexes.enumerated() {
                         if Task.isCancelled { break }
                         do {
@@ -378,12 +439,22 @@ final class AppModel: ObservableObject {
                             )
                             continue
                         } catch {
-                            if !Task.isCancelled {
-                                self.haptics.play(.failure)
-                                self.show(error: error)
+                            if Task.isCancelled { break }
+                            // A broken file must not silently discard the rest of the batch.
+                            if Self.isItemScopedFailure(error) {
+                                failedItemCount += 1
+                                continue
                             }
+                            self.haptics.play(.failure)
+                            self.show(error: error)
                             break
                         }
+                    }
+                    if failedItemCount > 0 {
+                        self.haptics.play(.failure)
+                        self.showTransient(
+                            L10n.format("upload.batch_failures", Int64(failedItemCount))
+                        )
                     }
                 }
             } catch {
@@ -394,7 +465,16 @@ final class AppModel: ObservableObject {
             }
 
             self.upload = nil
-            self.uploadTask = nil
+            self.uploadTask = nil        }
+    }
+
+    /// Errors caused by one selected item; global failures (auth, network) abort the batch.
+    private static func isItemScopedFailure(_ error: Error) -> Bool {
+        switch error as? AfterimageError {
+        case .unsupportedMedia, .captureDateUnavailable, .compressionFailed:
+            return true
+        default:
+            return false
         }
     }
 
@@ -425,8 +505,7 @@ final class AppModel: ObservableObject {
                 }
             }
             self.upload = nil
-            self.uploadTask = nil
-        }
+            self.uploadTask = nil        }
         return true
     }
 
@@ -436,6 +515,14 @@ final class AppModel: ObservableObject {
         uploadTask?.cancel()
         backgroundUploadNeedsRetry = false
         notice = nil
+        haptics.play(.delete)
+    }
+
+    /// Discards a persisted background upload that is waiting for an explicit retry,
+    /// so the dock's trash action can clear the stalled state for good.
+    func discardPendingUpload() {
+        BackgroundUploadManager.shared.cancelAll()
+        backgroundUploadNeedsRetry = false
         haptics.play(.delete)
     }
 
@@ -603,7 +690,7 @@ final class AppModel: ObservableObject {
                                 case .success:
                                     self.upload?.beginFinalizing()
                                     await self.postReminderScheduler.recordPost()
-                                    try? await self.refreshTimeline()
+                                    try? await self.refreshTimelineEnsuringFresh()
                                     self.haptics.play(.success)
                                     continuation.resume()
                                 case .failure(let error):
@@ -688,7 +775,7 @@ final class AppModel: ObservableObject {
                     case .success:
                         self.backgroundUploadNeedsRetry = false
                         await self.postReminderScheduler.recordPost()
-                        try? await self.refreshTimeline()
+                        try? await self.refreshTimelineEnsuringFresh()
                         self.haptics.play(.success)
                     case .failure(let error):
                         if case .some(.cancelled) = error as? AfterimageError {
@@ -740,8 +827,35 @@ final class AppModel: ObservableObject {
         await postReminderScheduler.clear()
     }
 
+    /// A 401 anywhere means the session is gone: sign out locally and say why,
+    /// instead of leaving an authenticated-looking screen where nothing works.
+    @discardableResult
+    private func handleIfSessionExpired(_ error: Error) -> Bool {
+        guard (error as? AfterimageError)?.invalidatesSession == true else { return false }
+        Task {
+            await clearLocalSession()
+            await api.setBearerToken(nil)
+        }
+        notice = AppNotice(
+            title: L10n.string("auth.session_expired_title"),
+            message: L10n.string("auth.session_expired_message")
+        )
+        return true
+    }
+
     private func show(error: Error) {
+        if handleIfSessionExpired(error) { return }
         let message = (error as? LocalizedError)?.errorDescription ?? error.localizedDescription
         notice = AppNotice(title: L10n.string("error.generic_title"), message: message)
+    }
+
+    private func showTransient(_ message: String) {
+        transientNoticeTask?.cancel()
+        transientNotice = message
+        transientNoticeTask = Task { [weak self] in
+            try? await Task.sleep(for: .seconds(4))
+            guard !Task.isCancelled else { return }
+            self?.transientNotice = nil
+        }
     }
 }

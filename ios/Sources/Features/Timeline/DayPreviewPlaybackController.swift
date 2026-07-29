@@ -14,6 +14,9 @@ final class DayPreviewPlaybackController: ObservableObject {
     private var advanceTask: Task<Void, Never>?
     private var failuresInCycle = 0
     private var generation = 0
+    /// Grants survive deactivation so scrolling a hero off and back on screen
+    /// reuses them until their TTL runs out instead of hammering the API.
+    private var grantCache: [String: ResolvedPlaybackGrant] = [:]
 
     init(
         itemFactory: @escaping @MainActor (URL) -> AVPlayerItem = { AVPlayerItem(url: $0) },
@@ -25,9 +28,11 @@ final class DayPreviewPlaybackController: ObservableObject {
         player.preventsDisplaySleepDuringVideoPlayback = false
     }
 
+    /// The preview walks the day once and then rests on the last frame —
+    /// a remembered day ends instead of looping forever.
     nonisolated static func nextIndex(after index: Int, count: Int) -> Int? {
-        guard count > 0 else { return nil }
-        return (index + 1) % count
+        guard count > 0, index + 1 < count else { return nil }
+        return index + 1
     }
 
     func activate(
@@ -57,7 +62,15 @@ final class DayPreviewPlaybackController: ObservableObject {
               assets.indices.contains(index),
               let loadGrant else { return }
         do {
-            let grant = try await loadGrant(assets[index])
+            let assetID = assets[index].id
+            let grant: ResolvedPlaybackGrant
+            if let cached = grantCache[assetID],
+               PlaybackRecoveryPolicy().grantAction(now: Date(), expiresAt: cached.expiresAt) == .reuse {
+                grant = cached
+            } else {
+                grant = try await loadGrant(assets[index])
+                grantCache[assetID] = grant
+            }
             guard expected == generation, !Task.isCancelled else { return }
             let item = itemFactory(grant.url)
             observe(item: item, index: index, generation: expected)
@@ -126,6 +139,9 @@ final class DayPreviewPlaybackController: ObservableObject {
 
     private func handleFailure(after index: Int, generation expected: Int) {
         guard expected == generation else { return }
+        if assets.indices.contains(index) {
+            grantCache.removeValue(forKey: assets[index].id)
+        }
         stopCurrentItem()
         failuresInCycle += 1
         guard failuresInCycle < assets.count else { return }
