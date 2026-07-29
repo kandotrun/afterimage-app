@@ -35,6 +35,58 @@ struct WeatherKitDailyWeatherRecorder {
         )
     }
 
+    func snapshot(for request: DailyWeatherBackfillRequest) async throws -> DailyWeatherDraft {
+        guard CLLocationManager.locationServicesEnabled() else {
+            throw DailyWeatherRecordingError.locationUnavailable
+        }
+        let hourlyInterval = DateInterval(
+            start: request.capturedAt.addingTimeInterval(-60 * 60),
+            end: request.capturedAt.addingTimeInterval(2 * 60 * 60)
+        )
+        let dailyInterval = DateInterval(
+            start: request.capturedAt.addingTimeInterval(-36 * 60 * 60),
+            end: request.capturedAt.addingTimeInterval(36 * 60 * 60)
+        )
+        let location = CLLocation(
+            latitude: request.location.latitude,
+            longitude: request.location.longitude
+        )
+        let service = WeatherService.shared
+        let (hourly, daily) = try await service.weather(
+            for: location,
+            including: .hourly(
+                startDate: hourlyInterval.start,
+                endDate: hourlyInterval.end
+            ),
+            .daily(startDate: dailyInterval.start, endDate: dailyInterval.end)
+        )
+        let attribution = try await service.attribution
+        guard let hourDate = DailyWeatherBackfillSelection.nearestHour(
+            to: request.capturedAt,
+            from: hourly.map(\.date)
+        ),
+        let dayDate = DailyWeatherBackfillSelection.dayStart(
+            for: request.capturedAt,
+            from: daily.map(\.date)
+        ),
+        let hour = hourly.first(where: { $0.date == hourDate }),
+        let day = daily.first(where: { $0.date == dayDate }) else {
+            throw DailyWeatherRecordingError.forecastUnavailable
+        }
+
+        return DailyWeatherDraft(
+            localDate: request.localDate,
+            symbolName: hour.symbolName,
+            temperatureCelsius: hour.temperature.converted(to: .celsius).value,
+            highTemperatureCelsius: day.highTemperature.converted(to: .celsius).value,
+            lowTemperatureCelsius: day.lowTemperature.converted(to: .celsius).value,
+            recordedAt: hour.date,
+            attributionLegalUrl: attribution.legalPageURL,
+            attributionLightUrl: attribution.combinedMarkLightURL,
+            attributionDarkUrl: attribution.combinedMarkDarkURL
+        )
+    }
+
     private func currentLocation() async throws -> CLLocation {
         guard CLLocationManager.locationServicesEnabled() else {
             throw DailyWeatherRecordingError.locationUnavailable

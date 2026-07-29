@@ -16,6 +16,7 @@ const weatherTemperatureFormatter = read(
   "ios/Sources/Features/Timeline/DailyWeatherTemperatureFormatter.swift",
 );
 const timeline = read("ios/Sources/Features/Timeline/TimelineView.swift");
+const appModel = read("ios/Sources/App/AppModel.swift");
 const apiClient = read("ios/Sources/Networking/APIClient.swift");
 const apiModels = read("ios/Sources/Models/APIModels.swift");
 const mediaImporter = read("ios/Sources/Import/MediaImporter.swift");
@@ -128,6 +129,11 @@ assert.match(timeline, /matching:\s*\.videos/, "media picker must show only vide
 assert.doesNotMatch(timeline, /matching:[^\n]*\.images/, "media picker must not show images");
 assert.match(timeline, /\.accessibilityLabel\("動画を追加"\)/, "media picker label must describe video-only selection");
 assert.doesNotMatch(timeline, /写真や動画を(?:追加|選ぶ)/, "timeline copy must describe video-only selection");
+assert.match(
+  appModel,
+  /func loadMoreIfNeeded\(after asset: Asset\) async \{[\s\S]*?await loadDailyWeather\(for: additions\)\s*await recordTodayWeather\(\)[\s\S]*?\n    \}\n\n    func weather/,
+  "paginated assets must trigger guarded weather recording after stored weather loads",
+);
 for (const symbol of [
   "GlassEffectContainer",
   ".glassEffect",

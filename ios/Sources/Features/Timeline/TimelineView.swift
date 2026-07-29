@@ -61,7 +61,10 @@ struct TimelineView: View {
                         .padding(.bottom, 100)
                     }
                 }
-                .refreshable { try? await model.refreshTimeline() }
+                .refreshable {
+                    try? await model.refreshTimeline()
+                    await model.recordTodayWeather()
+                }
             }
             .task { await model.recordTodayWeather() }
             .navigationTitle(L10n.string("timeline.title"))

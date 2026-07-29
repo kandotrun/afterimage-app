@@ -222,6 +222,7 @@ final class AppModel: ObservableObject {
             assets.append(contentsOf: additions)
             nextCursor = page.nextCursor
             await loadDailyWeather(for: additions)
+            await recordTodayWeather()
         } catch {
             show(error: error)
         }
@@ -236,6 +237,11 @@ final class AppModel: ObservableObject {
         isRecordingDailyWeather = true
         defer { isRecordingDailyWeather = false }
 
+        await recordCurrentDailyWeatherIfNeeded()
+        await backfillMissingDailyWeather()
+    }
+
+    private func recordCurrentDailyWeatherIfNeeded() async {
         let localDate = DailyWeatherDate.localDate(for: .now)
         if dailyWeather[localDate] != nil { return }
         if let existing = try? await api.dailyWeather(in: localDate...localDate),
@@ -246,6 +252,19 @@ final class AppModel: ObservableObject {
         guard let draft = try? await weatherRecorder.snapshot(),
               let weather = try? await api.saveDailyWeather(draft) else { return }
         mergeDailyWeather([weather])
+    }
+
+    private func backfillMissingDailyWeather() async {
+        let requests = DailyWeatherBackfillPlan.requests(
+            assets: assets,
+            storedLocalDates: Set(dailyWeather.keys)
+        )
+        for request in requests {
+            guard !Task.isCancelled else { return }
+            guard let draft = try? await weatherRecorder.snapshot(for: request),
+                  let weather = try? await api.saveDailyWeather(draft) else { continue }
+            mergeDailyWeather([weather])
+        }
     }
 
     private func loadDailyWeather(for assets: [Asset]) async {
