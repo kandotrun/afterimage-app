@@ -107,6 +107,26 @@ assert.match(
   "capture location chips must keep a readable Maps fallback while geocoding",
 );
 assert.match(
+  captureLocationChip,
+  /CapturePlaceNamePresentation\.label\([\s\S]*resolvedPlace: resolvedPlace/,
+  "capture location chips must not reuse a resolved name for a different location",
+);
+assert.match(
+  swift,
+  /private var requestWaiters: \[CheckedContinuation<Void, Never>\]/,
+  "reverse geocoding requests must be serialized to avoid request bursts",
+);
+assert.match(
+  swift,
+  /failedUntil/,
+  "failed reverse geocoding requests must use a retry backoff",
+);
+assert.match(
+  swift,
+  /isCoordinatePair/,
+  "MapKit fallback names must not reintroduce raw coordinate pairs",
+);
+assert.match(
   dayStorySection,
   /story\.hero\.location[\s\S]*?CaptureLocationChip\(location:\s*location\)/,
   "timeline location must be a standalone Apple Maps link",

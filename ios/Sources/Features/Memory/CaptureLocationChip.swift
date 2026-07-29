@@ -2,10 +2,14 @@ import SwiftUI
 
 struct CaptureLocationChip: View {
     let location: CaptureLocation
-    @State private var placeName: String?
+    @State private var resolvedPlace: ResolvedCapturePlace?
 
     private var label: String {
-        placeName ?? L10n.string("capture.location.open_maps")
+        CapturePlaceNamePresentation.label(
+            for: location,
+            resolvedPlace: resolvedPlace,
+            fallback: L10n.string("capture.location.open_maps")
+        )
     }
 
     var body: some View {
@@ -17,10 +21,9 @@ struct CaptureLocationChip: View {
             }
         }
         .task(id: location) {
-            placeName = nil
             let resolvedName = await CapturePlaceNameResolver.shared.name(for: location)
             guard !Task.isCancelled else { return }
-            placeName = resolvedName
+            resolvedPlace = ResolvedCapturePlace(location: location, name: resolvedName)
         }
         .accessibilityLabel(
             L10n.format(
