@@ -289,6 +289,11 @@ assert.match(
   /func\s+signOut\(\)\s+async[\s\S]*let\s+activeUploadTask\s*=\s*uploadTask[\s\S]*activeUploadTask\?\.cancel\(\)[\s\S]*await\s+activeUploadTask\.value[\s\S]*revokeSession\(\)/,
   "sign-out must await pre-handoff upload cancellation before revoking credentials",
 );
+assert.doesNotMatch(
+  appModel,
+  /haptics\.notify\(/,
+  "AppModel must use the HapticEngine.play API",
+);
 assert.match(
   appModel,
   /if\s+didHandOff,\s*!wasCancelled,\s*BackgroundUploadManager\.shared\.requiresExplicitRetry\s*\{[\s\S]{0,160}?backgroundUploadNeedsRetry\s*=\s*true/,

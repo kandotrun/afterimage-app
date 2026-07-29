@@ -202,7 +202,7 @@ final class AppModel: ObservableObject {
             await activeUploadTask.value
         }
         guard cleanupSucceeded else {
-            haptics.notify(.error)
+            haptics.play(.failure)
             show(error: AfterimageError.invalidResponse)
             return
         }
