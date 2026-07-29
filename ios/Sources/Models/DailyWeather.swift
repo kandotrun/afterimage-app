@@ -65,3 +65,19 @@ enum DailyWeatherDate {
         return first...last
     }
 }
+
+enum TimelineWeatherPresentationPolicy {
+    static func standaloneTodayWeather(
+        weather: DailyWeather?,
+        assetDates: [Date],
+        now: Date = .now,
+        calendar: Calendar = .autoupdatingCurrent
+    ) -> DailyWeather? {
+        guard let weather,
+              weather.localDate == DailyWeatherDate.localDate(for: now, calendar: calendar),
+              !assetDates.contains(where: { calendar.isDate($0, inSameDayAs: now) }) else {
+            return nil
+        }
+        return weather
+    }
+}

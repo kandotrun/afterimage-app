@@ -19,15 +19,29 @@ struct TimelineView: View {
         }
     }
 
+    private var standaloneTodayWeather: DailyWeather? {
+        TimelineWeatherPresentationPolicy.standaloneTodayWeather(
+            weather: model.weather(for: .now),
+            assetDates: model.assets.map(\.capturedAt)
+        )
+    }
+
     var body: some View {
         NavigationStack {
             MemoryBackdrop {
                 ScrollView {
-                    if sections.isEmpty && !model.isLoadingTimeline {
+                    if sections.isEmpty && standaloneTodayWeather == nil && !model.isLoadingTimeline {
                         EmptyTimelineView()
                             .padding(.top, 120)
                     } else {
                         LazyVStack(alignment: .leading, spacing: 40) {
+                            if let weather = standaloneTodayWeather {
+                                StandaloneDailyWeatherSection(
+                                    title: L10n.string("timeline.today"),
+                                    weather: weather
+                                )
+                                .padding(.horizontal, 20)
+                            }
                             ForEach(sections) { section in
                                 if let story = DayStoryPolicy.story(for: section.assets) {
                                     DayStorySection(
@@ -203,6 +217,7 @@ private struct UploadDock: View {
     @EnvironmentObject private var model: AppModel
     @Binding var selection: [PhotosPickerItem]
     let recordVideo: () -> Void
+    @State private var isShowingLibrary = false
 
     var body: some View {
         VStack(alignment: .trailing, spacing: 9) {
@@ -230,17 +245,11 @@ private struct UploadDock: View {
                             ) {
                                 recordVideo()
                             }
-                            PhotosPicker(
-                                selection: $selection,
-                                maxSelectionCount: 12,
-                                matching: .videos,
-                                preferredItemEncoding: .current,
-                                photoLibrary: .shared()
+                            Button(
+                                L10n.string("camera.source.library"),
+                                systemImage: "photo.on.rectangle"
                             ) {
-                                Label(
-                                    L10n.string("camera.source.library"),
-                                    systemImage: "photo.on.rectangle"
-                                )
+                                isShowingLibrary = true
                             }
                         } label: {
                             Image(systemName: "plus")
@@ -258,6 +267,14 @@ private struct UploadDock: View {
         .animation(.snappy(duration: 0.3), value: model.upload)
         .animation(.snappy(duration: 0.3), value: model.importSelectionSummary)
         .frame(maxWidth: .infinity, alignment: .trailing)
+        .photosPicker(
+            isPresented: $isShowingLibrary,
+            selection: $selection,
+            maxSelectionCount: 12,
+            matching: .videos,
+            preferredItemEncoding: .current,
+            photoLibrary: .shared()
+        )
     }
 }
 
