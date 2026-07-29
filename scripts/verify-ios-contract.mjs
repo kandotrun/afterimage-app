@@ -29,6 +29,8 @@ const captureLocationChip = read("ios/Sources/Features/Memory/CaptureLocationChi
 const apiClient = read("ios/Sources/Networking/APIClient.swift");
 const apiModels = read("ios/Sources/Models/APIModels.swift");
 const mediaImporter = read("ios/Sources/Import/MediaImporter.swift");
+const backgroundUploadManager = read("ios/Sources/Upload/BackgroundUploadManager.swift");
+const appRoot = read("ios/Sources/App/afterimageApp.swift");
 const privacy = read("ios/Resources/PrivacyInfo.xcprivacy");
 const login = read("ios/Sources/Features/Auth/LoginView.swift");
 const appIconContents = read("ios/Resources/Assets.xcassets/AppIcon.appiconset/Contents.json");
@@ -221,6 +223,211 @@ assert.match(
   appModel,
   /func loadMoreIfNeeded\(after asset: Asset\)[\s\S]{0,900}?loadDailyWeather\(for: additions\)[\s\S]{0,120}?recordTodayWeather\(\)/,
   "pagination must record missing daily weather after appending visible assets",
+);
+assert.match(
+  backgroundUploadManager,
+  /private\s+lazy\s+var\s+backgroundSession:\s*URLSession/,
+  "the background session must be created lazily after UIKit provides its relaunch completion handler",
+);
+assert.match(
+  backgroundUploadManager,
+  /func\s+handleBackgroundSessionEvents[\s\S]*systemCompletionHandler\s*=[\s\S]*_\s*=\s*backgroundSession/,
+  "UIKit relaunch completion handler must be stored before the background session is recreated",
+);
+assert.match(
+  backgroundUploadManager,
+  /urlSessionDidFinishEvents[\s\S]*pendingSystemCompletionScope\s*=\s*scope[\s\S]*scheduleCurrentTransfers\(ifCurrent:\s*scope\)/,
+  "UIKit background events must not be completed before replacement transfer tasks are scheduled",
+);
+assert.match(
+  backgroundUploadManager,
+  /private\s+func\s+handleTransferFailure[\s\S]*BackgroundUploadRetryPolicy\.disposition/,
+  "background transfer failures must apply the bounded retry policy",
+);
+assert.match(
+  backgroundUploadManager,
+  /private\s+var\s+progressHandler:\s*\(@MainActor/,
+  "progress callbacks must be isolated to the main actor",
+);
+assert.match(
+  backgroundUploadManager,
+  /private\s+func\s+reportProgress[\s\S]*Task\s*\{\s*@MainActor[\s\S]*lock\.withLock[\s\S]*isActiveCurrentLocked\(scope\)[\s\S]*progressHandler\?\(/,
+  "progress scope validation and callback delivery must be linearized on the main actor",
+);
+assert.match(
+  backgroundUploadManager,
+  /reportProgress[\s\S]*Task\s*\{\s*@MainActor[\s\S]*max\([\s\S]*currentProgressLocked\(\)[\s\S]*lastDeliveredProgress/,
+  "progress delivery must recompute the latest value and reject regressions on the main actor",
+);
+assert.match(
+  backgroundUploadManager,
+  /resumePendingUpload[\s\S]*retryAfterFailure:\s*Bool\s*=\s*false[\s\S]*if\s+retryAfterFailure,\s*isPausedAfterFailure/,
+  "only an explicit foreground retry may clear a persisted terminal pause",
+);
+assert.match(
+  appModel,
+  /bootstrap\(\)[\s\S]*resumeBackgroundUploadIfNeeded\(retryAfterFailure:\s*false\)/,
+  "background bootstrap must reattach without clearing terminal retry bounds",
+);
+assert.match(
+  appRoot,
+  /scenePhase\s*==\s*\.active[\s\S]*resumeBackgroundUploadIfNeeded\(retryAfterFailure:\s*false\)/,
+  "automatic foreground activation must not clear a terminal pause",
+);
+assert.match(
+  appModel,
+  /func\s+retryBackgroundUpload\(\)\s+async[\s\S]*resumeBackgroundUploadIfNeeded\(retryAfterFailure:\s*true\)/,
+  "only the explicit retry action may rearm a terminal upload",
+);
+assert.match(
+  appModel,
+  /func\s+signOut\(\)\s+async[\s\S]*await\s+BackgroundUploadManager\.shared\.cancelAllAndWaitForCleanup\(\)[\s\S]*guard\s+cleanupSucceeded[\s\S]*revokeSession\(\)[\s\S]*clearLocalSession\(\)/,
+  "sign-out must not revoke or clear credentials before remote upload cleanup succeeds",
+);
+assert.match(
+  appModel,
+  /func\s+signOut\(\)\s+async[\s\S]*let\s+activeUploadTask\s*=\s*uploadTask[\s\S]*activeUploadTask\?\.cancel\(\)[\s\S]*await\s+activeUploadTask\.value[\s\S]*revokeSession\(\)/,
+  "sign-out must await pre-handoff upload cancellation before revoking credentials",
+);
+assert.doesNotMatch(
+  appModel,
+  /haptics\.notify\(/,
+  "AppModel must use the HapticEngine.play API",
+);
+assert.match(
+  appModel,
+  /if\s+didHandOff,\s*!wasCancelled,\s*BackgroundUploadManager\.shared\.requiresExplicitRetry\s*\{[\s\S]{0,160}?backgroundUploadNeedsRetry\s*=\s*true/,
+  "an exhausted initial background upload must expose the explicit retry action",
+);
+assert.match(
+  backgroundUploadManager,
+  /scheduleAfterInspecting[\s\S]*guard\s+let\s+token\s*=\s*bearerToken\s*\?\?\s*\(try\?\s*KeychainSessionStore\(\)\.load\(\)\)\s+else\s*\{\s*return\s*\}/,
+  "replacement transfers must wait for Keychain bootstrap instead of failing without a bearer token",
+);
+assert.match(
+  backgroundUploadManager,
+  /finalizeCurrentItem[\s\S]*deferredForCredentials[\s\S]*completeSystemEventsIfPossible\(\)/,
+  "finalization must wait for Keychain bootstrap and release UIKit background events",
+);
+assert.match(
+  backgroundUploadManager,
+  /finalizeCurrentItem[\s\S]*retryNotBeforeByTransfer\[retryDescription\][\s\S]*Task\.sleep[\s\S]*deferredForBackoff/,
+  "finalization must rebuild a persisted backoff timer after process relaunch",
+);
+assert.match(
+  backgroundUploadManager,
+  /private\s+func\s+finalizationFailed[\s\S]*BackgroundUploadRetryPolicy\.disposition/,
+  "ambiguous finalization failures must apply the bounded retry policy",
+);
+assert.match(
+  backgroundUploadManager,
+  /struct\s+BackgroundUploadTaskIdentity[\s\S]*generationID:\s*UUID[\s\S]*init\?\(description:/,
+  "every URLSession task must carry a parseable upload generation",
+);
+assert.match(
+  backgroundUploadManager,
+  /struct\s+BackgroundUploadState[\s\S]*generationID:\s*UUID[\s\S]*pausedAfterFailure:\s*Bool[\s\S]*cancellationRequested:\s*Bool[\s\S]*retryAttemptsByTransfer:\s*\[String:\s*Int\][\s\S]*retryNotBeforeByTransfer:\s*\[String:\s*Date\][\s\S]*var\s+currentItem:/,
+  "the upload generation, terminal state, retry attempts, and retry deadlines must survive process relaunch",
+);
+assert.match(
+  backgroundUploadManager,
+  /private\s+override\s+init\(\)[\s\S]*retryAttemptsByTransfer\s*=\s*state\.retryAttemptsByTransfer[\s\S]*retryNotBeforeByTransfer\s*=\s*state\.retryNotBeforeByTransfer/,
+  "retry state must be restored after process relaunch",
+);
+assert.match(
+  backgroundUploadManager,
+  /private\s+func\s+saveStateLocked\(\)[\s\S]*state\.retryAttemptsByTransfer\s*=\s*retryAttemptsByTransfer[\s\S]*state\.retryNotBeforeByTransfer\s*=\s*retryNotBeforeByTransfer/,
+  "every state save must include current retry attempts and deadlines",
+);
+assert.match(
+  backgroundUploadManager,
+  /parsed\.generationID\s*==\s*state\.generationID/,
+  "URLSession callbacks must reject tasks from another upload generation",
+);
+assert.match(
+  backgroundUploadManager,
+  /urlSessionDidFinishEvents[\s\S]*guard\s+!isPausedAfterFailure/,
+  "a terminal failure must pause automatic background rescheduling",
+);
+assert.match(
+  backgroundUploadManager,
+  /urlSessionDidFinishEvents[\s\S]*finalizationRetryTask\s*==\s*nil/,
+  "background events must be released instead of reopening finalization during backoff",
+);
+assert.match(
+  backgroundUploadManager,
+  /private\s+var\s+finalizationRetryTask:\s*Task<Void, Never>\?/,
+  "delayed finalization retries must be tracked and cancellable",
+);
+assert.match(
+  backgroundUploadManager,
+  /finalizationFailed\(error,\s*scope:\s*scope,\s*taskID:\s*taskID\)/,
+  "finalization failures must stay bound to the upload scope and task that produced them",
+);
+assert.match(
+  backgroundUploadManager,
+  /retryFinalizationIfCurrent[\s\S]*isActiveCurrentLocked\(scope\)[\s\S]*finalizeCurrentItem\(ifCurrent:\s*scope\)/,
+  "a delayed finalization retry must not finalize another upload scope",
+);
+assert.match(
+  backgroundUploadManager,
+  /retryFinalizationIfCurrent[\s\S]*finalizationRetryID\s*==\s*retryID/,
+  "an obsolete delayed retry must not clear or supersede a newer retry generation",
+);
+assert.match(
+  backgroundUploadManager,
+  /finalizationSucceeded[\s\S]*isActiveCurrentLocked\(scope\)/,
+  "a finalization callback must not report success after cancellation or for another upload generation",
+);
+assert.match(
+  backgroundUploadManager,
+  /finalizationFailed[\s\S]*isActiveCurrentLocked\(scope\)[\s\S]*applyFailureLocked\(ifCurrent:\s*scope\)/,
+  "a finalization callback must not report failure after cancellation or for another upload generation",
+);
+assert.match(
+  backgroundUploadManager,
+  /finalizationFailed[\s\S]*retryScheduled[\s\S]*completeSystemEventsIfPossible\(\)/,
+  "a delayed finalization retry must release UIKit background events before backoff",
+);
+assert.doesNotMatch(
+  backgroundUploadManager,
+  /private\s+func\s+completeSystemEventsIfPossible\(\)[\s\S]{0,500}?!isFinalizing/,
+  "UIKit background-session completion must not wait on authenticated finalization requests",
+);
+assert.match(
+  backgroundUploadManager,
+  /if\s+action\.finalize[\s\S]{0,180}?finalizeCurrentItem\(ifCurrent:\s*scope\)[\s\S]{0,120}?completeSystemEventsIfPossible\(\)/,
+  "starting authenticated finalization must promptly release UIKit background-session events",
+);
+assert.match(
+  backgroundUploadManager,
+  /cancelAll[\s\S]*state\.cancellationRequested\s*=\s*true[\s\S]*finishCancellation\(ifCurrentGeneration:\s*generationID\)/,
+  "cancellation cleanup must remain bound to the generation that requested it",
+);
+assert.match(
+  backgroundUploadManager,
+  /func\s+cancelAll\(\s*cleanupCompletion:[\s\S]*finalizationTask\?\.cancel\(\)[\s\S]*finishCancellation\(ifCurrentGeneration:/,
+  "cancellation must stop generation-scoped authenticated finalization",
+);
+assert.match(
+  backgroundUploadManager,
+  /private\s+func\s+finishCancellation[\s\S]*deleteAsset\(assetID:\s*assetID\)[\s\S]*finishCancellationCleanup[\s\S]*clearStateLocked\(\)/,
+  "cancellation state must remain persisted until authenticated remote deletion succeeds",
+);
+assert.match(
+  backgroundUploadManager,
+  /func\s+cancelAllAndWaitForCleanup\(\)\s+async\s*->\s*Bool[\s\S]*withCheckedContinuation[\s\S]*cancelAll\(cleanupCompletion:/,
+  "sign-out must be able to await generation-scoped remote cancellation cleanup",
+);
+assert.match(
+  backgroundUploadManager,
+  /reportProgress[\s\S]*isActiveCurrentLocked\(scope\)[\s\S]*progressHandler/,
+  "progress callbacks must be captured under the lock and scoped to one upload generation",
+);
+assert.match(
+  appRoot,
+  /@Environment\(\\\.scenePhase\)/,
+  "the app must observe foreground activation to reconnect a pending upload",
 );
 for (const symbol of [
   "GlassEffectContainer",

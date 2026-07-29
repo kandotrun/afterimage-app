@@ -69,6 +69,7 @@ final class AppModel: ObservableObject {
     @Published private(set) var isLoadingTimeline = false
     @Published var upload: UploadPresentation?
     @Published private(set) var importSelectionSummary: ImportSelectionSummary?
+    @Published private(set) var backgroundUploadNeedsRetry = false
     @Published var notice: AppNotice?
 
     private let api: APIClient
@@ -125,7 +126,7 @@ final class AppModel: ObservableObject {
             guard let token = try sessionStore.load() else { return }
             await api.setBearerToken(token)
             isAuthenticated = true
-            await resumeBackgroundUploadIfNeeded()
+            await resumeBackgroundUploadIfNeeded(retryAfterFailure: false)
             do {
                 try await refreshTimeline()
             } catch {
@@ -188,13 +189,26 @@ final class AppModel: ObservableObject {
     }
 
     func signOut() async {
-        BackgroundUploadManager.shared.cancelAll()
-        uploadTask?.cancel()
+        let activeUploadTask = uploadTask
+        activeUploadTask?.cancel()
         uploadTask = nil
         upload = nil
         importSelectionSummary = nil
-        await clearLocalSession()
+        backgroundUploadNeedsRetry = false
+        notice = nil
+
+        let cleanupSucceeded = await BackgroundUploadManager.shared.cancelAllAndWaitForCleanup()
+        if let activeUploadTask {
+            await activeUploadTask.value
+        }
+        guard cleanupSucceeded else {
+            haptics.play(.failure)
+            show(error: AfterimageError.invalidResponse)
+            return
+        }
+
         try? await api.revokeSession()
+        await clearLocalSession()
         haptics.play(.selection)
     }
 
@@ -397,6 +411,9 @@ final class AppModel: ObservableObject {
     func cancelUpload() {
         BackgroundUploadManager.shared.cancelAll()
         uploadTask?.cancel()
+        backgroundUploadNeedsRetry = false
+        notice = nil
+        upload = nil
         haptics.play(.delete)
     }
 
@@ -549,9 +566,7 @@ final class AppModel: ObservableObject {
                         context: context,
                         activityID: activityID,
                         progress: { [weak self] _, progress, _, _ in
-                            Task { @MainActor in
-                                self?.upload?.progress = 0.50 + progress * 0.44
-                            }
+                            self?.upload?.progress = 0.50 + progress * 0.44
                         },
                         completion: { result in
                             Task { @MainActor [weak self] in
@@ -586,6 +601,12 @@ final class AppModel: ObservableObject {
                 wasCancelled = false
             }
 
+            if didHandOff,
+               !wasCancelled,
+               BackgroundUploadManager.shared.requiresExplicitRetry {
+                backgroundUploadNeedsRetry = true
+            }
+
             if !didHandOff {
                 optimized?.removeTemporaryFiles()
                 UploadLiveActivityManager.shared.cancel(activityID: activityID)
@@ -598,20 +619,36 @@ final class AppModel: ObservableObject {
         }
     }
 
-    private func resumeBackgroundUploadIfNeeded() async {
+    func resumeBackgroundUploadIfNeeded(retryAfterFailure: Bool = false) async {
+        guard isAuthenticated else { return }
+        let manager = BackgroundUploadManager.shared
+        guard manager.hasPendingUpload else { return }
+        if manager.requiresExplicitRetry && !retryAfterFailure {
+            backgroundUploadNeedsRetry = true
+            upload = nil
+            if notice == nil {
+                notice = AppNotice(
+                    title: L10n.string("error.generic_title"),
+                    message: L10n.string("api.upload_failed")
+                )
+            }
+            return
+        }
+        guard uploadTask == nil else {
+            _ = manager.resumePendingUpload(retryAfterFailure: retryAfterFailure)
+            return
+        }
         guard let context = try? await api.backgroundUploadContext() else { return }
-        let resumed = BackgroundUploadManager.shared.resumePendingUpload(
+        let resumed = manager.resumePendingUpload(
             context: context,
             progress: { [weak self] _, progress, current, total in
-                Task { @MainActor in
-                    guard let self else { return }
-                    self.upload = UploadPresentation(
-                        stage: .uploading,
-                        progress: 0.50 + progress * 0.44,
-                        current: current,
-                        total: total
-                    )
-                }
+                guard let self else { return }
+                self.upload = UploadPresentation(
+                    stage: .uploading,
+                    progress: 0.50 + progress * 0.44,
+                    current: current,
+                    total: total
+                )
             },
             completion: { [weak self] result in
                 Task { @MainActor in
@@ -619,17 +656,36 @@ final class AppModel: ObservableObject {
                     self.upload = nil
                     switch result {
                     case .success:
+                        self.backgroundUploadNeedsRetry = false
                         await self.postReminderScheduler.recordPost()
                         try? await self.refreshTimeline()
                         self.haptics.play(.success)
                     case .failure(let error):
+                        if case .some(.cancelled) = error as? AfterimageError {
+                            self.backgroundUploadNeedsRetry = false
+                            return
+                        }
+                        self.backgroundUploadNeedsRetry = true
                         self.show(error: error)
                     }
                 }
-            }
+            },
+            retryAfterFailure: retryAfterFailure
         )
         if resumed, upload == nil {
+            backgroundUploadNeedsRetry = false
             upload = UploadPresentation(stage: .uploading, progress: 0.50, current: 1, total: 1)
+        }
+    }
+
+    func retryBackgroundUpload() async {
+        await resumeBackgroundUploadIfNeeded(retryAfterFailure: true)
+        if BackgroundUploadManager.shared.requiresExplicitRetry {
+            backgroundUploadNeedsRetry = true
+            notice = AppNotice(
+                title: L10n.string("error.generic_title"),
+                message: L10n.string("api.upload_failed")
+            )
         }
     }
 
