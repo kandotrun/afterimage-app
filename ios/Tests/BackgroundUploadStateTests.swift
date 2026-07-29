@@ -2,6 +2,8 @@ import XCTest
 @testable import afterimage
 
 final class BackgroundUploadStateTests: XCTestCase {
+    private let generationID = UUID(uuidString: "11111111-2222-3333-4444-555555555555")!
+
     private func makePlan(mode: String = "single") -> UploadPlan {
         let json: String
         if mode == "single" {
@@ -36,10 +38,15 @@ final class BackgroundUploadStateTests: XCTestCase {
 
     func testStateRoundTripPreservesRelaunchContextWithoutBearerToken() throws {
         let state = BackgroundUploadState(
+            generationID: generationID,
             baseURL: URL(string: "https://afterimage.2-38.com")!,
             activityID: "activity-1",
             items: [makeItem()],
-            currentIndex: 0
+            currentIndex: 0,
+            pausedAfterFailure: true,
+            cancellationRequested: true,
+            retryAttemptsByTransfer: ["transfer-1": 2],
+            retryNotBeforeByTransfer: ["transfer-1": Date(timeIntervalSince1970: 1_234)]
         )
 
         let data = try JSONEncoder().encode(state)
@@ -47,15 +54,55 @@ final class BackgroundUploadStateTests: XCTestCase {
         let decoded = try JSONDecoder().decode(BackgroundUploadState.self, from: data)
 
         XCTAssertEqual(decoded.baseURL.absoluteString, "https://afterimage.2-38.com")
+        XCTAssertEqual(decoded.generationID, generationID)
         XCTAssertEqual(decoded.activityID, "activity-1")
         XCTAssertEqual(decoded.currentItem?.assetID, "asset-1")
         XCTAssertFalse(decoded.allComplete)
+        XCTAssertTrue(decoded.pausedAfterFailure)
+        XCTAssertTrue(decoded.cancellationRequested)
+        XCTAssertEqual(decoded.retryAttemptsByTransfer, ["transfer-1": 2])
+        XCTAssertEqual(decoded.retryNotBeforeByTransfer["transfer-1"], Date(timeIntervalSince1970: 1_234))
         XCTAssertFalse(encoded.contains("Bearer"))
         XCTAssertFalse(encoded.contains("bearer-session"))
     }
 
+    func testLegacyStateWithoutGenerationOrTerminalFlagsMigratesSafely() throws {
+        let current = BackgroundUploadState(
+            generationID: generationID,
+            baseURL: URL(string: "https://afterimage.2-38.com")!,
+            activityID: nil,
+            items: [makeItem()],
+            currentIndex: 0
+        )
+        let encoded = try JSONEncoder().encode(current)
+        var legacy = try XCTUnwrap(
+            JSONSerialization.jsonObject(with: encoded) as? [String: Any]
+        )
+        legacy.removeValue(forKey: "generationID")
+        legacy.removeValue(forKey: "pausedAfterFailure")
+        legacy.removeValue(forKey: "cancellationRequested")
+        legacy.removeValue(forKey: "retryAttemptsByTransfer")
+        legacy.removeValue(forKey: "retryNotBeforeByTransfer")
+
+        let decoded = try JSONDecoder().decode(
+            BackgroundUploadState.self,
+            from: JSONSerialization.data(withJSONObject: legacy)
+        )
+
+        let migrated = try XCTUnwrap(
+            JSONSerialization.jsonObject(with: JSONEncoder().encode(decoded)) as? [String: Any]
+        )
+        XCTAssertNotNil(migrated["generationID"])
+        XCTAssertFalse(decoded.pausedAfterFailure)
+        XCTAssertFalse(decoded.cancellationRequested)
+        XCTAssertTrue(decoded.retryAttemptsByTransfer.isEmpty)
+        XCTAssertTrue(decoded.retryNotBeforeByTransfer.isEmpty)
+        XCTAssertEqual(decoded.currentItem?.assetID, "asset-1")
+    }
+
     func testAllComplete() {
         let state = BackgroundUploadState(
+            generationID: generationID,
             baseURL: URL(string: "https://afterimage.2-38.com")!,
             activityID: nil,
             items: [makeItem(transferComplete: true)],
@@ -66,6 +113,7 @@ final class BackgroundUploadStateTests: XCTestCase {
 
     func testMultipartProgressTrackingRoundTrip() throws {
         let state = BackgroundUploadState(
+            generationID: generationID,
             baseURL: URL(string: "https://afterimage.2-38.com")!,
             activityID: nil,
             items: [makeItem(plan: makePlan(mode: "multipart"), completedParts: [1, 2])],
@@ -77,6 +125,41 @@ final class BackgroundUploadStateTests: XCTestCase {
 
         XCTAssertEqual(decoded.currentItem?.completedParts, [1, 2])
         XCTAssertFalse(decoded.allComplete)
+    }
+}
+
+final class BackgroundUploadTaskIdentityTests: XCTestCase {
+    private let generationID = UUID(uuidString: "11111111-2222-3333-4444-555555555555")!
+
+    func testSingleAndMultipartIdentitiesRoundTripWithUploadGeneration() {
+        let single = BackgroundUploadTaskIdentity(
+            generationID: generationID,
+            assetID: "asset-1",
+            partNumber: nil
+        )
+        let part = BackgroundUploadTaskIdentity(
+            generationID: generationID,
+            assetID: "asset-1",
+            partNumber: 3
+        )
+
+        XCTAssertEqual(BackgroundUploadTaskIdentity(description: single.description), single)
+        XCTAssertEqual(BackgroundUploadTaskIdentity(description: part.description), part)
+    }
+
+    func testLegacyDescriptionWithoutGenerationIsRejected() {
+        XCTAssertNil(BackgroundUploadTaskIdentity(description: "single:asset-1"))
+        XCTAssertNil(BackgroundUploadTaskIdentity(description: "part:asset-1:2"))
+        XCTAssertNil(
+            BackgroundUploadTaskIdentity(
+                description: "v2:part:\(generationID.uuidString):asset-1:0"
+            )
+        )
+        XCTAssertNil(
+            BackgroundUploadTaskIdentity(
+                description: "v2:single:\(generationID.uuidString):"
+            )
+        )
     }
 }
 
@@ -110,5 +193,96 @@ final class BackgroundUploadRequestFactoryTests: XCTestCase {
 
         XCTAssertNil(request.value(forHTTPHeaderField: "Authorization"))
         XCTAssertEqual(request.url?.host, "uploads.example.com")
+    }
+}
+
+final class BackgroundUploadRetryPolicyTests: XCTestCase {
+    func testRetriesDroppedConnectionsWithBackoff() {
+        let error = URLError(.networkConnectionLost)
+
+        XCTAssertEqual(
+            BackgroundUploadRetryPolicy.disposition(error: error, httpStatus: nil, attempt: 1),
+            .retry(after: 2)
+        )
+        XCTAssertEqual(
+            BackgroundUploadRetryPolicy.disposition(error: error, httpStatus: nil, attempt: 2),
+            .retry(after: 10)
+        )
+        XCTAssertEqual(
+            BackgroundUploadRetryPolicy.disposition(error: error, httpStatus: nil, attempt: 3),
+            .retry(after: 30)
+        )
+        XCTAssertEqual(
+            BackgroundUploadRetryPolicy.disposition(error: error, httpStatus: nil, attempt: 4),
+            .retry(after: 60)
+        )
+        XCTAssertEqual(
+            BackgroundUploadRetryPolicy.disposition(error: error, httpStatus: nil, attempt: 5),
+            .fail
+        )
+        XCTAssertEqual(
+            BackgroundUploadRetryPolicy.disposition(
+                error: NSError(
+                    domain: NSURLErrorDomain,
+                    code: NSURLErrorNetworkConnectionLost
+                ),
+                httpStatus: nil,
+                attempt: 1
+            ),
+            .retry(after: 2)
+        )
+    }
+
+    func testRetriesTemporaryHTTPFailures() {
+        XCTAssertEqual(
+            BackgroundUploadRetryPolicy.disposition(error: nil, httpStatus: 503, attempt: 1),
+            .retry(after: 2)
+        )
+        XCTAssertEqual(
+            BackgroundUploadRetryPolicy.disposition(error: nil, httpStatus: 429, attempt: 2),
+            .retry(after: 10)
+        )
+        XCTAssertEqual(
+            BackgroundUploadRetryPolicy.disposition(error: nil, httpStatus: 409, attempt: 1),
+            .retry(after: 2)
+        )
+        XCTAssertEqual(
+            BackgroundUploadRetryPolicy.disposition(
+                error: URLError(.cancelled),
+                httpStatus: nil,
+                attempt: 1
+            ),
+            .retry(after: 2)
+        )
+        XCTAssertEqual(
+            BackgroundUploadRetryPolicy.disposition(
+                error: AfterimageError.invalidResponse,
+                httpStatus: nil,
+                attempt: 1
+            ),
+            .retry(after: 2)
+        )
+    }
+
+    func testReconcilesWhenUploadEndpointNoLongerFindsTheAsset() {
+        XCTAssertEqual(
+            BackgroundUploadRetryPolicy.disposition(error: nil, httpStatus: 404, attempt: 1),
+            .reconcile
+        )
+    }
+
+    func testFailsPermanentLocalAndAuthenticationErrors() {
+        XCTAssertEqual(
+            BackgroundUploadRetryPolicy.disposition(
+                error: URLError(.fileDoesNotExist),
+                httpStatus: nil,
+                attempt: 1
+            ),
+            .fail
+        )
+        XCTAssertEqual(
+            BackgroundUploadRetryPolicy.disposition(error: nil, httpStatus: 401, attempt: 1),
+            .fail
+        )
     }
 }

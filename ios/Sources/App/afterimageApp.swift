@@ -16,6 +16,7 @@ struct AfterimageApp: App {
 
 struct RootView: View {
     @EnvironmentObject private var model: AppModel
+    @Environment(\.scenePhase) private var scenePhase
 
     var body: some View {
         Group {
@@ -31,8 +32,28 @@ struct RootView: View {
             }
         }
         .task { await launch() }
+        .onChange(of: scenePhase) {
+            guard scenePhase == .active else { return }
+            Task { await model.resumeBackgroundUploadIfNeeded(retryAfterFailure: false) }
+        }
         .alert(item: $model.notice) { notice in
-            Alert(title: Text(notice.title), message: Text(notice.message), dismissButton: .default(Text("閉じる")))
+            if model.backgroundUploadNeedsRetry {
+                return Alert(
+                    title: Text(notice.title),
+                    message: Text(notice.message),
+                    primaryButton: .default(Text(L10n.string("action.retry"))) {
+                        Task { await model.retryBackgroundUpload() }
+                    },
+                    secondaryButton: .cancel(Text(L10n.string("action.cancel"))) {
+                        model.cancelUpload()
+                    }
+                )
+            }
+            return Alert(
+                title: Text(notice.title),
+                message: Text(notice.message),
+                dismissButton: .default(Text("閉じる"))
+            )
         }
     }
 
@@ -42,6 +63,7 @@ struct RootView: View {
         if let index = arguments.firstIndex(of: "-afterimageDevSession"),
            arguments.indices.contains(index + 1) {
             await model.applyDevSessionToken(arguments[index + 1])
+            await model.resumeBackgroundUploadIfNeeded(retryAfterFailure: false)
             return
         }
         #endif
