@@ -217,7 +217,6 @@ private struct UploadDock: View {
     @EnvironmentObject private var model: AppModel
     @Binding var selection: [PhotosPickerItem]
     let recordVideo: () -> Void
-    @State private var isShowingLibrary = false
 
     var body: some View {
         VStack(alignment: .trailing, spacing: 9) {
@@ -245,11 +244,17 @@ private struct UploadDock: View {
                             ) {
                                 recordVideo()
                             }
-                            Button(
-                                L10n.string("camera.source.library"),
-                                systemImage: "photo.on.rectangle"
+                            PhotosPicker(
+                                selection: $selection,
+                                maxSelectionCount: 12,
+                                matching: .videos,
+                                preferredItemEncoding: .current,
+                                photoLibrary: .shared()
                             ) {
-                                isShowingLibrary = true
+                                Label(
+                                    L10n.string("camera.source.library"),
+                                    systemImage: "photo.on.rectangle"
+                                )
                             }
                         } label: {
                             Image(systemName: "plus")
@@ -267,14 +272,6 @@ private struct UploadDock: View {
         .animation(.snappy(duration: 0.3), value: model.upload)
         .animation(.snappy(duration: 0.3), value: model.importSelectionSummary)
         .frame(maxWidth: .infinity, alignment: .trailing)
-        .photosPicker(
-            isPresented: $isShowingLibrary,
-            selection: $selection,
-            maxSelectionCount: 12,
-            matching: .videos,
-            preferredItemEncoding: .current,
-            photoLibrary: .shared()
-        )
     }
 }
 
