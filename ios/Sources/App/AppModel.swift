@@ -81,6 +81,7 @@ final class AppModel: ObservableObject {
     private var didBootstrap = false
     private var uploadTask: Task<Void, Never>?
     private var isRecordingDailyWeather = false
+    private var shouldRepeatDailyWeatherRecording = false
 
     init(
         api: APIClient,
@@ -222,6 +223,7 @@ final class AppModel: ObservableObject {
             assets.append(contentsOf: additions)
             nextCursor = page.nextCursor
             await loadDailyWeather(for: additions)
+            await recordTodayWeather()
         } catch {
             show(error: error)
         }
@@ -232,10 +234,21 @@ final class AppModel: ObservableObject {
     }
 
     func recordTodayWeather() async {
-        guard !isRecordingDailyWeather else { return }
+        guard !isRecordingDailyWeather else {
+            shouldRepeatDailyWeatherRecording = true
+            return
+        }
         isRecordingDailyWeather = true
         defer { isRecordingDailyWeather = false }
 
+        repeat {
+            shouldRepeatDailyWeatherRecording = false
+            await recordCurrentDailyWeatherIfNeeded()
+            await backfillMissingDailyWeather()
+        } while shouldRepeatDailyWeatherRecording
+    }
+
+    private func recordCurrentDailyWeatherIfNeeded() async {
         let localDate = DailyWeatherDate.localDate(for: .now)
         if dailyWeather[localDate] != nil { return }
         if let existing = try? await api.dailyWeather(in: localDate...localDate),
@@ -246,6 +259,27 @@ final class AppModel: ObservableObject {
         guard let draft = try? await weatherRecorder.snapshot(),
               let weather = try? await api.saveDailyWeather(draft) else { return }
         mergeDailyWeather([weather])
+    }
+
+    private func backfillMissingDailyWeather() async {
+        let requests = DailyWeatherBackfillPlan.requests(
+            assets: assets,
+            storedLocalDates: Set(dailyWeather.keys)
+        )
+        let weather = await DailyWeatherBackfillExecutor.execute(
+            requests: requests,
+            existingWeather: { [api] localDate in
+                let existing = try await api.dailyWeather(in: localDate...localDate)
+                return existing.first
+            },
+            snapshot: { [weatherRecorder] request in
+                try await weatherRecorder.snapshot(for: request)
+            },
+            save: { [api] draft in
+                try await api.saveDailyWeather(draft)
+            }
+        )
+        mergeDailyWeather(weather)
     }
 
     private func loadDailyWeather(for assets: [Asset]) async {

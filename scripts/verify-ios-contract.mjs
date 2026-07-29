@@ -16,6 +16,7 @@ const weatherTemperatureFormatter = read(
   "ios/Sources/Features/Timeline/DailyWeatherTemperatureFormatter.swift",
 );
 const timeline = read("ios/Sources/Features/Timeline/TimelineView.swift");
+const appModel = read("ios/Sources/App/AppModel.swift");
 const apiClient = read("ios/Sources/Networking/APIClient.swift");
 const apiModels = read("ios/Sources/Models/APIModels.swift");
 const mediaImporter = read("ios/Sources/Import/MediaImporter.swift");
@@ -128,6 +129,21 @@ assert.match(timeline, /matching:\s*\.videos/, "media picker must show only vide
 assert.doesNotMatch(timeline, /matching:[^\n]*\.images/, "media picker must not show images");
 assert.match(timeline, /\.accessibilityLabel\("動画を追加"\)/, "media picker label must describe video-only selection");
 assert.doesNotMatch(timeline, /写真や動画を(?:追加|選ぶ)/, "timeline copy must describe video-only selection");
+assert.match(
+  timeline,
+  /\.task\s*\{\s*await model\.recordTodayWeather\(\)\s*\}/,
+  "initial timeline display must record missing daily weather",
+);
+assert.match(
+  timeline,
+  /Button\("再読み込み"[\s\S]{0,240}?refreshTimeline\(\)[\s\S]{0,120}?recordTodayWeather\(\)/,
+  "account-menu reload must record missing daily weather after refreshing assets",
+);
+assert.match(
+  appModel,
+  /func loadMoreIfNeeded\(after asset: Asset\)[\s\S]{0,900}?loadDailyWeather\(for: additions\)[\s\S]{0,120}?recordTodayWeather\(\)/,
+  "pagination must record missing daily weather after appending visible assets",
+);
 for (const symbol of [
   "GlassEffectContainer",
   ".glassEffect",

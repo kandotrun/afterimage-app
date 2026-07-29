@@ -61,7 +61,10 @@ struct TimelineView: View {
                         .padding(.bottom, 100)
                     }
                 }
-                .refreshable { try? await model.refreshTimeline() }
+                .refreshable {
+                    try? await model.refreshTimeline()
+                    await model.recordTodayWeather()
+                }
             }
             .task { await model.recordTodayWeather() }
             .navigationTitle(L10n.string("timeline.title"))
@@ -106,7 +109,10 @@ struct TimelineView: View {
                             isShowingAIConnection = true
                         }
                         Button("再読み込み", systemImage: "arrow.clockwise") {
-                            Task { try? await model.refreshTimeline() }
+                            Task {
+                                try? await model.refreshTimeline()
+                                await model.recordTodayWeather()
+                            }
                         }
                         Button("サインアウト", systemImage: "rectangle.portrait.and.arrow.right", role: .destructive) {
                             Task { await model.signOut() }
