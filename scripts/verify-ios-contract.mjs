@@ -137,6 +137,7 @@ for (const symbol of [
   "loadTransferable",
   "FileHandle",
   "AVVideoCodecType.hevc",
+  "maximumBitRate: 3_000_000",
   "PumpCancellationRelay",
   "AVAssetReaderTrackOutput(track: audioTrack, outputSettings: nil)",
   "AVAssetWriterInput(mediaType: .audio, outputSettings: nil",

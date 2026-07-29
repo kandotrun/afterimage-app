@@ -11,7 +11,7 @@ final class CompressionProfileTests: XCTestCase {
 
         XCTAssertEqual(plan.width, 1920)
         XCTAssertEqual(plan.height, 1080)
-        XCTAssertEqual(plan.averageBitRate, 6_000_000)
+        XCTAssertEqual(plan.averageBitRate, 3_000_000)
         XCTAssertEqual(plan.audioStrategy, .passthrough)
         XCTAssertEqual(plan.fileExtension, "mov")
         XCTAssertEqual(plan.contentType, "video/quicktime")
