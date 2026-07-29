@@ -35,6 +35,46 @@ struct WeatherKitDailyWeatherRecorder {
         )
     }
 
+    func snapshot(for request: DailyWeatherBackfillRequest) async throws -> DailyWeatherDraft {
+        let location = CLLocation(
+            latitude: request.location.latitude,
+            longitude: request.location.longitude
+        )
+        let hourlyStart = request.capturedAt.addingTimeInterval(-60 * 60)
+        let hourlyEnd = request.capturedAt.addingTimeInterval(60 * 60)
+        let dailyInterval = DailyWeatherHistoricalSelection.queryInterval(around: request.capturedAt)
+        let service = WeatherService.shared
+        let (hourly, daily) = try await service.weather(
+            for: location,
+            including: .hourly(startDate: hourlyStart, endDate: hourlyEnd),
+            .daily(startDate: dailyInterval.start, endDate: dailyInterval.end)
+        )
+        let attribution = try await service.attribution
+        guard let hour = hourly.min(by: {
+            abs($0.date.timeIntervalSince(request.capturedAt))
+                < abs($1.date.timeIntervalSince(request.capturedAt))
+        }),
+        let dayStart = DailyWeatherHistoricalSelection.dayStart(
+            from: daily.map(\.date),
+            containing: request.capturedAt
+        ),
+        let day = daily.first(where: { $0.date == dayStart }) else {
+            throw DailyWeatherRecordingError.forecastUnavailable
+        }
+
+        return DailyWeatherDraft(
+            localDate: request.localDate,
+            symbolName: hour.symbolName,
+            temperatureCelsius: hour.temperature.converted(to: .celsius).value,
+            highTemperatureCelsius: day.highTemperature.converted(to: .celsius).value,
+            lowTemperatureCelsius: day.lowTemperature.converted(to: .celsius).value,
+            recordedAt: hour.date,
+            attributionLegalUrl: attribution.legalPageURL,
+            attributionLightUrl: attribution.combinedMarkLightURL,
+            attributionDarkUrl: attribution.combinedMarkDarkURL
+        )
+    }
+
     private func currentLocation() async throws -> CLLocation {
         guard CLLocationManager.locationServicesEnabled() else {
             throw DailyWeatherRecordingError.locationUnavailable
