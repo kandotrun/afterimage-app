@@ -6,7 +6,12 @@ const NOW = new Date("2026-07-27T00:00:00.000Z");
 
 type TestDailySummaryGenerator = (
   bindings: Env,
-  transcripts: Array<{ capturedAt: string; text: string }>,
+  sources: Array<{
+    capturedAt: string;
+    transcript: string | null;
+    visualSummary: string | null;
+    visualSegments: Array<{ startMs: number; endMs: number; caption: string }>;
+  }>,
 ) => Promise<{ summary: string; model: string }>;
 
 type TestMcpResponse = {
@@ -3166,6 +3171,35 @@ describe("daily Qwen summary", () => {
     ).run();
   }
 
+  async function insertVisualAnalysis(options: {
+    assetId: string;
+    summary: string;
+    caption: string;
+  }) {
+    await env.DB.prepare(
+      `INSERT INTO video_analyses (
+        asset_id, job_id, model_id, model_revision, backend, coverage_mode,
+        summary, created_at, updated_at
+      ) VALUES (?, ?, 'microsoft/Mage-VL', 'revision', 'frames', 'full', ?, ?, ?)`,
+    ).bind(
+      options.assetId,
+      `job-${options.assetId}`,
+      options.summary,
+      NOW.toISOString(),
+      NOW.toISOString(),
+    ).run();
+    await env.DB.prepare(
+      `INSERT INTO video_analysis_segments (
+        analysis_asset_id, position, start_ms, end_ms, caption
+      ) VALUES (?, 0, 500, 1500, ?)`,
+    ).bind(options.assetId, options.caption).run();
+    await env.DB.prepare(
+      `INSERT INTO video_analysis_ranges (
+        analysis_asset_id, position, start_ms, end_ms
+      ) VALUES (?, 0, 0, 2000)`,
+    ).bind(options.assetId).run();
+  }
+
   it("summarizes only the owner's completed transcripts and caches an unchanged day", async () => {
     const generator = vi.fn<TestDailySummaryGenerator>(async () => ({
       summary: "検査書類を確認し、昼食後に車の設定を見直した。",
@@ -3191,12 +3225,23 @@ describe("daily Qwen summary", () => {
       summary: "検査書類を確認し、昼食後に車の設定を見直した。",
       model: "qwen3.8-max-preview",
       sourceTranscriptCount: 2,
+      sourceVisualAnalysisCount: 0,
       generatedAt: NOW.toISOString(),
     });
     expect(generator).toHaveBeenCalledOnce();
     expect(generator.mock.calls[0]?.[1]).toEqual([
-      { capturedAt: "2026-07-27T01:00:00.000Z", text: "検査書類を確認した" },
-      { capturedAt: "2026-07-27T12:00:00.000Z", text: "車の設定を見直した" },
+      {
+        capturedAt: "2026-07-27T01:00:00.000Z",
+        transcript: "検査書類を確認した",
+        visualSummary: null,
+        visualSegments: [],
+      },
+      {
+        capturedAt: "2026-07-27T12:00:00.000Z",
+        transcript: "車の設定を見直した",
+        visualSummary: null,
+        visualSegments: [],
+      },
     ]);
     expect(JSON.stringify(generator.mock.calls)).not.toContain("他人の秘密");
     expect(JSON.stringify(generator.mock.calls)).not.toContain("翌日の記録");
@@ -3224,6 +3269,186 @@ describe("daily Qwen summary", () => {
     expect(generator).toHaveBeenCalledOnce();
   });
 
+  it("reuses a migrated transcript-only cache entry without regenerating it", async () => {
+    const generator = vi.fn<TestDailySummaryGenerator>();
+    const owner = await signIn("summary-migrated-cache-owner", generator);
+    const ownerId = await userId("summary-migrated-cache-owner");
+    await insertTranscript({
+      id: "migrated-cache-source",
+      userId: ownerId,
+      capturedAt: "2026-07-27T01:00:00.000Z",
+      text: "移行前に要約された記録",
+    });
+    const digestInput = JSON.stringify([[
+      "migrated-cache-source",
+      "2026-07-27T01:00:00.000Z",
+      NOW.toISOString(),
+      "移行前に要約された記録",
+    ]]);
+    const digestBytes = await crypto.subtle.digest("SHA-256", new TextEncoder().encode(digestInput));
+    const sourceDigest = Array.from(new Uint8Array(digestBytes), (byte) => byte.toString(16).padStart(2, "0")).join("");
+    await env.DB.prepare(
+      `INSERT INTO daily_summaries (
+        user_id, start_at, end_at, source_digest, source_transcript_count,
+        source_visual_analysis_count, summary, model, generated_at
+      ) VALUES (?, ?, ?, ?, 1, 0, ?, 'qwen3.8-max-preview', ?)`,
+    ).bind(
+      ownerId,
+      "2026-07-27T00:00:00.000Z",
+      "2026-07-28T00:00:00.000Z",
+      sourceDigest,
+      "移行済みの要約",
+      "2026-07-27T23:00:00.000Z",
+    ).run();
+
+    const requestHeaders = new Headers();
+    requestHeaders.set("Author" + "ization", owner.authorization);
+    const response = await owner.app.request(summaryPath, { headers: requestHeaders }, env);
+    expect(response.status).toBe(200);
+    await expect(response.json()).resolves.toMatchObject({
+      summary: "移行済みの要約",
+      sourceTranscriptCount: 1,
+      sourceVisualAnalysisCount: 0,
+      generatedAt: "2026-07-27T23:00:00.000Z",
+    });
+    expect(generator).not.toHaveBeenCalled();
+  });
+
+  it("summarizes visual-only memories, excludes other owners, and invalidates when Mage output changes", async () => {
+    const generator = vi.fn<TestDailySummaryGenerator>()
+      .mockResolvedValueOnce({ summary: "犬が庭を走り、玄関で止まった。", model: "qwen3.8-max-preview" })
+      .mockResolvedValueOnce({ summary: "犬が庭を走り、飼い主の前で止まった。", model: "qwen3.8-max-preview" });
+    const owner = await signIn("summary-visual-owner", generator);
+    await signIn("summary-visual-other");
+    const ownerId = await userId("summary-visual-owner");
+    const otherId = await userId("summary-visual-other");
+
+    await insertTranscript({
+      id: "visual-only",
+      userId: ownerId,
+      capturedAt: "2026-07-27T03:00:00.000Z",
+      text: null,
+      transcriptionStatus: "pending",
+    });
+    await insertVisualAnalysis({
+      assetId: "visual-only",
+      summary: "犬が庭を走っている。",
+      caption: "犬が玄関で止まった。",
+    });
+    await insertTranscript({
+      id: "other-visual-only",
+      userId: otherId,
+      capturedAt: "2026-07-27T04:00:00.000Z",
+      text: null,
+      transcriptionStatus: "pending",
+    });
+    await insertVisualAnalysis({
+      assetId: "other-visual-only",
+      summary: "他人の部屋が映っている。",
+      caption: "他人の秘密が見える。",
+    });
+
+    const first = await owner.app.request(summaryPath, {
+      headers: { authorization: owner.authorization },
+    }, env);
+    expect(first.status).toBe(200);
+    await expect(first.json()).resolves.toMatchObject({
+      summary: "犬が庭を走り、玄関で止まった。",
+      sourceTranscriptCount: 0,
+      sourceVisualAnalysisCount: 1,
+    });
+    expect(generator).toHaveBeenCalledOnce();
+    expect(generator.mock.calls[0]?.[1]).toEqual([{
+      capturedAt: "2026-07-27T03:00:00.000Z",
+      transcript: null,
+      visualSummary: "犬が庭を走っている。",
+      visualSegments: [{ startMs: 500, endMs: 1500, caption: "犬が玄関で止まった。" }],
+    }]);
+    expect(JSON.stringify(generator.mock.calls)).not.toContain("他人の秘密");
+
+    await env.DB.prepare(
+      "UPDATE video_analysis_ranges SET end_ms = ? WHERE analysis_asset_id = ? AND position = 0",
+    ).bind(2500, "visual-only").run();
+    const coverageHeaders = new Headers();
+    coverageHeaders.set("Authorization", owner.authorization);
+    const coverageRefreshed = await owner.app.request(summaryPath, { headers: coverageHeaders }, env);
+    expect(coverageRefreshed.status).toBe(200);
+    expect(generator).toHaveBeenCalledOnce();
+
+    await env.DB.batch([
+      env.DB.prepare(
+        "UPDATE video_analyses SET summary = ?, updated_at = ? WHERE asset_id = ?",
+      ).bind("犬が庭を走り、飼い主へ近づく。", "2026-07-27T14:00:00.000Z", "visual-only"),
+      env.DB.prepare(
+        "UPDATE video_analysis_segments SET caption = ? WHERE analysis_asset_id = ? AND position = 0",
+      ).bind("犬が飼い主の前で止まった。", "visual-only"),
+    ]);
+
+    const refreshed = await owner.app.request(summaryPath, {
+      headers: { authorization: owner.authorization },
+    }, env);
+    expect(refreshed.status).toBe(200);
+    await expect(refreshed.json()).resolves.toMatchObject({
+      summary: "犬が庭を走り、飼い主の前で止まった。",
+      sourceTranscriptCount: 0,
+      sourceVisualAnalysisCount: 1,
+    });
+    expect(generator).toHaveBeenCalledTimes(2);
+    expect(generator.mock.calls[1]?.[1][0]).toMatchObject({
+      visualSummary: "犬が庭を走り、飼い主へ近づく。",
+      visualSegments: [{ caption: "犬が飼い主の前で止まった。" }],
+    });
+  });
+
+  it("does not count disabled Mage output against daily summary source bounds", async () => {
+    const generator = vi.fn<TestDailySummaryGenerator>(async () => ({
+      summary: "文字起こしだけを要約した。",
+      model: "qwen3.8-max-preview",
+    }));
+    const owner = await signIn("summary-disabled-visual-owner", generator);
+    const ownerId = await userId("summary-disabled-visual-owner");
+    await insertTranscript({
+      id: "disabled-visual",
+      userId: ownerId,
+      capturedAt: "2026-07-27T03:00:00.000Z",
+      text: "文字起こしだけを使う。",
+    });
+    await insertVisualAnalysis({
+      assetId: "disabled-visual",
+      summary: "送信してはいけない映像解析。",
+      caption: "送信してはいけない映像説明。",
+    });
+    const segmentStatements = Array.from({ length: 100 }, (_, index) => env.DB.prepare(
+      `INSERT INTO video_analysis_segments (
+        analysis_asset_id, position, start_ms, end_ms, caption
+      ) VALUES (?, ?, ?, ?, ?)`,
+    ).bind(
+      "disabled-visual",
+      index + 1,
+      2000 + index * 10,
+      2001 + index * 10,
+      "秘".repeat(2000),
+    ));
+    await env.DB.batch(segmentStatements);
+    await env.DB.prepare("UPDATE assets SET agent_access_enabled = 0 WHERE id = ?")
+      .bind("disabled-visual").run();
+
+    const response = await owner.app.request(summaryPath, {
+      headers: { authorization: owner.authorization },
+    }, env);
+    expect(response.status).toBe(200);
+    await expect(response.json()).resolves.toMatchObject({
+      sourceTranscriptCount: 1,
+      sourceVisualAnalysisCount: 0,
+    });
+    expect(generator).toHaveBeenCalledWith(expect.anything(), [{
+      capturedAt: "2026-07-27T03:00:00.000Z",
+      transcript: "文字起こしだけを使う。",
+      visualSummary: null,
+      visualSegments: [],
+    }]);
+  });
+
   it("regenerates the cached summary after a source transcript changes", async () => {
     const generator = vi.fn<TestDailySummaryGenerator>()
       .mockResolvedValueOnce({ summary: "午前の記録。", model: "qwen3.8-max-preview" })
@@ -3246,6 +3471,48 @@ describe("daily Qwen summary", () => {
     expect(refreshed.status).toBe(200);
     await expect(refreshed.json()).resolves.toMatchObject({ summary: "午前と午後の記録。" });
     expect(generator).toHaveBeenCalledTimes(2);
+  });
+
+  it("rejects oversized transcript and visual sources before calling the provider", async () => {
+    const transcriptGenerator = vi.fn<TestDailySummaryGenerator>();
+    const transcriptOwner = await signIn("summary-row-limit-owner", transcriptGenerator);
+    const transcriptOwnerId = await userId("summary-row-limit-owner");
+    for (let index = 0; index < 201; index += 1) {
+      await insertTranscript({
+        id: `row-limit-${index}`,
+        userId: transcriptOwnerId,
+        capturedAt: `2026-07-27T12:${String(index % 60).padStart(2, "0")}:00.000Z`,
+        text: `記録${index}`,
+      });
+    }
+    const tooMany = await transcriptOwner.app.request(summaryPath, {
+      headers: { authorization: transcriptOwner.authorization },
+    }, env);
+    expect(tooMany.status).toBe(413);
+    await expect(tooMany.json()).resolves.toMatchObject({ error: { code: "daily_summary_too_large" } });
+    expect(transcriptGenerator).not.toHaveBeenCalled();
+
+    const visualGenerator = vi.fn<TestDailySummaryGenerator>();
+    const visualOwner = await signIn("summary-char-limit-owner", visualGenerator);
+    const visualOwnerId = await userId("summary-char-limit-owner");
+    await insertTranscript({
+      id: "visual-char-limit",
+      userId: visualOwnerId,
+      capturedAt: "2026-07-27T03:00:00.000Z",
+      text: null,
+      transcriptionStatus: "pending",
+    });
+    await insertVisualAnalysis({
+      assetId: "visual-char-limit",
+      summary: "映".repeat(200_001),
+      caption: "短い映像説明",
+    });
+    const tooLong = await visualOwner.app.request(summaryPath, {
+      headers: { authorization: visualOwner.authorization },
+    }, env);
+    expect(tooLong.status).toBe(413);
+    await expect(tooLong.json()).resolves.toMatchObject({ error: { code: "daily_summary_too_large" } });
+    expect(visualGenerator).not.toHaveBeenCalled();
   });
 
   it("rejects ranges that are not a calendar-day-sized window", async () => {
@@ -3273,6 +3540,7 @@ describe("daily Qwen summary", () => {
       summary: null,
       model: null,
       sourceTranscriptCount: 0,
+      sourceVisualAnalysisCount: 0,
       generatedAt: null,
     });
     expect(unusedGenerator).not.toHaveBeenCalled();
