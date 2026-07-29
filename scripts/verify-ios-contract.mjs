@@ -12,6 +12,9 @@ const entitlements = read("ios/Resources/afterimage.entitlements");
 const dayStory = read("ios/Sources/Features/Timeline/DayStorySection.swift");
 const [dayStorySection, dayStoryHero = ""] = dayStory.split("private struct DayStoryHero");
 const weatherBadge = read("ios/Sources/Features/Timeline/DailyWeatherBadge.swift");
+const weatherTemperatureFormatter = read(
+  "ios/Sources/Features/Timeline/DailyWeatherTemperatureFormatter.swift",
+);
 const timeline = read("ios/Sources/Features/Timeline/TimelineView.swift");
 const apiClient = read("ios/Sources/Networking/APIClient.swift");
 const apiModels = read("ios/Sources/Models/APIModels.swift");
@@ -38,6 +41,16 @@ assert.match(info, /<key>NSMicrophoneUsageDescription<\/key>/);
 assert.match(entitlements, /<key>com\.apple\.developer\.weatherkit<\/key>\s*<true\/>/);
 assert.match(weatherBadge, /\.symbolRenderingMode\(\.hierarchical\)/);
 assert.match(weatherBadge, /\.tint\(\.secondary\)/);
+assert.match(
+  weatherTemperatureFormatter,
+  /numberFormatStyle:\s*\.number\.precision\(\.fractionLength\(0\)\)/,
+  "weather temperatures must be formatted without fractional digits",
+);
+assert.match(
+  weatherBadge,
+  /DailyWeatherTemperatureFormatter\.string\(celsius:\s*celsius\)/,
+  "weather badge must use the whole-degree temperature formatter",
+);
 assert.match(privacy, /<key>NSPrivacyTracking<\/key>\s*<false\/>/);
 for (const category of [
   "NSPrivacyCollectedDataTypeName",
