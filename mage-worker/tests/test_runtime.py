@@ -6,6 +6,7 @@ import pytest
 from afterimage_mage_worker.contracts import AnalysisResult, ContractError, Segment
 from afterimage_mage_worker.runtime import (
     MageRuntime,
+    analysis_prompt,
     analysis_windows,
     model_output_invalid_event,
     normalize_window_segments,
@@ -19,6 +20,14 @@ def test_model_output_error_event_excludes_generated_content() -> None:
         "event": "model_output_invalid",
         "reason": "analysis_json_invalid",
     }
+
+
+def test_analysis_prompt_requires_japanese_output() -> None:
+    prompt = analysis_prompt(start_ms=1200, end_ms=3400, duration_ms=5000)
+    assert "要約と各場面の説明" in prompt
+    assert "すべて簡潔で事実に基づく日本語" in prompt
+    assert "5000ミリ秒" in prompt
+    assert "1200ミリ秒から3400ミリ秒" in prompt
 
 
 def test_long_video_uses_bounded_sampled_windows() -> None:
