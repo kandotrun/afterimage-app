@@ -1007,11 +1007,43 @@ export function verifyBackendRolloutScript(source) {
   const shellLines = normalizedLines(source)
     .map((line) => line.replace(/^\s*#.*$/, "").replace(/\s+#.*$/, "").trim())
     .filter(Boolean);
-  const executable = shellLines.join("\n").replace(/\\\n/g, " ");
-  const commandPattern = /(?:^|[\n;(|])\s*(?:(?:[A-Za-z_][A-Za-z0-9_]*=\S+)\s+)*(?:npx\s+)?wrangler\s+(?:deploy|d1\s+migrations)\b[^;\n)]*/g;
-  const wranglerCommands = [...executable.matchAll(commandPattern)]
-    .map(([command]) => command.replace(/^[\s\n;(|]+/, "").trim());
-  if (wranglerCommands.some((command) => /\|\|\s*(?:true|:|exit\s+0)\b/.test(command))) {
+  const logicalLines = [];
+  let pendingLine = "";
+  for (const line of shellLines) {
+    const continued = line.endsWith("\\");
+    pendingLine += `${pendingLine ? " " : ""}${continued ? line.slice(0, -1).trim() : line}`;
+    if (!continued) {
+      logicalLines.push(pendingLine);
+      pendingLine = "";
+    }
+  }
+  if (pendingLine) logicalLines.push(pendingLine);
+  const executable = logicalLines.join("\n");
+  const controlDepthAt = [];
+  let controlDepth = 0;
+  for (const line of logicalLines) {
+    if (/^(?:fi|done|esac)(?:\s|$)|^}/.test(line)) controlDepth = Math.max(0, controlDepth - 1);
+    controlDepthAt.push(controlDepth);
+    if (/\bthen\s*$/.test(line)
+        || /\bdo\s*$/.test(line)
+        || /^case\b.*\bin\s*$/.test(line)
+        || /\{\s*$/.test(line)) {
+      controlDepth += 1;
+    }
+  }
+  const commandPattern = /(?:^|[;(|{])\s*(?:(?:[A-Za-z_][A-Za-z0-9_]*=\S+)\s+)*(?:npx\s+)?wrangler\s+(?:deploy|d1\s+migrations)\b[^;)]*/g;
+  const commandRecords = logicalLines.flatMap((line, lineIndex) =>
+    [...line.matchAll(commandPattern)].map(([command]) => ({
+      command: command.replace(/^[\s;(|{]+/, "").trim(),
+      line,
+      lineIndex,
+    }))
+  );
+  const wranglerCommands = commandRecords.map(({ command }) => command);
+  if (commandRecords.some(({ command, line, lineIndex }) =>
+    controlDepthAt[lineIndex] > 0
+      || /\b(?:if|for|while|until|case)\b.*\b(?:then|do|in)\b/.test(line)
+      || /\|\|/.test(command))) {
     failures.push(failure(
       "backend.rollout.error-handling",
       "maintenance、migration、final deployの失敗を|| true等で握りつぶさないでください。",

@@ -478,6 +478,14 @@ wrangler deploy --config "$WRANGLER_CONFIG" --keep-vars --message "production"
     "wrangler deploy --config \"$WRANGLER_CONFIG\" --keep-vars --message \"production\"",
     "wrangler deploy --config \"$WRANGLER_CONFIG\" --keep-vars --message \"production\" || true",
   );
+  const swallowedBrace = safe.replace(
+    "wrangler deploy --config \"$WRANGLER_CONFIG\" --keep-vars --message \"production\"",
+    "wrangler deploy --config \"$WRANGLER_CONFIG\" --keep-vars --message \"production\" || { echo failed; }",
+  );
+  const neverExecutedMigration = safe.replace(
+    "wrangler d1 migrations apply \"$D1_DATABASE\" --remote --config \"$WRANGLER_CONFIG\"",
+    "if false; then\n  wrangler d1 migrations apply \"$D1_DATABASE\" --remote --config \"$WRANGLER_CONFIG\"\nfi",
+  );
 
   assert.deepEqual(verifyBackendRolloutScript(safe), []);
   assert.ok(verifyBackendRolloutScript(unsafe).some((failure) =>
@@ -500,6 +508,12 @@ wrangler deploy --config "$WRANGLER_CONFIG" --keep-vars --message "production"
     failure.id === "backend.rollout.error-handling"
   ));
   assert.ok(verifyBackendRolloutScript(swallowedFinal).some((failure) =>
+    failure.id === "backend.rollout.error-handling"
+  ));
+  assert.ok(verifyBackendRolloutScript(swallowedBrace).some((failure) =>
+    failure.id === "backend.rollout.error-handling"
+  ));
+  assert.ok(verifyBackendRolloutScript(neverExecutedMigration).some((failure) =>
     failure.id === "backend.rollout.error-handling"
   ));
 });
