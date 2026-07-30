@@ -183,6 +183,12 @@ struct TimelineView: View {
             .sheet(isPresented: $isShowingMemorySearch) {
                 MemorySearchView()
             }
+            .sheet(isPresented: $model.reminderInvite) {
+                ReminderInviteSheet(
+                    accept: { Task { await model.acceptReminderInvite() } },
+                    decline: { model.declineReminderInvite() }
+                )
+            }
             .fullScreenCover(item: $cameraRoute) { _ in
                 CameraCaptureView()
             }
@@ -254,6 +260,53 @@ private struct TimelineLoadFailedView: View {
     }
 }
 
+private struct ReminderInviteSheet: View {
+    @Environment(\.dismiss) private var dismiss
+    let accept: () -> Void
+    let decline: () -> Void
+
+    var body: some View {
+        ScrollView {
+            VStack(spacing: 18) {
+                Image(systemName: "moon.stars")
+                    .font(.system(size: 44, weight: .light))
+                    .foregroundStyle(.secondary)
+                Text(verbatim: L10n.string("notification.invite.title"))
+                    .font(.title3.weight(.semibold))
+                Text(verbatim: L10n.string("notification.invite.body"))
+                    .font(.subheadline)
+                    .foregroundStyle(.secondary)
+                    .multilineTextAlignment(.center)
+                    .lineSpacing(3)
+                VStack(spacing: 10) {
+                    Button {
+                        accept()
+                        dismiss()
+                    } label: {
+                        Text(verbatim: L10n.string("notification.invite.accept"))
+                            .font(.headline)
+                            .frame(maxWidth: .infinity, minHeight: 44)
+                    }
+                    .buttonStyle(.glassProminent)
+                    Button {
+                        decline()
+                        dismiss()
+                    } label: {
+                        Text(verbatim: L10n.string("notification.invite.decline"))
+                            .frame(maxWidth: .infinity, minHeight: 44)
+                    }
+                    .buttonStyle(.glass)
+                }
+                .padding(.top, 6)
+            }
+            .frame(maxWidth: .infinity)
+            .padding(28)
+        }
+        .presentationDetents([.medium, .large])
+        .interactiveDismissDisabled()
+    }
+}
+
 private enum CameraRoute: Identifiable {
     case capture
 
@@ -322,7 +375,7 @@ private struct EmptyTimelineView: View {
             Image(systemName: "video.fill")
                 .font(.system(size: 52, weight: .light))
                 .foregroundStyle(.secondary)
-            Text("最初のafterimageを残そう")
+            Text("最初の残像を残そう")
                 .font(.title3.weight(.semibold))
             Text("下の＋から撮影するか動画を選ぶと、\n音を変えずに軽くして保存します。")
                 .font(.subheadline)

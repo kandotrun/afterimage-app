@@ -182,6 +182,7 @@ struct DailyPlaybackView: View {
                         .foregroundStyle(.secondary)
                 }
             }
+            .accessibilityElement(children: .combine)
             if let location = controller.activeClip?.asset.location {
                 CaptureLocationChip(location: location)
             }
@@ -198,7 +199,6 @@ struct DailyPlaybackView: View {
         }
         .padding(13)
         .background(Color(.tertiarySystemFill), in: .rect(cornerRadius: 16))
-        .accessibilityElement(children: .combine)
     }
 
     private var chapterListVertical: some View {
@@ -278,6 +278,7 @@ struct DailyPlaybackView: View {
 
             Text(PlaybackClock.label(controller.position))
                 .font(.caption2.monospacedDigit())
+                .accessibilityHidden(true)
             Slider(
                 value: Binding(
                     get: { controller.position },
@@ -289,8 +290,17 @@ struct DailyPlaybackView: View {
                 else { controller.scrubEnded() }
             }
             .tint(.accentColor)
+            .accessibilityLabel(L10n.string("playback.scrub"))
+            .accessibilityValue(
+                L10n.format(
+                    "playback.position_accessibility",
+                    PlaybackClock.label(controller.position) as NSString,
+                    PlaybackClock.label(controller.duration) as NSString
+                )
+            )
             Text(PlaybackClock.label(controller.duration))
                 .font(.caption2.monospacedDigit())
+                .accessibilityHidden(true)
         }
     }
 

@@ -23,14 +23,7 @@ struct DailyWeatherBadge: View {
             }
             .font(.subheadline)
             .accessibilityElement(children: .ignore)
-            .accessibilityLabel(
-                L10n.format(
-                    "weather.summary.accessibility",
-                    temperature(weather.temperatureCelsius) as NSString,
-                    temperature(weather.highTemperatureCelsius) as NSString,
-                    temperature(weather.lowTemperatureCelsius) as NSString
-                )
-            )
+            .accessibilityLabel(summaryAccessibilityLabel)
 
             Link(destination: weather.attributionLegalUrl) {
                 AsyncImage(url: attributionMarkUrl) { phase in
@@ -48,10 +41,31 @@ struct DailyWeatherBadge: View {
                     }
                 }
                 .frame(width: 78, height: 14, alignment: .trailing)
+                .padding(.vertical, 15)
+                .contentShape(.rect)
+                .padding(.vertical, -15)
             }
             .tint(.secondary)
             .accessibilityLabel(L10n.string("weather.attribution"))
         }
+    }
+
+    private var summaryAccessibilityLabel: String {
+        if let conditionKey = WeatherConditionDescriber.key(forSymbol: weather.symbolName) {
+            return L10n.format(
+                "weather.summary.accessibility_with_condition",
+                L10n.string(conditionKey) as NSString,
+                temperature(weather.temperatureCelsius) as NSString,
+                temperature(weather.highTemperatureCelsius) as NSString,
+                temperature(weather.lowTemperatureCelsius) as NSString
+            )
+        }
+        return L10n.format(
+            "weather.summary.accessibility",
+            temperature(weather.temperatureCelsius) as NSString,
+            temperature(weather.highTemperatureCelsius) as NSString,
+            temperature(weather.lowTemperatureCelsius) as NSString
+        )
     }
 
     private var attributionMarkUrl: URL {

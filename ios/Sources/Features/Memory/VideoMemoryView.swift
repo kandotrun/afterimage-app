@@ -1,6 +1,16 @@
 import AVFoundation
+import Combine
 import SwiftUI
 import UIKit
+
+enum PlayerChromeAccessibilityPolicy {
+    static func shouldAutoHide(
+        isVoiceOverRunning: Bool,
+        isSwitchControlRunning: Bool
+    ) -> Bool {
+        !isVoiceOverRunning && !isSwitchControlRunning
+    }
+}
 
 struct VideoMemoryView: View {
     @EnvironmentObject private var model: AppModel
@@ -51,6 +61,12 @@ struct VideoMemoryView: View {
             await controller.activate { try await model.playbackGrant(for: asset) }
             while !Task.isCancelled {
                 try? await Task.sleep(for: .milliseconds(250))
+                guard PlayerChromeAccessibilityPolicy.shouldAutoHide(
+                    isVoiceOverRunning: UIAccessibility.isVoiceOverRunning,
+                    isSwitchControlRunning: UIAccessibility.isSwitchControlRunning
+                ) else {
+                    continue
+                }
                 withAnimation(.easeInOut(duration: 0.2)) {
                     chrome.apply(.clockTicked(at: Date()))
                 }
@@ -78,6 +94,16 @@ struct VideoMemoryView: View {
         .onChange(of: requestedSeek) { _, _ in
             applyRequestedSeek()
         }
+        .onReceive(NotificationCenter.default.publisher(
+            for: UIAccessibility.voiceOverStatusDidChangeNotification
+        )) { _ in
+            revealChromeForAssistiveAccess()
+        }
+        .onReceive(NotificationCenter.default.publisher(
+            for: UIAccessibility.switchControlStatusDidChangeNotification
+        )) { _ in
+            revealChromeForAssistiveAccess()
+        }
     }
 
     @ViewBuilder
@@ -94,7 +120,7 @@ struct VideoMemoryView: View {
                 Text(message)
                     .font(.callout)
                     .multilineTextAlignment(.center)
-                Button("再試行") {
+                Button(L10n.string("action.retry")) {
                     Task { await controller.activate { try await model.playbackGrant(for: asset) } }
                 }
                 .buttonStyle(.glass)
@@ -124,6 +150,7 @@ struct VideoMemoryView: View {
                 HStack(spacing: 10) {
                     Text(PlaybackClock.label(controller.position))
                         .font(.caption.weight(.semibold).monospacedDigit())
+                        .accessibilityHidden(true)
                     Slider(
                         value: Binding(
                             get: { controller.position },
@@ -139,8 +166,17 @@ struct VideoMemoryView: View {
                             chrome.apply(.scrubEnded)
                         }
                     }
+                    .accessibilityLabel(L10n.string("playback.scrub"))
+                    .accessibilityValue(
+                        L10n.format(
+                            "playback.position_accessibility",
+                            PlaybackClock.label(controller.position) as NSString,
+                            PlaybackClock.label(controller.duration) as NSString
+                        )
+                    )
                     Text(PlaybackClock.label(controller.duration))
                         .font(.caption.weight(.semibold).monospacedDigit())
+                        .accessibilityHidden(true)
                 }
                 .padding(.horizontal, 14)
                 .frame(height: 52)
@@ -204,6 +240,14 @@ struct VideoMemoryView: View {
         controller.scrub(to: seconds)
         controller.scrubEnded()
         self.requestedSeek = nil
+    }
+
+    private func revealChromeForAssistiveAccess() {
+        guard !chrome.isVisible,
+              UIAccessibility.isVoiceOverRunning || UIAccessibility.isSwitchControlRunning else {
+            return
+        }
+        chrome.apply(.tapped(at: Date(), isPlaying: controller.phase == .playing))
     }
 }
 

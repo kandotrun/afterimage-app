@@ -14,6 +14,15 @@ struct PhotoMemoryView: View {
         ZStack {
             if let image = fullImage ?? thumbnail {
                 ZoomableImageView(image: image, onSingleTap: onSingleTap)
+                    .accessibilityElement(children: .ignore)
+                    .accessibilityLabel(
+                        L10n.format(
+                            "accessibility.photo_at",
+                            asset.capturedAt.formatted() as NSString
+                        )
+                    )
+                    .accessibilityAddTraits(.isImage)
+                    .accessibilityAction { onSingleTap() }
             } else if loadError == nil {
                 ProgressView().tint(.white)
             }
@@ -24,7 +33,7 @@ struct PhotoMemoryView: View {
                     Text(loadError)
                         .font(.callout)
                         .multilineTextAlignment(.center)
-                    Button("再試行") {
+                    Button(L10n.string("action.retry")) {
                         Task { await load() }
                     }
                     .buttonStyle(.glass)

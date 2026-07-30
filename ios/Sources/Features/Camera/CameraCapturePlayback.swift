@@ -12,6 +12,13 @@ struct RecordingDurationView: View {
                 .padding(.horizontal, 12)
                 .padding(.vertical, 7)
                 .glassEffect(.regular, in: .capsule)
+                .accessibilityLabel(
+                    L10n.format(
+                        "camera.accessibility.recording_duration",
+                        spokenDuration(at: context.date) as NSString
+                    )
+                )
+                .accessibilityAddTraits(.updatesFrequently)
         }
     }
 
@@ -21,6 +28,13 @@ struct RecordingDurationView: View {
             format: "%02d:%02d",
             totalSeconds / 60,
             totalSeconds % 60
+        )
+    }
+
+    private func spokenDuration(at date: Date) -> String {
+        let totalSeconds = max(0, Int(date.timeIntervalSince(startedAt)))
+        return Duration.seconds(totalSeconds).formatted(
+            .units(allowed: [.minutes, .seconds], width: .wide)
         )
     }
 }

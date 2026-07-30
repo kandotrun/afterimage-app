@@ -133,11 +133,11 @@ struct MemoryDetailView: View {
                 }
             }
         }
-        .confirmationDialog("このafterimageを削除しますか？", isPresented: $confirmDelete, titleVisibility: .visible) {
+        .confirmationDialog("この残像を削除しますか？", isPresented: $confirmDelete, titleVisibility: .visible) {
             Button("削除", role: .destructive) { deleteCurrent() }
             Button("キャンセル", role: .cancel) {}
         } message: {
-            Text("R2上の写真・動画も完全に削除されます。")
+            Text("サーバーに保存された写真・動画も完全に削除され、元に戻せません。")
         }
         .onChange(of: model.assets) { _, assets in
             guard !standalone else { return }

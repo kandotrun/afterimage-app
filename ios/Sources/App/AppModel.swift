@@ -119,6 +119,7 @@ final class AppModel: ObservableObject {
     @Published private(set) var aiConsent: AIConsent?
     @Published private(set) var isUpdatingAIConsent = false
     @Published private(set) var accountDeletionState: AccountDeletionState = .idle
+    @Published var reminderInvite = false
     @Published var notice: AppNotice?
 
     private let api: APIClient
@@ -129,6 +130,7 @@ final class AppModel: ObservableObject {
     private let haptics: HapticEngine
     private let weatherRecorder: WeatherKitDailyWeatherRecorder
     private let postReminderScheduler: DailyPostReminderScheduler
+    private let reminderInviteDefaults: UserDefaults
     private var nextCursor: String?
     private var didBootstrap = false
     private var currentSession: StoredSession?
@@ -141,6 +143,7 @@ final class AppModel: ObservableObject {
     private var authScope: AuthScope?
     private var timelineRefresh: TimelineRefresh?
     private var transientNoticeTask: Task<Void, Never>?
+    private static let reminderInviteOfferedKey = "notification-reminder-invite.has-been-offered"
 
     var hasActiveBackgroundUpload: Bool {
         uploadTask != nil
@@ -165,7 +168,8 @@ final class AppModel: ObservableObject {
         compressor: MediaCompressor = MediaCompressor(),
         haptics: HapticEngine = HapticEngine(),
         weatherRecorder: WeatherKitDailyWeatherRecorder = WeatherKitDailyWeatherRecorder(),
-        postReminderScheduler: DailyPostReminderScheduler = DailyPostReminderScheduler()
+        postReminderScheduler: DailyPostReminderScheduler = DailyPostReminderScheduler(),
+        reminderInviteDefaults: UserDefaults = .standard
     ) {
         self.api = api
         self.authGeneration = authGeneration
@@ -175,6 +179,7 @@ final class AppModel: ObservableObject {
         self.haptics = haptics
         self.weatherRecorder = weatherRecorder
         self.postReminderScheduler = postReminderScheduler
+        self.reminderInviteDefaults = reminderInviteDefaults
     }
 
     static func live() -> AppModel {
@@ -400,6 +405,7 @@ final class AppModel: ObservableObject {
         importSelectionSummary = nil
         backgroundUploadNeedsRetry = false
         localCleanupNeedsRetry = false
+        reminderInvite = false
         notice = nil
 
         let previousOwnerID = authScope?.ownerID
@@ -1200,6 +1206,7 @@ final class AppModel: ObservableObject {
                                     await self.postReminderScheduler.recordPost()
                                     try? await self.refreshTimelineEnsuringFresh()
                                     self.haptics.play(.success)
+                                    await self.offerReminderInviteAfterSuccessfulUpload()
                                     continuation.resume()
                                 case .failure(let error):
                                     continuation.resume(throwing: error)
@@ -1306,6 +1313,7 @@ final class AppModel: ObservableObject {
                         await self.postReminderScheduler.recordPost()
                         try? await self.refreshTimelineEnsuringFresh()
                         self.haptics.play(.success)
+                        await self.offerReminderInviteAfterSuccessfulUpload()
                     case .failure(let error):
                         if case .some(.cancelled) = error as? AfterimageError {
                             self.syncBackgroundUploadRecovery()
@@ -1442,6 +1450,7 @@ final class AppModel: ObservableObject {
         paginationFailed = false
         aiConsent = nil
         pendingAccountDeletionAuthorizationCode = nil
+        reminderInvite = false
         isAuthenticated = false
         await postReminderScheduler.clear()
     }
@@ -1603,6 +1612,28 @@ final class AppModel: ObservableObject {
         } catch {
             return false
         }
+    private func offerReminderInviteAfterSuccessfulUpload() async {
+        let wasOffered = reminderInviteDefaults.bool(forKey: Self.reminderInviteOfferedKey)
+        guard !wasOffered else { return }
+        let authorizationStatus = await postReminderScheduler.authorizationStatus()
+        guard ReminderInvitePolicy.shouldOffer(
+            wasOffered: wasOffered,
+            authorizationStatus: authorizationStatus
+        ) else {
+            reminderInviteDefaults.set(true, forKey: Self.reminderInviteOfferedKey)
+            return
+        }
+        reminderInviteDefaults.set(true, forKey: Self.reminderInviteOfferedKey)
+        reminderInvite = true
+    }
+
+    func acceptReminderInvite() async {
+        reminderInvite = false
+        _ = await postReminderScheduler.requestPermission()
+    }
+
+    func declineReminderInvite() {
+        reminderInvite = false
     }
 
     private func show(error: Error) {

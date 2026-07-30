@@ -1,6 +1,15 @@
 import Foundation
 import UserNotifications
 
+enum ReminderInvitePolicy {
+    static func shouldOffer(
+        wasOffered: Bool,
+        authorizationStatus: UNAuthorizationStatus
+    ) -> Bool {
+        !wasOffered && authorizationStatus == .notDetermined
+    }
+}
+
 enum DailyPostReminderPolicy {
     static let defaultHorizon = 60
     static let identifierPrefix = "daily-post-reminder."
@@ -119,14 +128,24 @@ final class DailyPostReminderScheduler {
         }
     }
 
+    func authorizationStatus() async -> UNAuthorizationStatus {
+        await center.notificationSettings().authorizationStatus
+    }
+
+    func requestPermission() async -> Bool {
+        let granted = (try? await center.requestAuthorization(options: [.alert, .sound])) == true
+        if granted {
+            let lastPostedAt = defaults.object(forKey: Self.lastPostedAtKey) as? Date
+            await reschedule(lastPostedAt: lastPostedAt)
+        }
+        return granted
+    }
+
     private func isAuthorized() async -> Bool {
-        let settings = await center.notificationSettings()
-        switch settings.authorizationStatus {
+        switch await authorizationStatus() {
         case .authorized, .provisional, .ephemeral:
             return true
-        case .notDetermined:
-            return (try? await center.requestAuthorization(options: [.alert, .sound])) == true
-        case .denied:
+        case .notDetermined, .denied:
             return false
         @unknown default:
             return false

@@ -51,7 +51,7 @@ struct TranscriptSheet: View {
                     ProgressView()
                 }
             }
-            .navigationTitle("文字起こし")
+            .navigationTitle("ことば")
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
                 ToolbarItem(placement: .topBarLeading) {
