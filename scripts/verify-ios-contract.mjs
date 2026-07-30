@@ -829,6 +829,12 @@ assert.match(removeReminderNotifications, /removePendingNotificationRequests/);
 assert.match(removeReminderNotifications, /removeDeliveredNotifications/);
 assert.match(settingsView, /account\.delete\.scope/);
 assert.match(settingsView, /ChallengeBoundAppleSignInButton/);
+const accountSettingsSection = declaration(settings, "private var accountSection");
+assert.match(
+  accountSettingsSection,
+  /Section\s*\{[\s\S]*\}\s*header:\s*\{\s*Text\(L10n\.string\("account\.settings\.title"\)\)/,
+  "footer-bearing account section must use the explicit content/header/footer initializer",
+);
 
 const legalPolicy = declaration(apiClient, "enum LegalURLPolicy");
 assert.match(legalPolicy, /scheme\?\.lowercased\(\)\s*==\s*"https"/);

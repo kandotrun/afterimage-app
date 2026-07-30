@@ -142,7 +142,7 @@ struct SettingsView: View {
 
     @ViewBuilder
     private var accountSection: some View {
-        Section(L10n.string("account.settings.title")) {
+        Section {
             Button(L10n.string("settings.reload")) {
                 Task {
                     try? await model.refreshTimeline()
@@ -200,6 +200,8 @@ struct SettingsView: View {
             case .idle, .completed:
                 EmptyView()
             }
+        } header: {
+            Text(L10n.string("account.settings.title"))
         } footer: {
             Text(L10n.string("account.delete.scope"))
         }
