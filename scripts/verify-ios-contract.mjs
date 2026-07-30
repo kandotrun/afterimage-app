@@ -732,6 +732,24 @@ assert.match(authGate, /terminationTasks/);
 assert.match(authGate, /terminatedGenerations/);
 assert.match(authGate, /guard\s+!invalidatedGenerations\.contains/);
 assert.match(authGate, /func\s+invalidate/);
+const sessionExpiredHandler = declaration(
+  appModel,
+  "private func handleIfSessionExpired",
+);
+assert.doesNotMatch(
+  sessionExpiredHandler,
+  /private func handleIfSessionExpired[^\{]*\basync\b/,
+  "session-expiration detection must remain synchronous so show(error:) compiles",
+);
+assert.match(sessionExpiredHandler, /invalidatesSession\s*==\s*true/);
+const showError = declaration(appModel, "private func show(error:");
+assert.match(showError, /if\s+handleIfSessionExpired\(error\)\s*\{\s*return\s*\}/);
+const createMCPToken = declaration(appModel, "func createMCPToken(");
+assert.match(
+  createMCPToken,
+  /return\s+try\s+await\s+withSessionInvalidation/,
+  "createMCPToken must return the API response after its consent guard",
+);
 const sessionStore = declaration(keychainSessionStore, "final class KeychainSessionStore");
 const compareAndSwapClear = declaration(sessionStore, "func clear(ifCurrent");
 assert.match(compareAndSwapClear, /SessionCASPolicy\.canClear/);

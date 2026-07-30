@@ -474,7 +474,7 @@ final class AppModel: ObservableObject {
         do {
             try await refreshTimeline()
         } catch {
-            if await handleIfSessionExpired(error) { return }
+            if handleIfSessionExpired(error) { return }
             showTransient(L10n.string("timeline.refresh_failed"))
         }
     }
@@ -526,7 +526,7 @@ final class AppModel: ObservableObject {
                 observedLastPostedAt: readyAssets.map(\.createdAt).max()
             )
         } catch {
-            if await handleIfSessionExpired(error) { throw error }
+            if handleIfSessionExpired(error) { throw error }
             if isCurrentAuthScope(authScope), assets.isEmpty {
                 timelineLoadState = .failed
             }
@@ -557,7 +557,7 @@ final class AppModel: ObservableObject {
             await loadDailyWeather(for: additions, authScope: authScope)
             await recordTodayWeather()
         } catch {
-            if await handleIfSessionExpired(error) { return }
+            if handleIfSessionExpired(error) { return }
             paginationFailed = true
         }
     }
@@ -665,7 +665,7 @@ final class AppModel: ObservableObject {
             guard isCurrentAuthScope(authScope) else { return }
             mergeDailyWeather(weather)
         } catch {
-            _ = await handleIfSessionExpired(error)
+            _ = handleIfSessionExpired(error)
         }
     }
 
@@ -977,7 +977,7 @@ final class AppModel: ObservableObject {
                 message: "consent required"
             )
         }
-        try await withSessionInvalidation {
+        return try await withSessionInvalidation {
             try await api.createMCPToken(name: name)
         }
     }
@@ -1580,13 +1580,13 @@ final class AppModel: ObservableObject {
         do {
             return try await operation()
         } catch {
-            _ = await handleIfSessionExpired(error)
+            _ = handleIfSessionExpired(error)
             throw error
         }
     }
 
     @discardableResult
-    private func handleIfSessionExpired(_ error: Error) async -> Bool {
+    private func handleIfSessionExpired(_ error: Error) -> Bool {
         (error as? AfterimageError)?.invalidatesSession == true
     }
 
