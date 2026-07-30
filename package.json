@@ -10,12 +10,15 @@
   "scripts": {
     "test": "node scripts/verify-backend-crons.mjs && npm --workspace backend test",
     "typecheck": "npm --workspace backend run typecheck",
-    "test:app-store": "node --test scripts/tests/verify-app-store.test.mjs",
+    "test:app-store": "python3 -m unittest scripts/tests/test_verify_ios_archive.py && node --test scripts/tests/verify-app-store.test.mjs",
     "verify:app-store": "node scripts/verify-app-store.mjs --mode contracts",
     "verify:app-store:screenshots": "node scripts/verify-app-store.mjs --mode screenshots",
     "verify:app-store:submission": "node scripts/verify-app-store.mjs --mode submission",
     "screenshots:app-store": "bash scripts/generate-app-store-screenshots.sh",
     "check:ios": "node scripts/verify-ios-contract.mjs && node scripts/verify-ios-pr37-port-contract.mjs && node scripts/verify-ios-pr39-port-contract.mjs && node scripts/verify-ios-localizations.mjs && npm run test:app-store && npm run verify:app-store",
     "check": "npm run check:ios && npm run test && npm run typecheck && npm --workspace backend run deploy:dry"
+  },
+  "devDependencies": {
+    "yaml": "2.9.0"
   }
 }

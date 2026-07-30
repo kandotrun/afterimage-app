@@ -2,21 +2,7 @@ name: ios
 
 on:
   push:
-    branches: [main]
-    paths:
-      - "ios/**"
-      - "docs/app-store/**"
-      - "package.json"
-      - "package-lock.json"
-      - "scripts/fixtures/app-store/**"
-      - "scripts/tests/verify-app-store.test.mjs"
-      - "scripts/verify-app-store.mjs"
-      - "scripts/generate-app-store-screenshots.sh"
-      - "scripts/verify-ios-contract.mjs"
-      - "scripts/verify-ios-localizations.mjs"
-      - "scripts/xcode-clang-probe"
-      - ".github/workflows/**"
-  pull_request:
+    branches: ["**"]
     paths:
       - "ios/**"
       - "docs/app-store/**"

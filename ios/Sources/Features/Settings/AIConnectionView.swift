@@ -27,7 +27,7 @@ struct AIConnectionView: View {
                             .symbolEffect(.breathe)
                         Text("記憶を、AIが読めるように")
                             .font(.title2.weight(.bold))
-                        Text("動画の文字起こしだけを、あなたが許可したAIエージェントへ安全に渡します。写真や動画本体を書き換える権限はありません。")
+                        Text(L10n.string("mcp.connection.description"))
                             .font(.subheadline)
                             .foregroundStyle(.secondary)
                             .lineSpacing(3)
@@ -42,7 +42,7 @@ struct AIConnectionView: View {
                             .foregroundStyle(.secondary)
                             .textSelection(.enabled)
                     }
-                    Label("文字起こしの読み取り専用", systemImage: "lock.shield")
+                    Label(L10n.string("mcp.connection.read_only"), systemImage: "lock.shield")
                         .foregroundStyle(.secondary)
                 }
 

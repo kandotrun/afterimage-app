@@ -690,6 +690,9 @@ describe("asset upload and private timeline", () => {
     }, env);
     expect(complete.status).toBe(200);
     await expect(complete.json()).resolves.toMatchObject({ asset: { status: "ready", byteSize: total } });
+    expect(await env.DB.prepare(
+      "SELECT upload_id, part_size FROM assets WHERE id = ?",
+    ).bind(created.asset.id).first()).toMatchObject({ upload_id: null, part_size: null });
   }, 30_000);
 
   it("renews a stale multipart upload before storing a part", async () => {
@@ -1006,7 +1009,7 @@ describe("asset upload and private timeline", () => {
     const firstCompletion = await app.request(`/v1/assets/${body.asset.id}/upload/complete`, {
       method: "POST",
       headers: { authorization },
-    }, envWithRunFailureBeforeCommit("UPDATE assets SET status = 'ready', updated_at"));
+    }, envWithRunFailureBeforeCommit("SET status = 'ready', upload_id = NULL"));
     expect(firstCompletion.status).toBe(500);
     expect(await env.DB.prepare("SELECT status FROM assets WHERE id = ?")
       .bind(body.asset.id).first()).toMatchObject({ status: "uploading" });
@@ -1299,7 +1302,7 @@ describe("asset upload and private timeline", () => {
     const completed = await app.request(`/v1/assets/${asset.id}/upload/complete`, {
       method: "POST",
       headers: { authorization },
-    }, envWithCommittedRunFailure("UPDATE assets SET status = 'ready', upload_lease"));
+    }, envWithCommittedRunFailure("SET status = 'ready', upload_lease = NULL"));
 
     expect(completed.status).toBe(500);
     expect(await env.DB.prepare("SELECT status FROM assets WHERE id = ?")

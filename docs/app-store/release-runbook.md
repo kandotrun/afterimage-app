@@ -9,7 +9,7 @@
 3. `actionlint .github/workflows/*.yml`を実行する。actionlintを導入していないlocal環境では、PyYAML等の利用可能なparserで全workflowをparseし、CIまたはreview環境ではactionlintを必須にする。
 4. macOS self-hosted jobのiOS unit/UI `xcresult`と6.9-inch screenshot artifactを取得する。
 5. secret scanとP0/P1 review clearanceを取得する。
-6. `release-evidence.json` は実測結果だけをverifiedにする。
+6. `release-evidence.json` は実測結果だけをverifiedにする。`releaseCommit`には実際にbuild/testした40桁commit SHAを記録し、全evidence itemの`commit`を同じ値へbindする。各itemは`type`（`github_actions` / `artifact` / `live_probe` / `app_store_connect` / `human_review`）、`result: "passed"`、ISO 8601の`recordedAt`、具体的な`details`に加え、canonical GitHub Actions run URL、`runId`、`runAttempt`、`workflowPath`、`jobName`を持たせる。`artifact`にはGitHubの`artifactId`と実ファイルの64桁`sha256`も記録する。submission verifierはGitHub APIからrun、job、artifactをread-backし、repository、commit、workflow、attempt、成功状態、artifact digestを照合する。private repositoryをlocalで検証する場合は`GITHUB_TOKEN="$(gh auth token)" npm run verify:app-store:submission`を実行する。文字列だけの自己申告、別commit、予定、推測、APIで確認できない証跡を記録しない。
 
 ## 2. Backend migration
 
@@ -22,8 +22,9 @@ Issue #42の認証challenge、versioned AI consent、agent access default OFF、
 3. 既存user/asset件数、owner scope、default OFF backfill、nonce一回消費、consent状態、deletion job状態をread-backする。
 4. staging backendをdeployし、health、auth challenge、consent gate、upload/playback、account deletion再試行をsmokeする。
 5. rollback条件を確認する。破壊的なschema rollbackは行わず、必要ならforward-fix migrationを用意する。
-6. productionのbackup/復旧点とpending一覧を保存し、通常のrepo-managed deploy経路でmigrationを適用する。
-7. production read-back後にbackendをdeployし、公開healthとowner-scoped smokeを確認する。
+6. productionでは`WRANGLER_CONFIG`、`D1_DATABASE`、`PRODUCTION_ORIGIN`を管理環境で設定し、repoの`scripts/deploy-backend-production.sh`だけを使う。
+7. scriptはfinal/maintenanceのdry-run後、schema非依存maintenance Workerを先にdeployして503をread-backし、auth/upload/AI/cronを停止する。その状態でD1 backup付きmigrationを適用し、最終Workerをdeployしてhealthと法務URLの200をread-backする。
+8. migrationまたはfinal deployに失敗した場合は旧privacy境界へ戻さずmaintenanceを維持し、forward-fix後にscriptを再実行する。
 
 実コマンドには運用環境の管理configを使う。`wrangler.example.jsonc`のplaceholderを実resource IDへ置換した生成物やCLI tokenをcommitしない。実施前後のmigration一覧、件数だけをprivate release evidenceへ保存し、ユーザー行やtokenを添付しない。
 

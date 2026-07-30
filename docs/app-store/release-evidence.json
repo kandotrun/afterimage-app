@@ -1,5 +1,6 @@
 {
   "version": 1,
+  "releaseCommit": null,
   "entries": [
     {
       "id": "AUTH_CHALLENGE",

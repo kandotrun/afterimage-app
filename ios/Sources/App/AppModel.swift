@@ -136,7 +136,7 @@ final class AppModel: ObservableObject {
     private var currentSession: StoredSession?
     private var uploadTask: Task<Void, Never>?
     private var discardsPendingUploadOnRetry = false
-    private var pendingAccountDeletionAuthorizationCode: String?
+    private var pendingAccountDeletionReauthorization: AccountDeletionReauthorization?
     private var isRecordingDailyWeather = false
     private var shouldRepeatDailyWeatherRecording = false
     private var authScopeGeneration = UUID()
@@ -984,10 +984,10 @@ final class AppModel: ObservableObject {
             return
         }
         accountDeletionState = .deleting
-        let authorizationCode = pendingAccountDeletionAuthorizationCode
-        pendingAccountDeletionAuthorizationCode = nil
+        let reauthorization = pendingAccountDeletionReauthorization
+        pendingAccountDeletionReauthorization = nil
         do {
-            try await api.deleteAccount(authorizationCode: authorizationCode)
+            try await api.deleteAccount(reauthorization: reauthorization)
         } catch {
             if let error = error as? AfterimageError,
                error.requiresAccountDeletionReauthentication {
@@ -1046,7 +1046,7 @@ final class AppModel: ObservableObject {
         challengeID: String
     ) async {
         guard accountDeletionState == .reauthenticationRequired,
-              let session = currentSession,
+              currentSession != nil,
               let tokenData = credential.identityToken,
               let identityToken = String(data: tokenData, encoding: .utf8),
               let codeData = credential.authorizationCode,
@@ -1055,29 +1055,13 @@ final class AppModel: ObservableObject {
             show(error: AfterimageError.missingCredential)
             return
         }
-        do {
-            let response = try await api.signIn(
-                identityToken: identityToken,
-                challengeID: challengeID,
-                displayName: nil
-            )
-            if let expectedAccountID = session.context.accountID {
-                try await establishSession(
-                    response,
-                    expectedAccountID: expectedAccountID
-                )
-            } else if currentSession?.context != session.context {
-                throw AfterimageError.invalidResponse
-            }
-            pendingAccountDeletionAuthorizationCode = authorizationCode
-            accountDeletionState = .idle
-            await deleteAccount()
-        } catch {
-            pendingAccountDeletionAuthorizationCode = nil
-            accountDeletionState = .reauthenticationRequired
-            haptics.play(.failure)
-            show(error: error)
-        }
+        pendingAccountDeletionReauthorization = AccountDeletionReauthorization(
+            authorizationCode: authorizationCode,
+            identityToken: identityToken,
+            challengeId: challengeID
+        )
+        accountDeletionState = .idle
+        await deleteAccount()
     }
 
     func retryLocalCleanup() async {
@@ -1612,6 +1596,8 @@ final class AppModel: ObservableObject {
         } catch {
             return false
         }
+    }
+
     private func offerReminderInviteAfterSuccessfulUpload() async {
         let wasOffered = reminderInviteDefaults.bool(forKey: Self.reminderInviteOfferedKey)
         guard !wasOffered else { return }

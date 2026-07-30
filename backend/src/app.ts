@@ -29,9 +29,11 @@ import {
   type GeneratedDailySummary,
 } from "./qwen-summary";
 import { registerDailyWeatherRoutes } from "./weather";
+import { deleteSonioxResources } from "./soniox";
+import { cleanupSonioxOutbox, pollTranscriptions } from "./transcription";
 
 export type { AppleIdentity } from "./apple";
-export { pollTranscriptions } from "./transcription";
+export { pollTranscriptions };
 
 type VerifyAppleIdentityToken = (
   identityToken: string,
@@ -182,6 +184,13 @@ interface UploadPartRow {
   etag: string;
 }
 
+interface SonioxCleanupAssetRow {
+  id: string;
+  user_id: string;
+  soniox_file_id: string | null;
+  soniox_transcription_id: string | null;
+}
+
 interface CleanupAssetRow {
   id: string;
   user_id: string;
@@ -190,6 +199,9 @@ interface CleanupAssetRow {
   upload_mode: "single" | "multipart";
   upload_id: string | null;
   status: "uploading" | "failed";
+  soniox_file_id: string | null;
+  soniox_transcription_id: string | null;
+  deletion_requested_at: string | null;
 }
 
 interface CleanupDerivativeRow {
@@ -218,6 +230,8 @@ const aiConsentSchema = z.object({
 }).strict();
 
 const accountDeletionSchema = z.object({
+  challengeId: z.string().uuid(),
+  identityToken: z.string().min(10).max(16_384),
   authorizationCode: z.string().min(10).max(2_048),
 }).strict();
 
@@ -347,6 +361,59 @@ function randomToken(): string {
 async function sha256Hex(value: string): Promise<string> {
   const digest = await crypto.subtle.digest("SHA-256", new TextEncoder().encode(value));
   return [...new Uint8Array(digest)].map((byte) => byte.toString(16).padStart(2, "0")).join("");
+}
+
+class AppleChallengeError extends Error {
+  constructor(readonly code: "invalid_apple_challenge" | "invalid_apple_token") {
+    super(code);
+  }
+}
+
+async function verifyAndConsumeAppleChallenge(
+  bindings: Env,
+  challengeId: string,
+  identityToken: string,
+  now: Date,
+  verifyIdentityToken: VerifyAppleIdentityToken,
+): Promise<{ identity: AppleIdentity; nonce: string }> {
+  const nowIso = now.toISOString();
+  const challenge = await bindings.DB.prepare(
+    `SELECT nonce
+       FROM apple_auth_challenges
+      WHERE id = ? AND consumed_at IS NULL AND expires_at > ?`,
+  ).bind(challengeId, nowIso).first<{ nonce: string }>();
+  if (!challenge) throw new AppleChallengeError("invalid_apple_challenge");
+
+  let identity: AppleIdentity;
+  try {
+    identity = await verifyIdentityToken(
+      identityToken,
+      bindings.APPLE_BUNDLE_ID,
+      await sha256Hex(challenge.nonce),
+    );
+  } catch {
+    throw new AppleChallengeError("invalid_apple_token");
+  }
+
+  const identityTokenHash = await sha256Hex(identityToken);
+  let consumed: D1Result;
+  try {
+    consumed = await bindings.DB.prepare(
+      `UPDATE apple_auth_challenges
+          SET identity_token_hash = ?, consumed_at = ?
+        WHERE id = ? AND consumed_at IS NULL AND expires_at > ?
+          AND NOT EXISTS (
+            SELECT 1 FROM apple_auth_challenges
+             WHERE identity_token_hash = ?
+          )`,
+    ).bind(identityTokenHash, nowIso, challengeId, nowIso, identityTokenHash).run();
+  } catch {
+    throw new AppleChallengeError("invalid_apple_challenge");
+  }
+  if ((consumed.meta.changes ?? 0) !== 1) {
+    throw new AppleChallengeError("invalid_apple_challenge");
+  }
+  return { identity, nonce: challenge.nonce };
 }
 
 function trustedClientIp(context: Context<AppEnvironment>): string | null {
@@ -813,6 +880,7 @@ export async function cleanupExpiredState(bindings: Env, now = new Date()) {
     expiredChallenges,
     expiredAssetLedger,
     expiredExternalAiLeases,
+    expiredSonioxLeases,
     expiredDeletionJobs,
   ] = await bindings.DB.batch([
     bindings.DB.prepare("DELETE FROM sessions WHERE expires_at <= ?").bind(nowIso),
@@ -837,6 +905,14 @@ export async function cleanupExpiredState(bindings: Env, now = new Date()) {
       `DELETE FROM external_ai_work_leases
         WHERE id IN (
           SELECT id FROM external_ai_work_leases
+           WHERE expires_at <= ?
+           ORDER BY expires_at ASC LIMIT 10000
+        )`,
+    ).bind(nowIso),
+    bindings.DB.prepare(
+      `DELETE FROM soniox_work_leases
+        WHERE asset_id IN (
+          SELECT asset_id FROM soniox_work_leases
            WHERE expires_at <= ?
            ORDER BY expires_at ASC LIMIT 10000
         )`,
@@ -867,10 +943,63 @@ export async function cleanupExpiredState(bindings: Env, now = new Date()) {
     ]);
     expiredDerivatives += deleted?.meta.changes ?? 0;
   }
+
+  await cleanupSonioxOutbox(bindings, now);
+
+  const sonioxCandidates = await bindings.DB.prepare(
+    `SELECT id, user_id, soniox_file_id, soniox_transcription_id
+       FROM assets
+      WHERE (soniox_file_id IS NOT NULL OR soniox_transcription_id IS NOT NULL)
+        AND (transcription_status IN ('completed', 'failed') OR deletion_requested_at IS NOT NULL)
+      ORDER BY transcription_updated_at ASC, id ASC LIMIT 100`,
+  ).all<SonioxCleanupAssetRow>();
+  let cleanedSonioxAssets = 0;
+  for (const asset of sonioxCandidates.results) {
+    try {
+      await deleteSonioxResources(
+        bindings,
+        asset.soniox_transcription_id,
+        asset.soniox_file_id,
+      );
+      const cleared = await bindings.DB.prepare(
+        `UPDATE assets
+            SET soniox_file_id = CASE WHEN soniox_file_id = ? THEN NULL ELSE soniox_file_id END,
+                soniox_transcription_id = CASE
+                  WHEN soniox_transcription_id = ? THEN NULL ELSE soniox_transcription_id
+                END,
+                transcription_updated_at = ?
+          WHERE id = ? AND user_id = ?`,
+      ).bind(
+        asset.soniox_file_id,
+        asset.soniox_transcription_id,
+        nowIso,
+        asset.id,
+        asset.user_id,
+      ).run();
+      if ((cleared.meta.changes ?? 0) === 1) {
+        await bindings.DB.prepare(
+          "DELETE FROM soniox_cleanup_outbox WHERE asset_id = ? AND promoted_at IS NOT NULL",
+        ).bind(asset.id).run();
+      }
+      cleanedSonioxAssets += cleared.meta.changes ?? 0;
+    } catch {
+      console.error(JSON.stringify({
+        event: "soniox_cleanup_retry_required",
+        assetId: asset.id,
+        durable: true,
+      }));
+    }
+  }
+
   const candidates = await bindings.DB.prepare(
-    `SELECT id, user_id, object_key, thumbnail_key, upload_mode, upload_id, status
+    `SELECT id, user_id, object_key, thumbnail_key, upload_mode, upload_id, status,
+            soniox_file_id, soniox_transcription_id, deletion_requested_at
        FROM assets
       WHERE status IN ('uploading', 'failed') AND updated_at <= ?
+        AND NOT EXISTS (
+          SELECT 1 FROM soniox_cleanup_outbox cleanup
+           WHERE cleanup.asset_id = assets.id AND cleanup.promoted_at IS NULL
+        )
       ORDER BY updated_at ASC, id ASC LIMIT 100`,
   ).bind(staleBefore).all<CleanupAssetRow>();
 
@@ -884,6 +1013,23 @@ export async function cleanupExpiredState(bindings: Env, now = new Date()) {
       ).bind(nowIso, asset.id, staleBefore).run();
       quarantinedAssets += quarantined.meta.changes ?? 0;
       continue;
+    }
+
+    if (asset.soniox_transcription_id || asset.soniox_file_id) {
+      try {
+        await deleteSonioxResources(
+          bindings,
+          asset.soniox_transcription_id,
+          asset.soniox_file_id,
+        );
+      } catch {
+        console.error(JSON.stringify({
+          event: "soniox_cleanup_retry_required",
+          assetId: asset.id,
+          durable: true,
+        }));
+        continue;
+      }
     }
 
     if (asset.upload_mode === "multipart" && asset.upload_id) {
@@ -908,8 +1054,10 @@ export async function cleanupExpiredState(bindings: Env, now = new Date()) {
     expiredChallenges: expiredChallenges?.meta.changes ?? 0,
     expiredAssetLedger: expiredAssetLedger?.meta.changes ?? 0,
     expiredExternalAiLeases: expiredExternalAiLeases?.meta.changes ?? 0,
+    expiredSonioxLeases: expiredSonioxLeases?.meta.changes ?? 0,
     expiredDeletionJobs: expiredDeletionJobs?.meta.changes ?? 0,
     expiredDerivatives,
+    cleanedSonioxAssets,
     quarantinedAssets,
     abandonedAssets,
   };
@@ -1014,66 +1162,29 @@ export function createApp(overrides: Partial<AppDependencies> = {}) {
     }
 
     const now = dependencies.now();
-    const nowIso = now.toISOString();
-    const challenge = await context.env.DB.prepare(
-      `SELECT nonce
-         FROM apple_auth_challenges
-        WHERE id = ? AND consumed_at IS NULL AND expires_at > ?`,
-    ).bind(parsed.data.challengeId, nowIso).first<{ nonce: string }>();
-    if (!challenge) {
-      return errorResponse(
-        context,
-        401,
-        "invalid_apple_challenge",
-        "The Apple authentication challenge is invalid, expired, or already used.",
-      );
-    }
-
     let identity: AppleIdentity;
     try {
-      identity = await dependencies.verifyAppleIdentityToken(
-        parsed.data.identityToken,
-        context.env.APPLE_BUNDLE_ID,
-        await sha256Hex(challenge.nonce),
-      );
-    } catch {
-      return errorResponse(context, 401, "invalid_apple_token", "Apple identity verification failed.");
-    }
-
-    const identityTokenHash = await sha256Hex(parsed.data.identityToken);
-    let consumed: D1Result;
-    try {
-      consumed = await context.env.DB.prepare(
-        `UPDATE apple_auth_challenges
-            SET identity_token_hash = ?, consumed_at = ?
-          WHERE id = ? AND consumed_at IS NULL AND expires_at > ?
-            AND NOT EXISTS (
-              SELECT 1 FROM apple_auth_challenges
-               WHERE identity_token_hash = ?
-            )`,
-      ).bind(
-        identityTokenHash,
-        nowIso,
+      ({ identity } = await verifyAndConsumeAppleChallenge(
+        context.env,
         parsed.data.challengeId,
-        nowIso,
-        identityTokenHash,
-      ).run();
-    } catch {
+        parsed.data.identityToken,
+        now,
+        dependencies.verifyAppleIdentityToken,
+      ));
+    } catch (error) {
+      const code = error instanceof AppleChallengeError
+        ? error.code
+        : "invalid_apple_challenge";
       return errorResponse(
         context,
         401,
-        "invalid_apple_challenge",
-        "The Apple authentication challenge or identity token was already used.",
+        code,
+        code === "invalid_apple_token"
+          ? "Apple identity verification failed."
+          : "The Apple authentication challenge or identity token is invalid, expired, or already used.",
       );
     }
-    if ((consumed.meta.changes ?? 0) !== 1) {
-      return errorResponse(
-        context,
-        401,
-        "invalid_apple_challenge",
-        "The Apple authentication challenge or identity token was already used.",
-      );
-    }
+    const nowIso = now.toISOString();
 
     const pendingDeletion = await context.env.DB.prepare(
       `SELECT 1 AS found
@@ -1187,13 +1298,78 @@ export function createApp(overrides: Partial<AppDependencies> = {}) {
         "A fresh Apple authorization code is required to delete the account.",
       );
     }
+    let reauthorization: { identity: AppleIdentity; nonce: string };
+    try {
+      reauthorization = await verifyAndConsumeAppleChallenge(
+        context.env,
+        parsed.data.challengeId,
+        parsed.data.identityToken,
+        now,
+        dependencies.verifyAppleIdentityToken,
+      );
+    } catch (error) {
+      const code = error instanceof AppleChallengeError
+        ? error.code
+        : "invalid_apple_challenge";
+      return errorResponse(
+        context,
+        400,
+        code,
+        code === "invalid_apple_token"
+          ? "Apple reauthentication identity verification failed."
+          : "The Apple reauthentication challenge is invalid, expired, or already used.",
+      );
+    }
+    if (reauthorization.identity.subject !== session.apple_subject) {
+      return errorResponse(
+        context,
+        409,
+        "apple_reauthorization_account_mismatch",
+        "Apple reauthentication must use the account being deleted.",
+      );
+    }
+
+    let revocationCredential: Awaited<ReturnType<
+      AccountDeletionDependencies["exchangeAppleAuthorizationCode"]
+    >>;
+    try {
+      revocationCredential = await dependencies.accountDeletion.exchangeAppleAuthorizationCode(
+        context.env,
+        parsed.data.authorizationCode,
+      );
+      const exchangedIdentity = await dependencies.verifyAppleIdentityToken(
+        revocationCredential.identityToken,
+        context.env.APPLE_BUNDLE_ID,
+        await sha256Hex(reauthorization.nonce),
+      );
+      if (exchangedIdentity.subject !== session.apple_subject) {
+        return errorResponse(
+          context,
+          409,
+          "apple_reauthorization_account_mismatch",
+          "The Apple authorization code belongs to a different account.",
+        );
+      }
+    } catch (error) {
+      if (error instanceof Response) return error;
+      return errorResponse(
+        context,
+        502,
+        "apple_reauthorization_failed",
+        "Apple reauthentication could not be completed. Retry with a fresh Apple authorization.",
+      );
+    }
+
     const job = await createAccountDeletionIntent(
       context.env,
       {
         userId: session.id,
         appleSubject: session.apple_subject,
       },
-      parsed.data.authorizationCode,
+      {
+        token: revocationCredential.token,
+        tokenType: revocationCredential.tokenType,
+      },
       now,
     );
     const status = await processAccountDeletionJob(
@@ -1380,11 +1556,49 @@ export function createApp(overrides: Partial<AppDependencies> = {}) {
           "UPDATE assets SET agent_access_enabled = 0, updated_at = ? WHERE user_id = ?",
         ).bind(nowIso, auth.userId),
         context.env.DB.prepare(
+          `INSERT INTO soniox_cleanup_outbox (
+            id, asset_id, user_id, owner_token, soniox_file_id,
+            soniox_transcription_id, next_attempt_at, created_at, updated_at
+          )
+          SELECT 'consent:' || asset.id || ':'
+                   || COALESCE(asset.soniox_file_id, '') || ':'
+                   || COALESCE(asset.soniox_transcription_id, ''),
+                 asset.id,
+                 asset.user_id,
+                 'consent:' || asset.id || ':'
+                   || COALESCE(asset.soniox_file_id, '') || ':'
+                   || COALESCE(asset.soniox_transcription_id, ''),
+                 asset.soniox_file_id,
+                 asset.soniox_transcription_id,
+                 ?, ?, ?
+            FROM assets asset
+           WHERE asset.user_id = ? AND asset.transcription_status = 'processing'
+             AND (asset.soniox_file_id IS NOT NULL
+               OR asset.soniox_transcription_id IS NOT NULL)
+          ON CONFLICT(id) DO UPDATE SET
+            next_attempt_at = excluded.next_attempt_at,
+            updated_at = excluded.updated_at`,
+        ).bind(nowIso, nowIso, nowIso, auth.userId),
+        context.env.DB.prepare(
           `UPDATE assets
-              SET transcription_status = 'skipped',
-                  transcript_error = 'consent_withdrawn',
+              SET transcription_status = CASE
+                    WHEN transcription_status = 'pending' THEN 'skipped'
+                    ELSE 'failed'
+                  END,
+                  transcript_error = CASE
+                    WHEN transcription_status = 'pending' THEN 'consent_withdrawn'
+                    ELSE 'consent_withdrawn_cleanup_pending'
+                  END,
+                  soniox_file_id = CASE
+                    WHEN transcription_status = 'processing' THEN NULL
+                    ELSE soniox_file_id
+                  END,
+                  soniox_transcription_id = CASE
+                    WHEN transcription_status = 'processing' THEN NULL
+                    ELSE soniox_transcription_id
+                  END,
                   transcription_updated_at = ?
-            WHERE user_id = ? AND transcription_status = 'pending'`,
+            WHERE user_id = ? AND transcription_status IN ('pending', 'processing')`,
         ).bind(nowIso, auth.userId),
         context.env.DB.prepare(
           `DELETE FROM media_grants
@@ -2039,12 +2253,16 @@ export function createApp(overrides: Partial<AppDependencies> = {}) {
     try {
       readyTransition = completionLease
         ? await context.env.DB.prepare(
-            `UPDATE assets SET status = 'ready', upload_lease = NULL, updated_at = ?
-              WHERE id = ? AND user_id = ? AND status = 'uploading' AND upload_lease = ?`,
-          ).bind(updatedAt, asset.id, auth.userId, completionLease).run()
+          `UPDATE assets
+              SET status = 'ready', upload_lease = NULL,
+                  upload_id = NULL, part_size = NULL, updated_at = ?
+            WHERE id = ? AND user_id = ? AND status = 'uploading' AND upload_lease = ?`,
+        ).bind(updatedAt, asset.id, auth.userId, completionLease).run()
         : await context.env.DB.prepare(
-            "UPDATE assets SET status = 'ready', updated_at = ? WHERE id = ? AND user_id = ? AND status = 'uploading'",
-          ).bind(updatedAt, asset.id, auth.userId).run();
+          `UPDATE assets
+              SET status = 'ready', upload_id = NULL, part_size = NULL, updated_at = ?
+            WHERE id = ? AND user_id = ? AND status = 'uploading'`,
+        ).bind(updatedAt, asset.id, auth.userId).run();
     } catch (error) {
       // A D1 exception is ambiguous: preserving the referenced R2 object avoids committed-row data loss.
       throw error;
@@ -2237,10 +2455,36 @@ export function createApp(overrides: Partial<AppDependencies> = {}) {
     const auth = context.get("auth");
     const asset = await findOwnedAsset(context.env, context.req.param("assetId"), auth.userId);
     if (!asset) return errorResponse(context, 404, "asset_not_found", "Asset was not found.");
-    await context.env.DB.prepare(
-      `UPDATE assets SET status = 'failed', updated_at = ?
-        WHERE id = ? AND user_id = ? AND status IN ('uploading', 'ready')`,
-    ).bind(dependencies.now().toISOString(), asset.id, auth.userId).run();
+    const nowIso = dependencies.now().toISOString();
+    await context.env.DB.batch([
+      context.env.DB.prepare(
+        `UPDATE assets
+            SET status = 'failed', agent_access_enabled = 0,
+                deletion_requested_at = COALESCE(deletion_requested_at, ?), updated_at = ?
+          WHERE id = ? AND user_id = ? AND status IN ('uploading', 'ready', 'failed')`,
+      ).bind(nowIso, nowIso, asset.id, auth.userId),
+      context.env.DB.prepare("DELETE FROM media_grants WHERE asset_id = ? AND user_id = ?")
+        .bind(asset.id, auth.userId),
+    ]);
+    if (asset.soniox_transcription_id || asset.soniox_file_id) {
+      try {
+        await deleteSonioxResources(
+          context.env,
+          asset.soniox_transcription_id,
+          asset.soniox_file_id,
+        );
+        await context.env.DB.prepare(
+          `UPDATE assets SET soniox_file_id = NULL, soniox_transcription_id = NULL
+            WHERE id = ? AND user_id = ?`,
+        ).bind(asset.id, auth.userId).run();
+      } catch {
+        console.error(JSON.stringify({
+          event: "soniox_cleanup_retry_required",
+          assetId: asset.id,
+          durable: true,
+        }));
+      }
+    }
     if (asset.upload_mode === "multipart" && asset.status === "uploading" && asset.upload_id) {
       try {
         await context.env.MEDIA.resumeMultipartUpload(asset.object_key, asset.upload_id).abort();

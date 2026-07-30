@@ -14,6 +14,12 @@ enum LegalPage: Hashable, Sendable {
     }
 }
 
+struct AccountDeletionReauthorization: Encodable, Equatable, Sendable {
+    let authorizationCode: String
+    let identityToken: String
+    let challengeId: String
+}
+
 enum LegalURLPolicy {
     static func resolve(_ page: LegalPage, against baseURL: URL) throws -> URL {
         guard baseURL.scheme?.lowercased() == "https",
@@ -188,13 +194,10 @@ actor APIClient {
         return response.consent
     }
 
-    func deleteAccount(authorizationCode: String? = nil) async throws {
-        struct Body: Encodable {
-            let authorizationCode: String
-        }
-        let body = try authorizationCode.map {
-            try encoder.encode(Body(authorizationCode: $0))
-        }
+    func deleteAccount(
+        reauthorization: AccountDeletionReauthorization? = nil
+    ) async throws {
+        let body = try reauthorization.map(encoder.encode)
         let request = try makeRequest(
             path: "/v1/account",
             method: "DELETE",

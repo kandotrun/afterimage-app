@@ -35,7 +35,7 @@ final class AIConnectionNavigationUITests: XCTestCase {
         XCTAssertTrue(app.staticTexts["外部AI処理への同意"].exists)
         XCTAssertTrue(
             app.staticTexts[
-                "Soniox：動画の音声を送信し、文字起こしを生成"
+                "Soniox：動画ファイル全体（映像・音声）を送信し、音声の文字起こしを生成"
             ].exists
         )
         XCTAssertTrue(

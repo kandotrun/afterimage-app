@@ -19,8 +19,9 @@ WeatherKitで取得する現在地はその日の天気snapshot作成に使う�
 ## Processor
 
 - Cloudflare: Worker、D1、private R2で認証、metadata、最適化mediaを処理・保存
-- Soniox: 明示同意後の動画音声から文字起こし
-- Alibaba Cloud Qwen: 明示同意後のframe、transcript、analysisから映像解析と日次要約
+- Soniox: 明示同意後に動画ファイル全体（映像・音声）を受け取り、音声を文字起こし
+- Alibaba Cloud Qwen: 明示同意後に文字起こし、映像解析テキスト、撮影日時を受け取り、日次要約を生成
+- self-hosted Mage-VL: 明示同意後の動画を一時取得して映像解析と要求されたderivativeを生成
 - MCP client or agent: ユーザーが個別に許可した動画等を読み取り
 
 processor名、送信データ、目的、保持と削除、同意撤回後の扱いは公開Privacy Policy本文にも一致させる。`AI_CONSENT` がverifiedになるまで、ここに書いた同意境界が実装済みとは扱わない。

@@ -2,13 +2,7 @@ name: backend
 
 on:
   push:
-    branches: [main]
-    paths:
-      - "backend/**"
-      - "package.json"
-      - "package-lock.json"
-      - ".github/workflows/backend.yml"
-  pull_request:
+    branches: ["**"]
     paths:
       - "backend/**"
       - "package.json"

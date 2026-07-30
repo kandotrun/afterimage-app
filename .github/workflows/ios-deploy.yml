@@ -171,8 +171,17 @@ jobs:
             -authenticationKeyIssuerID "$ASC_ISSUER_ID" \
             OTHER_CODE_SIGN_FLAGS="--keychain ${{ steps.signing_keychain.outputs.path }}" \
             CURRENT_PROJECT_VERSION=${{ github.run_number }} \
+            AFTERIMAGE_BUILD_COMMIT="$GITHUB_SHA" \
             CC="$GITHUB_WORKSPACE/scripts/xcode-clang-probe" \
             | tee archive.log
+      - name: Verify archived app before export
+        run: |
+          python3 scripts/verify-ios-archive.py \
+            --archive ios/build/afterimage.xcarchive \
+            --expected-commit "$GITHUB_SHA" \
+            --expected-build "$GITHUB_RUN_NUMBER" \
+            --expected-privacy-manifest ios/Resources/PrivacyInfo.xcprivacy \
+            --report ios/ArchiveEvidence.json
       - name: Export and upload to TestFlight
         working-directory: ios
         env:
@@ -204,6 +213,7 @@ jobs:
           name: afterimage-release-evidence-${{ github.run_number }}
           path: |
             ios/AppStoreContract.json
+            ios/ArchiveEvidence.json
             ios/archive.log
             ios/export.log
           if-no-files-found: ignore

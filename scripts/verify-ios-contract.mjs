@@ -715,9 +715,16 @@ const apiConsent = declaration(apiClient, "func aiConsent() async throws");
 assert.match(apiConsent, /"\/v1\/privacy\/ai"/);
 const apiUpdateConsent = declaration(apiClient, "func updateAIConsent(");
 assert.match(apiUpdateConsent, /"\/v1\/privacy\/ai"/);
+const accountDeletionReauthorization = declaration(
+  apiClient,
+  "struct AccountDeletionReauthorization",
+);
+assert.match(accountDeletionReauthorization, /authorizationCode/);
+assert.match(accountDeletionReauthorization, /identityToken/);
+assert.match(accountDeletionReauthorization, /challengeId/);
 const apiDeleteAccount = declaration(apiClient, "func deleteAccount(");
 assert.match(apiDeleteAccount, /"\/v1\/account"/);
-assert.match(apiDeleteAccount, /authorizationCode/);
+assert.match(apiDeleteAccount, /AccountDeletionReauthorization/);
 
 const authGate = declaration(authLifecycle, "actor AuthGenerationGate");
 assert.match(authGate, /invalidatedGenerations/);
@@ -767,24 +774,17 @@ const deletionPolicy = declaration(accountDeletionPolicy, "enum AccountDeletionP
 assert.match(deletionPolicy, /backendAccepted/);
 assert.match(deletionPolicy, /localCleanupFailed/);
 const deleteAccount = declaration(appModel, "func deleteAccount() async");
-assert.match(deleteAccount, /api\.deleteAccount\(authorizationCode:\s*authorizationCode\)/);
+assert.match(deleteAccount, /api\.deleteAccount\(reauthorization:\s*reauthorization\)/);
 assert.match(deleteAccount, /finishAcceptedAccountDeletionCleanup/);
 assert.match(deleteAccount, /clearLocalSession/);
 const reauthenticateAndDelete = declaration(
   appModel,
   "func reauthenticateAndDeleteAccount(",
 );
+assert.doesNotMatch(reauthenticateAndDelete, /api\.signIn\(/);
 assert.match(
   reauthenticateAndDelete,
-  /api\.signIn\([\s\S]*identityToken:\s*identityToken,[\s\S]*challengeID:\s*challengeID/,
-);
-assert.match(
-  reauthenticateAndDelete,
-  /expectedAccountID[\s\S]*establishSession\([\s\S]*expectedAccountID:\s*expectedAccountID/,
-);
-assert.match(
-  reauthenticateAndDelete,
-  /pendingAccountDeletionAuthorizationCode\s*=\s*authorizationCode[\s\S]*deleteAccount\(\)/,
+  /pendingAccountDeletionReauthorization\s*=\s*AccountDeletionReauthorization\([\s\S]*authorizationCode:\s*authorizationCode,[\s\S]*identityToken:\s*identityToken,[\s\S]*challengeId:\s*challengeID[\s\S]*deleteAccount\(\)/,
 );
 const acceptedDeletionCleanup = declaration(
   appModel,

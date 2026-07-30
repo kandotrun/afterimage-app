@@ -1,6 +1,7 @@
 import { env } from "cloudflare:workers";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { cleanupExpiredState, createApp, type AppleIdentity } from "../src/app";
+import { processPendingAccountDeletions } from "../src/account-deletion";
 
 const NOW = new Date("2026-07-30T00:00:00.000Z");
 const AI_CONSENT_VERSION = "2026-07-30";
@@ -15,7 +16,11 @@ type AccountDeletionOverrides = {
   exchangeAppleAuthorizationCode: (
     bindings: Env,
     authorizationCode: string,
-  ) => Promise<{ token: string; tokenType: "refresh_token" | "access_token" }>;
+  ) => Promise<{
+    token: string;
+    tokenType: "refresh_token" | "access_token";
+    identityToken: string;
+  }>;
   revokeAppleToken: (
     bindings: Env,
     token: string,
@@ -100,6 +105,24 @@ async function signIn(
   };
 }
 
+async function accountDeletionCredentials(
+  app: ReturnType<typeof createApp>,
+  subject: string,
+  authorizationCode: string,
+  bindings: Env = env,
+) {
+  const { body: challenge } = await issueChallenge(
+    app,
+    `198.51.100.${subject.length + 20}`,
+    bindings,
+  );
+  return {
+    challengeId: challenge.challengeId,
+    identityToken: `token-for-${subject}#deletion-${challenge.challengeId}`,
+    authorizationCode,
+  };
+}
+
 async function setConsent(
   owner: Awaited<ReturnType<typeof signIn>>,
   consented: boolean,
@@ -181,6 +204,7 @@ beforeEach(async () => {
     "DELETE FROM account_deletion_receipts",
     "DELETE FROM account_deletion_assets",
     "DELETE FROM account_deletion_jobs",
+    "DELETE FROM soniox_cleanup_outbox",
     "DELETE FROM asset_creation_ledger",
     "DELETE FROM external_ai_work_leases",
     "DELETE FROM ai_consents",
@@ -414,6 +438,7 @@ describe("explicit AI consent", () => {
     });
 
     const assetId = crypto.randomUUID();
+    const processingAssetId = crypto.randomUUID();
     const analysisJobId = crypto.randomUUID();
     await env.DB.batch([
       env.DB.prepare(
@@ -428,6 +453,23 @@ describe("explicit AI consent", () => {
         owner.userId,
         NOW.toISOString(),
         `users/${owner.userId}/assets/${assetId}/media`,
+        NOW.toISOString(),
+        NOW.toISOString(),
+      ),
+      env.DB.prepare(
+        `INSERT INTO assets (
+          id, user_id, kind, filename, content_type, byte_size, captured_at,
+          status, object_key, upload_mode, created_at, updated_at,
+          transcription_status, transcription_updated_at,
+          soniox_file_id, soniox_transcription_id
+        ) VALUES (?, ?, 'video', 'processing.mp4', 'video/mp4', 5, ?,
+          'ready', ?, 'single', ?, ?, 'processing', ?, 'consent-file', 'consent-job')`,
+      ).bind(
+        processingAssetId,
+        owner.userId,
+        NOW.toISOString(),
+        `users/${owner.userId}/assets/${processingAssetId}/media`,
+        NOW.toISOString(),
         NOW.toISOString(),
         NOW.toISOString(),
       ),
@@ -476,6 +518,26 @@ describe("explicit AI consent", () => {
     ).bind(assetId).first()).toMatchObject({
       agent_access_enabled: 0,
       transcript: "retained transcript",
+    });
+    expect(await env.DB.prepare(
+      `SELECT transcription_status, transcript_error,
+              soniox_file_id, soniox_transcription_id
+         FROM assets WHERE id = ?`,
+    ).bind(processingAssetId).first()).toEqual({
+      transcription_status: "failed",
+      transcript_error: "consent_withdrawn_cleanup_pending",
+      soniox_file_id: null,
+      soniox_transcription_id: null,
+    });
+    expect(await env.DB.prepare(
+      `SELECT asset_id, user_id, soniox_file_id, soniox_transcription_id, promoted_at
+         FROM soniox_cleanup_outbox WHERE asset_id = ?`,
+    ).bind(processingAssetId).first()).toEqual({
+      asset_id: processingAssetId,
+      user_id: owner.userId,
+      soniox_file_id: "consent-file",
+      soniox_transcription_id: "consent-job",
+      promoted_at: null,
     });
     expect(await env.DB.prepare(
       "SELECT summary FROM video_analyses WHERE asset_id = ?",
@@ -691,9 +753,13 @@ describe("public legal and support pages", () => {
 describe("durable account deletion", () => {
   function deletionProviders() {
     return {
-      exchangeAppleAuthorizationCode: vi.fn(async () => ({
+      exchangeAppleAuthorizationCode: vi.fn(async (
+        _bindings: Env,
+        authorizationCode: string,
+      ) => ({
         token: "apple-refresh-token",
         tokenType: "refresh_token" as const,
+        identityToken: `token-for-deletion-${authorizationCode.replace("apple-authorization-code-", "")}`,
       })),
       revokeAppleToken: vi.fn(async () => {}),
       deleteSonioxResources: vi.fn(async () => {}),
@@ -880,7 +946,12 @@ describe("durable account deletion", () => {
         authorization: fixtures.owner.authorization,
         "content-type": "application/json",
       },
-      body: JSON.stringify({ authorizationCode: "apple-authorization-code-owner" }),
+      body: JSON.stringify(await accountDeletionCredentials(
+        app,
+        "deletion-owner",
+        "apple-authorization-code-owner",
+        bindings,
+      )),
     }, bindings);
     expect(deleted.status).toBe(202);
     await expect(deleted.json()).resolves.toEqual({
@@ -943,6 +1014,155 @@ describe("durable account deletion", () => {
     expect(providers.deleteSonioxResources).toHaveBeenCalledOnce();
   });
 
+  it("fences a stale account-deletion worker after lease takeover", async () => {
+    const clock = { value: NOW };
+    const providers = deletionProviders();
+    let releaseFirstRevocation!: () => void;
+    let markFirstRevocationStarted!: () => void;
+    const firstRevocationStarted = new Promise<void>((resolve) => {
+      markFirstRevocationStarted = resolve;
+    });
+    const firstRevocationRelease = new Promise<void>((resolve) => {
+      releaseFirstRevocation = resolve;
+    });
+    providers.revokeAppleToken
+      .mockImplementationOnce(async () => {
+        markFirstRevocationStarted();
+        await firstRevocationRelease;
+      })
+      .mockResolvedValueOnce(undefined);
+
+    const app = makeDeletionApp(clock, providers);
+    const fixtures = await createDeletionFixtures(app, env, "deletion-lease-takeover");
+    const credentials = await accountDeletionCredentials(
+      app,
+      "deletion-lease-takeover",
+      "apple-authorization-code-lease-takeover",
+    );
+    const firstRequest = app.request("/v1/account", {
+      method: "DELETE",
+      headers: {
+        authorization: fixtures.owner.authorization,
+        "content-type": "application/json",
+      },
+      body: JSON.stringify(credentials),
+    }, env);
+    await firstRevocationStarted;
+
+    const job = await env.DB.prepare(
+      "SELECT id, updated_at FROM account_deletion_jobs WHERE user_id = ?",
+    ).bind(fixtures.owner.userId).first<{ id: string; updated_at: string }>();
+    expect(job).not.toBeNull();
+    clock.value = new Date(new Date(job!.updated_at).getTime() + 6 * 60_000);
+    await expect(processPendingAccountDeletions(
+      env,
+      clock.value,
+      providers,
+    )).resolves.toEqual({ processed: 1 });
+    expect(await env.DB.prepare(
+      `SELECT status, last_error_code, owner_token
+         FROM account_deletion_jobs WHERE id = ?`,
+    ).bind(job!.id).first()).toMatchObject({
+      status: "completed",
+      last_error_code: null,
+      owner_token: null,
+    });
+
+    releaseFirstRevocation();
+    const firstResponse = await firstRequest;
+    expect(firstResponse.status).toBe(202);
+    await expect(firstResponse.json()).resolves.toMatchObject({
+      deletion: { status: "pending" },
+    });
+    expect(providers.revokeAppleToken).toHaveBeenCalledTimes(2);
+    expect(providers.deleteSonioxResources).toHaveBeenCalledTimes(1);
+    expect(await env.DB.prepare(
+      "SELECT status, owner_token FROM account_deletion_jobs WHERE id = ?",
+    ).bind(job!.id).first()).toEqual({ status: "completed", owner_token: null });
+    expect(await env.DB.prepare(
+      "SELECT id FROM users WHERE id = ?",
+    ).bind(fixtures.owner.userId).first()).toBeNull();
+  });
+
+  it("waits for an in-flight Soniox lease and refreshes late provider IDs before deletion", async () => {
+    const clock = { value: NOW };
+    const providers = deletionProviders();
+    const app = makeDeletionApp(clock, providers);
+    const fixtures = await createDeletionFixtures(app, env, "deletion-soniox-race");
+    await env.DB.prepare(
+      `UPDATE assets
+          SET soniox_file_id = NULL, soniox_transcription_id = NULL
+        WHERE id = ?`,
+    ).bind(fixtures.readyAssetId).run();
+    await env.DB.prepare(
+      `INSERT INTO soniox_work_leases (
+        asset_id, user_id, owner_token, created_at, expires_at
+      ) VALUES (?, ?, 'active-deletion-test', ?, ?)`,
+    ).bind(
+      fixtures.readyAssetId,
+      fixtures.owner.userId,
+      NOW.toISOString(),
+      new Date(NOW.getTime() + 5 * 60_000).toISOString(),
+    ).run();
+
+    const accepted = await app.request("/v1/account", {
+      method: "DELETE",
+      headers: {
+        authorization: fixtures.owner.authorization,
+        "content-type": "application/json",
+      },
+      body: JSON.stringify(await accountDeletionCredentials(
+        app,
+        "deletion-soniox-race",
+        "apple-authorization-code-soniox-race",
+      )),
+    }, env);
+    expect(accepted.status).toBe(202);
+    await expect(accepted.json()).resolves.toEqual({
+      deletion: { status: "pending" },
+      localSessionShouldBeCleared: true,
+    });
+    expect(providers.deleteSonioxResources).not.toHaveBeenCalled();
+    expect(await env.DB.prepare(
+      "SELECT id FROM users WHERE id = ?",
+    ).bind(fixtures.owner.userId).first()).not.toBeNull();
+    expect(await env.DB.prepare(
+      "SELECT withdrawn_at FROM ai_consents WHERE user_id = ?",
+    ).bind(fixtures.owner.userId).first()).toMatchObject({
+      withdrawn_at: NOW.toISOString(),
+    });
+    expect(await env.DB.prepare(
+      "SELECT deletion_requested_at FROM assets WHERE id = ?",
+    ).bind(fixtures.readyAssetId).first()).toMatchObject({
+      deletion_requested_at: NOW.toISOString(),
+    });
+
+    await env.DB.prepare(
+      `UPDATE assets
+          SET soniox_file_id = 'late-soniox-file',
+              soniox_transcription_id = 'late-soniox-job'
+        WHERE id = ?`,
+    ).bind(fixtures.readyAssetId).run();
+    await env.DB.prepare("DELETE FROM soniox_work_leases WHERE asset_id = ?")
+      .bind(fixtures.readyAssetId)
+      .run();
+    clock.value = new Date(NOW.getTime() + 60_000);
+
+    await expect(processPendingAccountDeletions(
+      env,
+      clock.value,
+      providers,
+    )).resolves.toEqual({ processed: 1 });
+    expect(providers.deleteSonioxResources).toHaveBeenCalledWith(
+      env,
+      "late-soniox-job",
+      "late-soniox-file",
+    );
+    expect(await env.DB.prepare(
+      "SELECT id FROM users WHERE id = ?",
+    ).bind(fixtures.owner.userId).first()).toBeNull();
+  });
+
   it("prunes completed deletion receipts and tombstones after thirty days", async () => {
     const clock = { value: NOW };
     const providers = deletionProviders();
@@ -954,7 +1174,11 @@ describe("durable account deletion", () => {
         authorization: owner.authorization,
         "content-type": "application/json",
       },
-      body: JSON.stringify({ authorizationCode: "apple-authorization-code-retention" }),
+      body: JSON.stringify(await accountDeletionCredentials(
+        app,
+        "deletion-metadata-retention",
+        "apple-authorization-code-metadata-retention",
+      )),
     }, env);
     expect(response.status).toBe(202);
     await expect(response.json()).resolves.toMatchObject({
@@ -976,34 +1200,71 @@ describe("durable account deletion", () => {
     ).first<{ count: number }>()).toEqual({ count: 0 });
   });
 
-  it("deduplicates concurrent account deletion requests", async () => {
+  it("accepts only one concurrent account deletion reauthorization", async () => {
     const clock = { value: NOW };
     const providers = deletionProviders();
     const app = makeDeletionApp(clock, providers);
     const owner = await signIn("deletion-concurrent", app);
+    const body = JSON.stringify(await accountDeletionCredentials(
+      app,
+      "deletion-concurrent",
+      "apple-authorization-code-concurrent",
+    ));
     const deleteRequest = () => app.request("/v1/account", {
       method: "DELETE",
       headers: {
         authorization: owner.authorization,
         "content-type": "application/json",
       },
-      body: JSON.stringify({ authorizationCode: "apple-authorization-code-concurrent" }),
+      body,
     }, env);
 
     const responses = await Promise.all([deleteRequest(), deleteRequest()]);
-    expect(responses.map((response) => response.status)).toEqual([202, 202]);
-    const bodies = await Promise.all(
-      responses.map((response) => response.json<{
-        deletion: { status: string };
-        localSessionShouldBeCleared: boolean;
-      }>()),
-    );
-    expect(bodies.every((body) => body.localSessionShouldBeCleared)).toBe(true);
+    expect(responses.map((response) => response.status).sort()).toEqual([202, 400]);
+    const accepted = responses.find((response) => response.status === 202);
+    await expect(accepted?.json<{
+      deletion: { status: string };
+      localSessionShouldBeCleared: boolean;
+    }>()).resolves.toMatchObject({ localSessionShouldBeCleared: true });
     expect(await env.DB.prepare(
       "SELECT COUNT(*) AS count FROM account_deletion_jobs",
     ).first<{ count: number }>()).toEqual({ count: 1 });
     expect(providers.exchangeAppleAuthorizationCode).toHaveBeenCalledOnce();
     expect(providers.revokeAppleToken).toHaveBeenCalledOnce();
+  });
+
+  it("rejects a deletion authorization code for another Apple subject before revoking the session", async () => {
+    const clock = { value: NOW };
+    const providers = deletionProviders();
+    providers.exchangeAppleAuthorizationCode.mockResolvedValueOnce({
+      token: "attacker-refresh-token",
+      tokenType: "refresh_token",
+      identityToken: "token-for-another-apple-subject",
+    });
+    const app = makeDeletionApp(clock, providers);
+    const owner = await signIn("deletion-bound-owner", app);
+    const response = await app.request("/v1/account", {
+      method: "DELETE",
+      headers: {
+        authorization: owner.authorization,
+        "content-type": "application/json",
+      },
+      body: JSON.stringify(await accountDeletionCredentials(
+        app,
+        "deletion-bound-owner",
+        "apple-authorization-code-bound-owner",
+      )),
+    }, env);
+
+    expect(response.status).toBe(409);
+    await expect(response.json()).resolves.toMatchObject({
+      error: { code: "apple_reauthorization_account_mismatch" },
+    });
+    expect(await env.DB.prepare("SELECT id FROM sessions WHERE user_id = ?")
+      .bind(owner.userId).first()).not.toBeNull();
+    expect(await env.DB.prepare("SELECT id FROM account_deletion_jobs WHERE user_id = ?")
+      .bind(owner.userId).first()).toBeNull();
+    expect(providers.revokeAppleToken).not.toHaveBeenCalled();
   });
 
   it("keeps deletion intent durable across Apple failure and blocks account resurrection", async () => {
@@ -1021,7 +1282,11 @@ describe("durable account deletion", () => {
         authorization: fixtures.owner.authorization,
         "content-type": "application/json",
       },
-      body: JSON.stringify({ authorizationCode: "apple-authorization-code-retry" }),
+      body: JSON.stringify(await accountDeletionCredentials(
+        app,
+        "deletion-retry-owner",
+        "apple-authorization-code-retry-owner",
+      )),
     }, env);
     expect(first.status).toBe(202);
     await expect(first.json()).resolves.toEqual({
@@ -1029,11 +1294,10 @@ describe("durable account deletion", () => {
       localSessionShouldBeCleared: true,
     });
     expect(await env.DB.prepare(
-      "SELECT status, revocation_token, authorization_code FROM account_deletion_jobs WHERE user_id = ?",
+      "SELECT status, revocation_token FROM account_deletion_jobs WHERE user_id = ?",
     ).bind(fixtures.owner.userId).first()).toMatchObject({
       status: "pending",
       revocation_token: "apple-refresh-token",
-      authorization_code: null,
     });
     expect(await env.DB.prepare("SELECT COUNT(*) AS count FROM sessions WHERE user_id = ?")
       .bind(fixtures.owner.userId).first<{ count: number }>()).toMatchObject({ count: 0 });
@@ -1098,7 +1362,12 @@ describe("durable account deletion", () => {
         authorization: fixtures.owner.authorization,
         "content-type": "application/json",
       },
-      body: JSON.stringify({ authorizationCode: "apple-authorization-code-multipart" }),
+      body: JSON.stringify(await accountDeletionCredentials(
+        app,
+        "deletion-multipart-retry",
+        "apple-authorization-code-multipart-retry",
+        bindings,
+      )),
     }, bindings);
     expect(first.status).toBe(202);
     await expect(first.json()).resolves.toMatchObject({
@@ -1155,7 +1424,12 @@ describe("durable account deletion", () => {
         authorization: fixtures.owner.authorization,
         "content-type": "application/json",
       },
-      body: JSON.stringify({ authorizationCode: "apple-authorization-code-provider" }),
+      body: JSON.stringify(await accountDeletionCredentials(
+        app,
+        "deletion-provider-owner",
+        "apple-authorization-code-provider-owner",
+        bindings,
+      )),
     }, bindings);
     expect(first.status).toBe(202);
     await expect(first.json()).resolves.toMatchObject({

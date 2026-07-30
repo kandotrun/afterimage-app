@@ -172,6 +172,8 @@ const dayStorySection = read("ios/Sources/Features/Timeline/DayStorySection.swif
 const appRoot = read("ios/Sources/App/afterimageApp.swift");
 const policyTests = read("ios/Tests/PR39AccessibilityPolicyTests.swift");
 const weatherTests = read("ios/Tests/WeatherConditionDescriberTests.swift");
+const aiConnectionView = read("ios/Sources/Features/Settings/AIConnectionView.swift");
+const aiConnectionUITests = read("ios/UITests/AIConnectionNavigationUITests.swift");
 const packageJson = JSON.parse(read("package.json"));
 const catalog = JSON.parse(read("ios/Resources/Localizable.xcstrings"));
 const koreanInfo = read("ios/Resources/Localization/ko.lproj/InfoPlist.strings");
@@ -195,6 +197,17 @@ const resumeUpload = extractDeclaration(
 );
 validateUploadCompletion(processUpload, "AppModel.process");
 validateUploadCompletion(resumeUpload, "AppModel.resumeBackgroundUploadIfNeeded");
+
+const acceptedDeletionCleanup = extractDeclaration(
+  appModel,
+  /\bprivate\s+func\s+clearPersistedSessionForAcceptedDeletion\s*\(/,
+  "AppModel.clearPersistedSessionForAcceptedDeletion",
+);
+assert.doesNotMatch(
+  acceptedDeletionCleanup,
+  /offerReminderInviteAfterSuccessfulUpload/,
+  "accepted deletion cleanup must close before the reminder declaration",
+);
 
 const offerInvite = extractDeclaration(
   appModel,
@@ -548,6 +561,57 @@ assert.equal(localizedValue("upload.stage.importing", "ko"), "기억을 받아�
 assert.equal(localizedValue("daily.playback.subtitle", "ja"), "この動画のことば");
 assert.equal(localizedValue("transcript.pending_title", "ja"), "ことばを書き起こしています");
 assert.equal(localizedValue("transcript.failed_title", "ja"), "ことばを残せませんでした");
+assert.equal(
+  localizedValue("privacy.ai.qwen", "ja"),
+  "Alibaba Cloud Qwen：文字起こし、映像解析テキスト、撮影日時を受け取り、日次要約を生成",
+);
+assert.equal(
+  localizedValue("privacy.ai.qwen", "en"),
+  "Alibaba Cloud Qwen: receives transcripts, visual-analysis text, and capture dates to create daily summaries",
+);
+assert.equal(
+  localizedValue("privacy.ai.qwen", "zh-Hans"),
+  "阿里云通义千问：接收转写、视频分析文本和拍摄日期，用于生成每日摘要",
+);
+assert.equal(
+  localizedValue("privacy.ai.qwen", "ko"),
+  "Alibaba Cloud Qwen: 전사, 영상 분석 텍스트, 촬영 날짜를 받아 일일 요약 생성",
+);
+assert.equal(
+  localizedValue("privacy.ai.soniox", "ja"),
+  "Soniox：動画ファイル全体（映像・音声）を送信し、音声の文字起こしを生成",
+);
+assert.equal(
+  localizedValue("privacy.ai.soniox", "en"),
+  "Soniox: receives the complete video file, including video and audio, to transcribe its audio",
+);
+assert.equal(
+  localizedValue("privacy.ai.soniox", "zh-Hans"),
+  "Soniox：接收包含画面和音频的完整视频文件，用于转写其中的音频",
+);
+assert.equal(
+  localizedValue("privacy.ai.soniox", "ko"),
+  "Soniox: 영상과 오디오가 포함된 전체 동영상 파일을 받아 오디오를 전사",
+);
+assert.ok(
+  aiConnectionUITests.includes(
+    "Soniox：動画ファイル全体（映像・音声）を送信し、音声の文字起こしを生成",
+  ),
+  "AI consent UI test must assert the complete-video Soniox disclosure",
+);
+assert.equal(
+  localizedValue("mcp.connection.description", "ja"),
+  "あなたが個別に許可した動画・文字起こし・解析を、接続したAIエージェントへ読み取り専用で渡します。写真や動画を書き換える権限はありません。",
+);
+assert.ok(
+  aiConnectionView.includes('L10n.string("mcp.connection.description")')
+    && aiConnectionView.includes('L10n.string("mcp.connection.read_only")'),
+  "MCP connection screen must use localized, capability-accurate read-only disclosure",
+);
+assert.ok(
+  !aiConnectionView.includes("動画の文字起こしだけを、あなたが許可したAIエージェントへ安全に渡します。"),
+  "MCP connection screen must not claim transcript-only access when video tools exist",
+);
 assert.match(
   koreanInfo,
   /NSPhotoLibraryUsageDescription" = "[^"]*비공개 기억[^"]*afterimage[^"]*";/,

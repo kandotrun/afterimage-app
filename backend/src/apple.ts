@@ -11,6 +11,7 @@ const appleJwks = createRemoteJWKSet(new URL("https://appleid.apple.com/auth/key
 const appleTokenResponseSchema = z.object({
   refresh_token: z.string().min(1).max(16_384).optional(),
   access_token: z.string().min(1).max(16_384).optional(),
+  id_token: z.string().min(10).max(16_384),
 });
 
 async function appleClientSecret(bindings: Env): Promise<string> {
@@ -34,7 +35,11 @@ async function appleClientSecret(bindings: Env): Promise<string> {
 export async function exchangeAppleAuthorizationCode(
   bindings: Env,
   authorizationCode: string,
-): Promise<{ token: string; tokenType: "refresh_token" | "access_token" }> {
+): Promise<{
+  token: string;
+  tokenType: "refresh_token" | "access_token";
+  identityToken: string;
+}> {
   const body = new URLSearchParams({
     client_id: bindings.APPLE_BUNDLE_ID,
     client_secret: await appleClientSecret(bindings),
@@ -50,10 +55,18 @@ export async function exchangeAppleAuthorizationCode(
   const parsed = appleTokenResponseSchema.safeParse(await response.json());
   if (!parsed.success) throw new Error("Apple authorization code exchange response is invalid");
   if (parsed.data.refresh_token) {
-    return { token: parsed.data.refresh_token, tokenType: "refresh_token" };
+    return {
+      token: parsed.data.refresh_token,
+      tokenType: "refresh_token",
+      identityToken: parsed.data.id_token,
+    };
   }
   if (parsed.data.access_token) {
-    return { token: parsed.data.access_token, tokenType: "access_token" };
+    return {
+      token: parsed.data.access_token,
+      tokenType: "access_token",
+      identityToken: parsed.data.id_token,
+    };
   }
   throw new Error("Apple authorization code exchange returned no revocable token");
 }

@@ -7,6 +7,8 @@ import {
 } from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
+import { crc32, inflateSync } from "node:zlib";
+import { parse as parseYaml } from "yaml";
 
 const scriptRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 
@@ -42,6 +44,26 @@ const expectedEvidenceIDs = [
   "SECRET_SCAN",
   "REVIEW_CLEARANCE",
 ];
+const evidencePolicies = {
+  AUTH_CHALLENGE: [[".github/workflows/backend.yml", "backend"]],
+  ACCOUNT_DELETION: [[".github/workflows/backend.yml", "backend"]],
+  AI_CONSENT: [[".github/workflows/backend.yml", "backend"]],
+  LEGAL_PRIVACY: [[".github/workflows/release-attestation.yml", "production"]],
+  LEGAL_SUPPORT: [[".github/workflows/release-attestation.yml", "production"]],
+  LEGAL_TERMS: [[".github/workflows/release-attestation.yml", "production"]],
+  BACKEND_MIGRATIONS: [[".github/workflows/release-attestation.yml", "production"]],
+  IOS_TESTS: [
+    [".github/workflows/ios.yml", "ios"],
+    [".github/workflows/ios-deploy.yml", "test"],
+  ],
+  REAL_DEVICE_SMOKE: [[".github/workflows/release-attestation.yml", "real-device-smoke"]],
+  SCREENSHOTS_69: [[".github/workflows/app-store-screenshots.yml", "capture"]],
+  ARCHIVE_EXPORT: [[".github/workflows/ios-deploy.yml", "deploy"]],
+  ASC_PREFLIGHT: [[".github/workflows/ios-deploy.yml", "deploy"]],
+  REQUIRED_REASON_API: [[".github/workflows/ios-deploy.yml", "deploy"]],
+  SECRET_SCAN: [[".github/workflows/release-attestation.yml", "secret-scan"]],
+  REVIEW_CLEARANCE: [[".github/workflows/release-attestation.yml", "review-clearance"]],
+};
 const expectedLegalURLs = {
   privacy: "https://afterimage.2-38.com/privacy",
   support: "https://afterimage.2-38.com/support",
@@ -363,14 +385,132 @@ export function readPngMetadata(buffer) {
   if (buffer.length < 33 || !buffer.subarray(0, 8).equals(signature)) {
     throw new Error("PNG signature がありません");
   }
-  if (buffer.toString("ascii", 12, 16) !== "IHDR") {
+  if (buffer.readUInt32BE(8) !== 13 || buffer.toString("ascii", 12, 16) !== "IHDR") {
     throw new Error("PNG IHDR がありません");
   }
+
+  let offset = 8;
+  const idatChunks = [];
+  let hasIHDR = false;
+  let hasPLTE = false;
+  let hasIDAT = false;
+  let idatEnded = false;
+  let hasIEND = false;
+  const knownCriticalChunks = new Set(["IHDR", "PLTE", "IDAT", "IEND"]);
+  while (offset < buffer.length) {
+    if (offset + 12 > buffer.length) {
+      throw new Error("PNG chunk が切断されています");
+    }
+    const dataLength = buffer.readUInt32BE(offset);
+    const type = buffer.toString("ascii", offset + 4, offset + 8);
+    const dataEnd = offset + 8 + dataLength;
+    const chunkEnd = dataEnd + 4;
+    if (chunkEnd > buffer.length) {
+      throw new Error(`PNG ${type || "unknown"} chunk が切断されています`);
+    }
+    const expectedCRC = buffer.readUInt32BE(dataEnd);
+    const actualCRC = crc32(buffer.subarray(offset + 4, dataEnd)) >>> 0;
+    if (actualCRC !== expectedCRC) {
+      throw new Error(`PNG ${type || "unknown"} chunk のCRCが不正です`);
+    }
+    if (/^[A-Z]/.test(type) && !knownCriticalChunks.has(type)) {
+      throw new Error(`PNG の未知critical chunk ${type} は未対応です`);
+    }
+    if (type === "IHDR") {
+      if (hasIHDR || offset !== 8 || dataLength !== 13) {
+        throw new Error("PNG IHDR は先頭に1つだけ必要です");
+      }
+      hasIHDR = true;
+    } else if (!hasIHDR) {
+      throw new Error("PNG IHDR が先頭にありません");
+    }
+    if (type === "PLTE") {
+      if (hasIDAT || dataLength === 0 || dataLength > 768 || dataLength % 3 !== 0) {
+        throw new Error("PNG PLTE が不正です");
+      }
+      hasPLTE = true;
+    }
+    if (type === "tRNS") {
+      throw new Error("PNG tRNS透明度はApp Store提出画像で使用できません");
+    }
+    if (type === "IDAT") {
+      if (idatEnded) {
+        throw new Error("PNG IDAT は連続している必要があります");
+      }
+      hasIDAT = true;
+      idatChunks.push(buffer.subarray(offset + 8, dataEnd));
+    } else if (hasIDAT && type !== "IEND") {
+      idatEnded = true;
+    }
+    if (type === "IEND") {
+      if (dataLength !== 0 || chunkEnd !== buffer.length) {
+        throw new Error("PNG IEND が不正です");
+      }
+      if (!hasIDAT) {
+        throw new Error("PNG IDAT がありません");
+      }
+      hasIEND = true;
+      break;
+    }
+    offset = chunkEnd;
+  }
+  if (!hasIEND) {
+    throw new Error("PNG IEND がありません");
+  }
+
+  const width = buffer.readUInt32BE(16);
+  const height = buffer.readUInt32BE(20);
+  const bitDepth = buffer[24];
+  const colorType = buffer[25];
+  if (colorType === 3 && !hasPLTE) {
+    throw new Error("PNG indexed-color image にPLTEがありません");
+  }
+  if ([0, 4].includes(colorType) && hasPLTE) {
+    throw new Error("PNG grayscale image にPLTEは使用できません");
+  }
+  if (width === 0 || height === 0 || width > 10_000 || height > 10_000) {
+    throw new Error("PNG dimensions が不正です");
+  }
+  if (buffer[26] !== 0 || buffer[27] !== 0 || buffer[28] !== 0) {
+    throw new Error("PNG compression/filter/interlace method は未対応です");
+  }
+  const channels = new Map([
+    [0, 1],
+    [2, 3],
+    [3, 1],
+    [4, 2],
+    [6, 4],
+  ]).get(colorType);
+  if (bitDepth !== 8 || channels === undefined) {
+    throw new Error("PNG は8-bitの対応color typeである必要があります");
+  }
+  const rowBytes = width * channels;
+  const expectedDecodedBytes = height * (rowBytes + 1);
+  if (expectedDecodedBytes > 128 * 1024 * 1024) {
+    throw new Error("PNG decoded image が上限を超えています");
+  }
+  let decoded;
+  try {
+    decoded = inflateSync(Buffer.concat(idatChunks), {
+      maxOutputLength: expectedDecodedBytes + 1,
+    });
+  } catch {
+    throw new Error("PNG IDAT を展開できません");
+  }
+  if (decoded.length !== expectedDecodedBytes) {
+    throw new Error("PNG IDAT のscanline長が不正です");
+  }
+  for (let row = 0; row < height; row += 1) {
+    if (decoded[row * (rowBytes + 1)] > 4) {
+      throw new Error("PNG scanline filter が不正です");
+    }
+  }
+
   return {
-    width: buffer.readUInt32BE(16),
-    height: buffer.readUInt32BE(20),
-    bitDepth: buffer[24],
-    colorType: buffer[25],
+    width,
+    height,
+    bitDepth,
+    colorType,
   };
 }
 
@@ -417,43 +557,44 @@ function verifyScreenshotFiles(manifest, screenshotsDirectory) {
   return failures;
 }
 
-function extractRunCommands(source) {
-  const lines = normalizedLines(source);
-  const commands = [];
-  for (let index = 0; index < lines.length; index += 1) {
-    const line = lines[index];
-    const inline = line.match(/^\s*-\s+run:\s+(.+)$/) ?? line.match(/^\s+run:\s+(.+)$/);
-    if (!inline) continue;
-    const baseIndent = leadingSpaces(line);
-    const value = inline[1].trim();
-    if (value !== "|" && value !== ">") {
-      commands.push(value);
-      continue;
-    }
-    for (index += 1; index < lines.length; index += 1) {
-      const commandLine = lines[index];
-      if (commandLine.trim() && leadingSpaces(commandLine) <= baseIndent) {
-        index -= 1;
-        break;
-      }
-      if (commandLine.trim()) commands.push(commandLine.trim());
-    }
+
+function parseWorkflow(source) {
+  const parsed = parseYaml(source, {
+    maxAliasCount: 0,
+    merge: false,
+    uniqueKeys: true,
+  });
+  if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) {
+    throw new Error("workflow root must be a mapping");
   }
-  return commands;
+  return parsed;
 }
 
 function workflowHasTrigger(source, trigger) {
-  return extractYamlBlock(source, "on")
-    .some((line) => line.trim() === `${trigger}:` || line.trim().startsWith(`${trigger}: `));
+  let configured;
+  try {
+    configured = parseWorkflow(source).on;
+  } catch {
+    return false;
+  }
+  if (typeof configured === "string") return configured === trigger;
+  if (Array.isArray(configured)) return configured.includes(trigger);
+  return configured && typeof configured === "object"
+    ? Object.hasOwn(configured, trigger)
+    : false;
 }
 
 function topLevelPermissions(source) {
-  const permissions = extractYamlBlock(source, "permissions");
-  return permissions
-    .map((line) => line.trim())
-    .filter(Boolean)
-    .map((line) => line.split(":").map((part) => part.trim()))
-    .filter((parts) => parts.length === 2);
+  let permissions;
+  try {
+    permissions = parseWorkflow(source).permissions;
+  } catch {
+    return [];
+  }
+  if (!permissions || typeof permissions !== "object" || Array.isArray(permissions)) {
+    return [];
+  }
+  return Object.entries(permissions).map(([name, access]) => [name, String(access)]);
 }
 
 function extractJobBlock(source, jobName) {
@@ -483,41 +624,84 @@ function extractNamedStep(source, jobName, stepName) {
   return result;
 }
 
+function extractJobs(source) {
+  const jobs = parseWorkflow(source).jobs;
+  if (!jobs || typeof jobs !== "object" || Array.isArray(jobs)) return [];
+  return Object.entries(jobs)
+    .filter(([, config]) => config && typeof config === "object" && !Array.isArray(config))
+    .map(([name, config]) => ({ name, config }));
+}
+
+const expectedRunnerLabels = ["self-hosted", "macOS", "ARM64", "afterimage-ci"];
+
 export function verifyWorkflowTrust(workflows) {
   const failures = [];
   for (const workflow of workflows) {
+    let jobs;
+    try {
+      jobs = extractJobs(workflow.content);
+    } catch (error) {
+      failures.push(failure(
+        "ci.workflow-yaml",
+        `${workflow.path} を安全にYAML解析できません: ${error.message}`,
+      ));
+      continue;
+    }
+
     if (workflowHasTrigger(workflow.content, "pull_request_target")) {
       failures.push(failure(
         "ci.pull-request-target",
         `${workflow.path} は privileged pull_request_target を使用できません。`,
       ));
     }
-    const runsOn = normalizedLines(workflow.content)
-      .map((line) => line.trim())
-      .filter((line) => line.startsWith("runs-on:"))
-      .map((line) => line.slice("runs-on:".length).trim());
-    for (const runner of runsOn) {
-      if (runner !== expectedRunner) {
-        failures.push(failure(
-          "ci.runner-labels",
-          `${workflow.path} は runs-on: ${expectedRunner} を使用する必要があります。`,
-        ));
+    if (workflowHasTrigger(workflow.content, "pull_request")) {
+      failures.push(failure(
+        "ci.pr.trigger",
+        `${workflow.path} はpull_requestから直接・reusable経由のjobを実行できません。trusted branch pushで検証してください。`,
+      ));
+    }
+
+    for (const job of jobs) {
+      if (Object.hasOwn(job.config, "runs-on")) {
+        const runner = job.config["runs-on"];
+        if (!Array.isArray(runner)
+            || runner.length !== expectedRunnerLabels.length
+            || !runner.every((label, index) => label === expectedRunnerLabels[index])) {
+          failures.push(failure(
+            "ci.runner-labels",
+            `${workflow.path} のjob ${job.name}は runs-on: ${expectedRunner} を使用する必要があります。`,
+          ));
+        }
+      }
+
+      const actionReferences = [];
+      if (typeof job.config.uses === "string") actionReferences.push(job.config.uses);
+      for (const step of Array.isArray(job.config.steps) ? job.config.steps : []) {
+        if (step && typeof step === "object" && typeof step.uses === "string") {
+          actionReferences.push(step.uses);
+        }
+      }
+      for (const action of actionReferences) {
+        if (action.startsWith("./")) continue;
+        const reference = action.split("@")[1] ?? "";
+        if (!/^[0-9a-f]{40}$/i.test(reference)) {
+          failures.push(failure(
+            "ci.action-pin",
+            `${workflow.path} の ${action} は full commit SHA で pin してください。`,
+          ));
+        }
       }
     }
 
-    for (const line of normalizedLines(workflow.content)) {
-      const match = line.trim().match(/^(?:-\s+)?uses:\s+([^\s#]+)/);
-      if (!match || match[1].startsWith("./")) continue;
-      const reference = match[1].split("@")[1] ?? "";
-      if (!/^[0-9a-f]{40}$/i.test(reference)) {
-        failures.push(failure(
-          "ci.action-pin",
-          `${workflow.path} の ${match[1]} は full commit SHA で pin してください。`,
-        ));
-      }
+    const pullRequestTrigger = ["pull_request", "pull_request_target"]
+      .find((trigger) => workflowHasTrigger(workflow.content, trigger));
+    if (!pullRequestTrigger) continue;
+    if (jobs.some((job) => Object.hasOwn(job.config, "runs-on"))) {
+      failures.push(failure(
+        "ci.pr.self-hosted",
+        `${workflow.path} は ${pullRequestTrigger} からself-hosted runnerを実行できません。trusted repository branchのpushで検証してください。`,
+      ));
     }
-
-    if (!workflowHasTrigger(workflow.content, "pull_request")) continue;
     const permissions = topLevelPermissions(workflow.content);
     if (permissions.length !== 1
         || permissions[0][0] !== "contents"
@@ -533,7 +717,15 @@ export function verifyWorkflowTrust(workflows) {
         `${workflow.path} の PR job は secrets を参照できません。`,
       ));
     }
-    const forbidden = extractRunCommands(workflow.content).find((command) =>
+    const commands = jobs.flatMap((job) =>
+      (Array.isArray(job.config.steps) ? job.config.steps : [])
+        .flatMap((step) =>
+          step && typeof step === "object" && typeof step.run === "string"
+            ? normalizedLines(step.run).map((line) => line.trim()).filter(Boolean)
+            : []
+        )
+    );
+    const forbidden = commands.find((command) =>
       /^(?:sudo\b|brew\s+(?:install|upgrade|uninstall|tap|untap)\b|security\s+(?:unlock-keychain|default-keychain|list-keychains)\b|rm\s+-rf\b|git\s+(?:clean|reset)\b)/.test(command)
     );
     if (forbidden) {
@@ -546,8 +738,59 @@ export function verifyWorkflowTrust(workflows) {
   return failures;
 }
 
-function verifyDeployWorkflow(source) {
+export function verifyBackendRolloutScript(source) {
+  const executable = normalizedLines(source)
+    .map((line) => line.replace(/\s+#.*$/, "").trim())
+    .filter((line) => line && !line.startsWith("#"))
+    .join("\n");
+  const maintenanceProbe = executable.indexOf("expect_status 503");
+  const maintenance = executable.lastIndexOf(
+    "wrangler deploy src/maintenance.ts",
+    maintenanceProbe,
+  );
+  const migration = executable.indexOf("wrangler d1 migrations apply");
+  const finalDeploy = executable.lastIndexOf('wrangler deploy --config "$WRANGLER_CONFIG"');
+  const finalProbe = executable.indexOf("expect_status 200");
+  if (maintenance < 0
+      || maintenanceProbe <= maintenance
+      || migration <= maintenanceProbe
+      || finalDeploy <= migration
+      || finalProbe <= finalDeploy) {
+    return [failure(
+      "backend.rollout.order",
+      "production backendはmaintenance deploy→503確認→D1 migration→final deploy→200確認の順で適用してください。",
+    )];
+  }
+  return [];
+}
+
+export function verifyDeployWorkflow(source) {
   const failures = [];
+  let deploySteps = [];
+  try {
+    const parsed = parseWorkflow(source);
+    const configuredSteps = parsed.jobs?.deploy?.steps;
+    deploySteps = Array.isArray(configuredSteps) ? configuredSteps : [];
+  } catch (error) {
+    failures.push(failure(
+      "ci.deploy-yaml",
+      `ios-deploy.ymlを安全にYAML解析できません: ${error.message}`,
+    ));
+    return failures;
+  }
+  const parsedStepIndex = (name) => deploySteps.findIndex((step) =>
+    step && typeof step === "object" && step.name === name
+  );
+  const parsedStep = (name) => {
+    const index = parsedStepIndex(name);
+    return index >= 0 ? deploySteps[index] : undefined;
+  };
+  const executableShell = (step) => typeof step?.run === "string"
+    ? normalizedLines(step.run)
+      .map((line) => line.replace(/\s+#.*$/, "").trim())
+      .filter((line) => line && !line.startsWith("#"))
+      .join("\n")
+    : "";
   if (workflowHasTrigger(source, "pull_request")
       || workflowHasTrigger(source, "pull_request_target")) {
     failures.push(failure(
@@ -610,6 +853,48 @@ function verifyDeployWorkflow(source) {
     failures.push(failure(
       "ci.temporary-keychain",
       "signing keychain は RUNNER_TEMP 配下の job-local copy を使用してください。",
+    ));
+  }
+  const archiveStep = parsedStep("Archive");
+  const archiveReadback = parsedStep("Verify archived app before export");
+  const exportStep = parsedStep("Export and upload to TestFlight");
+  const archiveCommand = executableShell(archiveStep);
+  const readbackCommand = executableShell(archiveReadback);
+  const exportCommand = executableShell(exportStep);
+  const requiredReadbackFragments = [
+    "python3 scripts/verify-ios-archive.py",
+    "--archive ios/build/afterimage.xcarchive",
+    "--expected-commit \"$GITHUB_SHA\"",
+    "--expected-build \"$GITHUB_RUN_NUMBER\"",
+    "--expected-privacy-manifest ios/Resources/PrivacyInfo.xcprivacy",
+    "--report ios/ArchiveEvidence.json",
+  ];
+  const archiveIndex = parsedStepIndex("Archive");
+  const readbackIndex = parsedStepIndex("Verify archived app before export");
+  const exportIndex = parsedStepIndex("Export and upload to TestFlight");
+  if (!archiveStep || !archiveReadback || !exportStep
+      || Object.hasOwn(archiveStep, "if")
+      || Object.hasOwn(archiveReadback, "if")
+      || Object.hasOwn(exportStep, "if")
+      || !archiveCommand.includes("xcodebuild archive")
+      || !archiveCommand.includes('AFTERIMAGE_BUILD_COMMIT="$GITHUB_SHA"')
+      || requiredReadbackFragments.some((fragment) => !readbackCommand.includes(fragment))
+      || !exportCommand.includes("xcodebuild -exportArchive")
+      || archiveIndex < 0 || readbackIndex <= archiveIndex || exportIndex <= readbackIndex) {
+    failures.push(failure(
+      "ci.deploy.archive-readback",
+      "TestFlight export前に有効なarchiveのdevice family、privacy manifest、version、build、commitをread-backしてください。",
+    ));
+  }
+  const releaseEvidenceUpload = extractNamedStep(
+    source,
+    "deploy",
+    "Upload release evidence",
+  );
+  if (!releaseEvidenceUpload.some((line) => line.includes("ios/ArchiveEvidence.json"))) {
+    failures.push(failure(
+      "ci.deploy.archive-evidence-upload",
+      "archive read-backの構造化evidenceをrelease artifactへ含めてください。",
     ));
   }
   return failures;
@@ -807,9 +1092,27 @@ function verifyMetadata(metadata, root) {
   return failures;
 }
 
-function verifyEvidence(evidence, mode) {
+export function verifyEvidence(evidence, mode) {
   const failures = [];
   if (!evidence) return failures;
+  const commitPattern = /^[0-9a-f]{40}$/;
+  const sha256Pattern = /^[0-9a-f]{64}$/;
+  const evidenceTypes = new Set([
+    "github_actions",
+    "artifact",
+    "live_probe",
+    "app_store_connect",
+    "human_review",
+  ]);
+  const releaseCommit = typeof evidence.releaseCommit === "string"
+    ? evidence.releaseCommit
+    : "";
+  if ((releaseCommit || mode === "submission") && !commitPattern.test(releaseCommit)) {
+    failures.push(failure(
+      "evidence.release-commit",
+      "release-evidence.json の releaseCommit は対象buildの40桁commit SHAである必要があります。",
+    ));
+  }
   const entries = Array.isArray(evidence.entries) ? evidence.entries : [];
   const byID = new Map(entries.map((entry) => [entry.id, entry]));
   for (const id of expectedEvidenceIDs) {
@@ -831,8 +1134,81 @@ function verifyEvidence(evidence, mode) {
         `${id} は required/status/instructions/evidence fields を持つ必要があります。`,
       ));
     }
+    const evidenceItems = Array.isArray(entry.evidence) ? entry.evidence : [];
+    evidenceItems.forEach((item, index) => {
+      const itemID = `evidence.${id}.item.${index}`;
+      if (!item || typeof item !== "object" || Array.isArray(item)) {
+        failures.push(failure(
+          itemID,
+          `${id} evidence ${index + 1} は構造化された実測証跡である必要があります。`,
+        ));
+        return;
+      }
+      if (!evidenceTypes.has(item.type)
+          || item.result !== "passed"
+          || typeof item.recordedAt !== "string"
+          || !Number.isFinite(Date.parse(item.recordedAt))
+          || typeof item.url !== "string"
+          || typeof item.details !== "string"
+          || item.details.trim().length < 12) {
+        failures.push(failure(
+          `${itemID}.shape`,
+          `${id} evidence ${index + 1} はtype/result/recordedAt/url/detailsを満たす必要があります。`,
+        ));
+      }
+      let evidenceURL;
+      try {
+        evidenceURL = new URL(item.url);
+      } catch {
+        evidenceURL = undefined;
+      }
+      if (evidenceURL?.protocol !== "https:") {
+        failures.push(failure(
+          `${itemID}.url`,
+          `${id} evidence ${index + 1} はHTTPS証跡URLが必要です。`,
+        ));
+      }
+      const canonicalRunURL = Number.isSafeInteger(item.runId) && item.runId > 0
+        ? `https://github.com/kandotrun/afterimage-app/actions/runs/${item.runId}`
+        : "";
+      if (!Number.isSafeInteger(item.runId) || item.runId <= 0
+          || !Number.isSafeInteger(item.runAttempt) || item.runAttempt <= 0
+          || !/^\.github\/workflows\/[A-Za-z0-9_.-]+\.ya?ml$/.test(item.workflowPath ?? "")
+          || typeof item.jobName !== "string" || item.jobName.trim().length === 0
+          || item.url !== canonicalRunURL) {
+        failures.push(failure(
+          `${itemID}.provenance`,
+          `${id} evidence ${index + 1} はcanonical GitHub run URLとrunId/runAttempt/workflowPath/jobNameが必要です。`,
+        ));
+      }
+      const allowedProducers = evidencePolicies[id] ?? [];
+      if (!allowedProducers.some(([workflowPath, jobName]) =>
+        item.workflowPath === workflowPath && item.jobName === jobName
+      )) {
+        failures.push(failure(
+          `${itemID}.policy`,
+          `${id} evidence ${index + 1} は要件に対応する承認済みworkflow/jobから生成されていません。`,
+        ));
+      }
+      if (!commitPattern.test(item.commit ?? "")
+          || (commitPattern.test(releaseCommit) && item.commit !== releaseCommit)) {
+        failures.push(failure(
+          `${itemID}.commit`,
+          `${id} evidence ${index + 1} はreleaseCommitと同じcommit SHAへbindする必要があります。`,
+        ));
+      }
+      if (item.type === "artifact"
+          && (!sha256Pattern.test(item.sha256 ?? "")
+            || !Number.isSafeInteger(item.artifactId)
+            || item.artifactId <= 0)) {
+        failures.push(failure(
+          `${itemID}.sha256`,
+          `${id} artifact evidence ${index + 1} はSHA-256とartifactIdが必要です。`,
+        ));
+      }
+    });
     if (mode === "submission"
-        && (entry.status !== "verified" || entry.evidence.length === 0)) {
+        && (entry.status !== "verified" || evidenceItems.length === 0)) {
       failures.push(failure(
         `submission.${id}`,
         `${id} は未検証です。status=verified と実測 evidence を記録するまで提出できません。`,
@@ -846,6 +1222,124 @@ function verifyEvidence(evidence, mode) {
       "evidence.unexpected",
       `未知の release evidence marker があります: ${unexpected.join(", ")}`,
     ));
+  }
+  return failures;
+}
+
+async function fetchGitHubJSON(url, { fetchImpl, token }) {
+  const headers = {
+    Accept: "application/vnd.github+json",
+    "X-GitHub-Api-Version": "2022-11-28",
+  };
+  if (token) headers.Authorization = `Bearer ${token}`;
+  let response;
+  try {
+    response = await fetchImpl(url, { headers });
+  } catch (error) {
+    throw new Error(`GitHub API request failed: ${error.message}`);
+  }
+  if (!response.ok) {
+    throw new Error(`GitHub API returned HTTP ${response.status}`);
+  }
+  return response.json();
+}
+
+export async function verifyEvidenceProvenance(evidence, {
+  fetchImpl = fetch,
+  token = process.env.GITHUB_TOKEN ?? process.env.GH_TOKEN,
+} = {}) {
+  const failures = [];
+  const releaseCommit = evidence?.releaseCommit;
+  for (const entry of Array.isArray(evidence?.entries) ? evidence.entries : []) {
+    if (entry?.status !== "verified") continue;
+    const items = Array.isArray(entry.evidence) ? entry.evidence : [];
+    for (const [index, item] of items.entries()) {
+      if (!item || typeof item !== "object" || Array.isArray(item)) continue;
+      const baseID = `provenance.${entry.id}.${index}`;
+      if (!Number.isSafeInteger(item.runId) || item.runId <= 0
+          || !Number.isSafeInteger(item.runAttempt) || item.runAttempt <= 0
+          || typeof item.workflowPath !== "string" || !item.workflowPath.startsWith(".github/workflows/")
+          || typeof item.jobName !== "string" || item.jobName.trim().length === 0) {
+        failures.push(failure(
+          `${baseID}.shape`,
+          `${entry.id} evidence ${index + 1} にrunId/runAttempt/workflowPath/jobNameが必要です。`,
+        ));
+        continue;
+      }
+      const runURL = `https://api.github.com/repos/kandotrun/afterimage-app/actions/runs/${item.runId}`;
+      let run;
+      try {
+        run = await fetchGitHubJSON(runURL, { fetchImpl, token });
+      } catch (error) {
+        failures.push(failure(`${baseID}.run.fetch`, error.message));
+        continue;
+      }
+      const expectedWebURL = `https://github.com/kandotrun/afterimage-app/actions/runs/${item.runId}`;
+      const runPath = String(run.path ?? "").split("@")[0];
+      for (const [suffix, condition, message] of [
+        ["repository", run.repository?.full_name === "kandotrun/afterimage-app", "repositoryが一致しません。"],
+        ["id", run.id === item.runId, "run IDが一致しません。"],
+        ["commit", run.head_sha === releaseCommit && run.head_sha === item.commit, "run commitがreleaseCommitと一致しません。"],
+        ["attempt", run.run_attempt === item.runAttempt, "run attemptが一致しません。"],
+        ["workflow", runPath === item.workflowPath, "workflow pathが一致しません。"],
+        ["result", run.status === "completed" && run.conclusion === "success", "runが成功完了していません。"],
+        ["event", ["push", "workflow_dispatch"].includes(run.event), "runはtrusted pushまたはworkflow_dispatchである必要があります。"],
+        ["url", run.html_url === expectedWebURL && item.url === expectedWebURL, "run URLがcanonical URLと一致しません。"],
+      ]) {
+        if (!condition) failures.push(failure(`${baseID}.run.${suffix}`, message));
+      }
+
+      const jobsURL = `${runURL}/jobs?per_page=100`;
+      let jobs;
+      try {
+        jobs = await fetchGitHubJSON(jobsURL, { fetchImpl, token });
+      } catch (error) {
+        failures.push(failure(`${baseID}.job.fetch`, error.message));
+        continue;
+      }
+      const job = Array.isArray(jobs.jobs)
+        ? jobs.jobs.find((candidate) => candidate.name === item.jobName)
+        : undefined;
+      if (!job) {
+        failures.push(failure(
+          `${baseID}.job.missing`,
+          `成功証跡job ${item.jobName} がrunにありません。`,
+        ));
+      } else {
+        if (job.status !== "completed" || job.conclusion !== "success") {
+          failures.push(failure(`${baseID}.job.result`, "証跡jobが成功完了していません。"));
+        }
+        if (job.head_sha && job.head_sha !== releaseCommit) {
+          failures.push(failure(`${baseID}.job.commit`, "証跡jobのcommitが一致しません。"));
+        }
+      }
+
+      if (item.type === "artifact") {
+        if (!Number.isSafeInteger(item.artifactId) || item.artifactId <= 0) {
+          failures.push(failure(`${baseID}.artifact.shape`, "artifactIdが必要です。"));
+          continue;
+        }
+        let artifact;
+        try {
+          artifact = await fetchGitHubJSON(
+            `https://api.github.com/repos/kandotrun/afterimage-app/actions/artifacts/${item.artifactId}`,
+            { fetchImpl, token },
+          );
+        } catch (error) {
+          failures.push(failure(`${baseID}.artifact.fetch`, error.message));
+          continue;
+        }
+        if (artifact.expired !== false
+            || artifact.workflow_run?.id !== item.runId
+            || artifact.workflow_run?.head_sha !== releaseCommit
+            || artifact.digest !== `sha256:${item.sha256}`) {
+          failures.push(failure(
+            `${baseID}.artifact.provenance`,
+            "artifactが対象run/commit/SHA-256へbindされていないか期限切れです。",
+          ));
+        }
+      }
+    }
   }
   return failures;
 }
@@ -947,6 +1441,18 @@ export function verifyRepository({
   }
   failures.push(...verifySourceContracts(root));
 
+  const backendRolloutPath = path.join(root, "scripts/deploy-backend-production.sh");
+  if (!existsSync(backendRolloutPath)) {
+    failures.push(failure(
+      "backend.rollout-file",
+      "scripts/deploy-backend-production.sh がありません。",
+    ));
+  } else {
+    failures.push(...verifyBackendRolloutScript(
+      readFileSync(backendRolloutPath, "utf8"),
+    ));
+  }
+
   const workflowRoot = path.join(root, ".github/workflows");
   const workflows = existsSync(workflowRoot)
     ? readdirSync(workflowRoot)
@@ -1018,9 +1524,24 @@ function parseArguments(argv) {
   return options;
 }
 
-function runCLI() {
+async function runCLI() {
   const options = parseArguments(process.argv.slice(2));
   const failures = verifyRepository(options);
+  if (options.mode === "submission") {
+    const evidencePath = path.join(options.root, "docs/app-store/release-evidence.json");
+    if (existsSync(evidencePath)) {
+      let evidence;
+      try {
+        evidence = JSON.parse(readFileSync(evidencePath, "utf8"));
+      } catch {
+        failures.push(failure(
+          "provenance.evidence-file",
+          "remote provenance検証用のrelease-evidence.jsonを読めません。",
+        ));
+      }
+      if (evidence) failures.push(...await verifyEvidenceProvenance(evidence));
+    }
+  }
   const report = {
     verifier: "afterimage-app-store",
     version: 1,
@@ -1045,5 +1566,8 @@ function runCLI() {
 }
 
 if (process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
-  runCLI();
+  runCLI().catch((error) => {
+    process.stderr.write(`App Store verifier crashed: ${error.message}\n`);
+    process.exitCode = 1;
+  });
 }
