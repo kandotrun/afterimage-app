@@ -34,6 +34,27 @@ struct UploadPresentation: Equatable {
     var current: Int
     var total: Int
     var preview: UploadPreviewDescriptor? = nil
+
+    mutating func beginFinalizing() {
+        stage = .finishing
+        progress = 1
+        preview = nil
+    }
+}
+
+enum UploadHandoffGate {
+    static func checkCancellation() throws {
+        try Task.checkCancellation()
+    }
+}
+
+enum UploadCancellationCleanup {
+    static func run(_ operation: @escaping @Sendable () async -> Void) async {
+        let cleanup = Task.detached {
+            await operation()
+        }
+        await cleanup.value
+    }
 }
 
 struct ImportSelectionSummary: Equatable {
@@ -539,6 +560,7 @@ final class AppModel: ObservableObject {
             ))
             remoteAssetID = created.asset.id
             let context = try await api.backgroundUploadContext()
+            try UploadHandoffGate.checkCancellation()
 
             upload = UploadPresentation(stage: .uploading, progress: 0.50, current: current, total: total)
             activityID = UploadLiveActivityManager.shared.start(
@@ -579,6 +601,7 @@ final class AppModel: ObservableObject {
                                 }
                                 switch result {
                                 case .success:
+                                    self.upload?.beginFinalizing()
                                     await self.postReminderScheduler.recordPost()
                                     try? await self.refreshTimeline()
                                     self.haptics.play(.success)
@@ -616,7 +639,9 @@ final class AppModel: ObservableObject {
                 UploadLiveActivityManager.shared.cancel(activityID: activityID)
             }
             if let remoteAssetID, !didHandOff || wasCancelled {
-                try? await api.deleteAsset(assetID: remoteAssetID)
+                await UploadCancellationCleanup.run { [api] in
+                    try? await api.deleteAsset(assetID: remoteAssetID)
+                }
             }
             if wasCancelled { throw AfterimageError.cancelled }
             throw error
