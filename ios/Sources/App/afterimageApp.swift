@@ -37,23 +37,35 @@ struct RootView: View {
             Task { await model.resumeBackgroundUploadIfNeeded(retryAfterFailure: false) }
         }
         .alert(item: $model.notice) { notice in
-            if model.backgroundUploadNeedsRetry || model.localCleanupNeedsRetry {
+            if model.localCleanupNeedsRetry {
                 return Alert(
                     title: Text(notice.title),
                     message: Text(notice.message),
                     primaryButton: .default(Text(L10n.string("action.retry"))) {
-                        Task {
-                            if model.localCleanupNeedsRetry {
-                                await model.retryLocalCleanup()
-                            } else {
-                                await model.retryBackgroundUpload()
-                            }
-                        }
+                        Task { await model.retryLocalCleanup() }
                     },
-                    secondaryButton: .cancel(Text(L10n.string("action.cancel"))) {
-                        if !model.localCleanupNeedsRetry {
-                            model.cancelUpload()
-                        }
+                    secondaryButton: .cancel()
+                )
+            }
+            if model.isAuthenticated && model.backgroundUploadNeedsRetry {
+                if model.requiresCancellationCleanup {
+                    return Alert(
+                        title: Text(notice.title),
+                        message: Text(notice.message),
+                        primaryButton: .default(Text(L10n.string("action.retry"))) {
+                            Task { await model.retryBackgroundUpload() }
+                        },
+                        secondaryButton: .cancel()
+                    )
+                }
+                return Alert(
+                    title: Text(notice.title),
+                    message: Text(notice.message),
+                    primaryButton: .default(Text(L10n.string("action.retry"))) {
+                        Task { await model.retryBackgroundUpload() }
+                    },
+                    secondaryButton: .destructive(Text(L10n.string("upload.discard"))) {
+                        Task { await model.discardBackgroundUpload() }
                     }
                 )
             }
@@ -71,7 +83,6 @@ struct RootView: View {
         if let index = arguments.firstIndex(of: "-afterimageDevSession"),
            arguments.indices.contains(index + 1) {
             await model.applyDevSessionToken(arguments[index + 1])
-            await model.resumeBackgroundUploadIfNeeded(retryAfterFailure: false)
             return
         }
         #endif

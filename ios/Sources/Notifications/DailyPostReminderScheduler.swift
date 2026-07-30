@@ -3,6 +3,11 @@ import UserNotifications
 
 enum DailyPostReminderPolicy {
     static let defaultHorizon = 60
+    static let identifierPrefix = "daily-post-reminder."
+
+    static func isReminder(identifier: String) -> Bool {
+        identifier.hasPrefix(identifierPrefix)
+    }
 
     static func reminderDates(
         now: Date,
@@ -37,7 +42,7 @@ enum DailyPostReminderPolicy {
 
 @MainActor
 final class DailyPostReminderScheduler {
-    private static let identifierPrefix = "daily-post-reminder."
+    private static let identifierPrefix = DailyPostReminderPolicy.identifierPrefix
     private static let lastPostedAtKey = "daily-post-reminder.last-posted-at"
 
     private let center: UNUserNotificationCenter

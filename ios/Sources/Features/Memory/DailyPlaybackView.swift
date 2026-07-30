@@ -28,7 +28,9 @@ struct DailyPlaybackView: View {
                         ProgressView()
                             .tint(.white)
                     } else if let loadError, playback == nil {
-                        errorState(loadError)
+                        errorState(loadError) {
+                            Task { await loadDay() }
+                        }
                     } else if let playback, !playback.clips.isEmpty {
                         if isWide {
                             HStack(spacing: 0) {

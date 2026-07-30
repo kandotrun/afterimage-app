@@ -24,6 +24,21 @@ final class AppDelegate: NSObject, UIApplicationDelegate, UNUserNotificationCent
         _ center: UNUserNotificationCenter,
         willPresent notification: UNNotification
     ) async -> UNNotificationPresentationOptions {
-        [.banner, .sound]
+        if DailyPostReminderPolicy.isReminder(identifier: notification.request.identifier) {
+            return []
+        }
+        return [.banner, .sound]
+    }
+
+    nonisolated func userNotificationCenter(
+        _ center: UNUserNotificationCenter,
+        didReceive response: UNNotificationResponse
+    ) async {
+        let isReminderTap = response.actionIdentifier == UNNotificationDefaultActionIdentifier
+            && DailyPostReminderPolicy.isReminder(identifier: response.notification.request.identifier)
+        guard isReminderTap else { return }
+        await MainActor.run {
+            NotificationIntentRouter.shared.requestCameraCapture()
+        }
     }
 }

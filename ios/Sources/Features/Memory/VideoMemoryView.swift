@@ -146,7 +146,7 @@ struct VideoMemoryView: View {
                 .frame(height: 52)
                 .glassEffect(.regular, in: .capsule)
 
-                if asset.transcriptUrl != nil {
+                if showsTranscriptButton {
                     Button {
                         showTranscript = true
                     } label: {
@@ -168,6 +168,13 @@ struct VideoMemoryView: View {
             }
             .tint(.white)
         }
+    }
+
+    private var showsTranscriptButton: Bool {
+        asset.transcriptUrl != nil
+            || asset.transcriptionStatus == .pending
+            || asset.transcriptionStatus == .processing
+            || asset.transcriptionStatus == .failed
     }
 
     private var playPauseIcon: String {

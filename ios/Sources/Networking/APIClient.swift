@@ -115,8 +115,15 @@ actor APIClient {
     }
 
     func backgroundUploadContext() throws -> BackgroundUploadContext {
-        guard let storedSession else { throw AfterimageError.missingCredential }
-        return BackgroundUploadContext(baseURL: resolver.baseURL, session: storedSession)
+        guard let storedSession,
+              let ownerID = storedSession.context.accountID else {
+            throw AfterimageError.missingCredential
+        }
+        return BackgroundUploadContext(
+            baseURL: resolver.baseURL,
+            session: storedSession,
+            ownerID: ownerID
+        )
     }
 
     func legalURL(_ page: LegalPage) throws -> URL {
@@ -200,6 +207,13 @@ actor APIClient {
             data: data,
             authContext: request.authContext
         )
+    }
+
+    func currentUser() async throws -> UserProfile {
+        struct Response: Decodable { let user: UserProfile }
+        let request = try makeRequest(path: "/v1/me", method: "GET")
+        let response: Response = try await decode(request)
+        return response.user
     }
 
     func timeline(cursor: String? = nil, limit: Int = 40) async throws -> TimelinePage {

@@ -13,6 +13,7 @@ final class DayPreviewPlaybackControllerTests: XCTestCase {
         var calls: [String] = []
         var failingIDs: Set<String> = []
         var cancellingIDs: Set<String> = []
+        var expiresIn: TimeInterval = 300
 
         func load(_ asset: Asset) async throws -> ResolvedPlaybackGrant {
             calls.append(asset.id)
@@ -24,7 +25,7 @@ final class DayPreviewPlaybackControllerTests: XCTestCase {
             }
             return ResolvedPlaybackGrant(
                 url: URL(fileURLWithPath: "/tmp/\(asset.id).mp4"),
-                expiresAt: Date().addingTimeInterval(300)
+                expiresAt: Date().addingTimeInterval(expiresIn)
             )
         }
     }
@@ -55,16 +56,16 @@ final class DayPreviewPlaybackControllerTests: XCTestCase {
         }
     }
 
-    func testNextIndexAdvancesAndWrapsForContinuousPreview() {
+    func testNextIndexAdvancesOnceAndRestsAtTheEndOfTheDay() {
         XCTAssertEqual(DayPreviewPlaybackController.nextIndex(after: 0, count: 2), 1)
-        XCTAssertEqual(DayPreviewPlaybackController.nextIndex(after: 1, count: 2), 0)
+        XCTAssertNil(DayPreviewPlaybackController.nextIndex(after: 1, count: 2))
     }
 
     func testNextIndexIsNilWithoutVideos() {
         XCTAssertNil(DayPreviewPlaybackController.nextIndex(after: 0, count: 0))
     }
 
-    func testCompletionAdvancesAndWrapsAcrossAllAssets() async throws {
+    func testCompletionPlaysEachClipOnceThenRestsOnTheLastFrame() async throws {
         let loader = GrantLoader()
         let controller = makeController()
 
@@ -83,7 +84,91 @@ final class DayPreviewPlaybackControllerTests: XCTestCase {
             name: AVPlayerItem.didPlayToEndTimeNotification,
             object: secondItem
         )
-        await waitUntil { loader.calls == ["first", "second", "first"] }
+        for _ in 0..<50 { await Task.yield() }
+        XCTAssertEqual(loader.calls, ["first", "second"])
+        XCTAssertTrue(controller.player.currentItem === secondItem)
+        controller.deactivate()
+    }
+
+    func testReactivationReusesAnUnexpiredGrant() async {
+        let loader = GrantLoader()
+        let controller = makeController()
+
+        await controller.activate(assets: [asset(id: "first")]) {
+            try await loader.load($0)
+        }
+        controller.deactivate()
+        await controller.activate(assets: [asset(id: "first")]) {
+            try await loader.load($0)
+        }
+
+        XCTAssertEqual(loader.calls, ["first"])
+        XCTAssertNotNil(controller.player.currentItem)
+        controller.deactivate()
+    }
+
+    func testReactivationRefreshesAnExpiringGrant() async {
+        let loader = GrantLoader()
+        loader.expiresIn = 5
+        let controller = makeController()
+
+        await controller.activate(assets: [asset(id: "first")]) {
+            try await loader.load($0)
+        }
+        controller.deactivate()
+        await controller.activate(assets: [asset(id: "first")]) {
+            try await loader.load($0)
+        }
+
+        XCTAssertEqual(loader.calls, ["first", "first"])
+        controller.deactivate()
+    }
+
+    func testGrantCacheEvictsLeastRecentlyUsedEntryAtCapacity() {
+        let now = Date(timeIntervalSince1970: 1_000)
+        var cache = DayPreviewGrantCache(capacity: 2)
+        cache.insert(grant(id: "first", now: now), for: "first")
+        cache.insert(grant(id: "second", now: now), for: "second")
+        _ = cache.grant(for: "first", now: now)
+        cache.insert(grant(id: "third", now: now), for: "third")
+
+        XCTAssertNotNil(cache.grant(for: "first", now: now))
+        XCTAssertNil(cache.grant(for: "second", now: now))
+        XCTAssertNotNil(cache.grant(for: "third", now: now))
+        XCTAssertEqual(cache.count, 2)
+    }
+
+    func testSupersededGrantLoadCannotReplaceCurrentCachedGrant() async {
+        let deferred = DeferredGrantLoader()
+        let controller = makeController()
+        let firstActivation = Task {
+            await controller.activate(assets: [asset(id: "shared")]) {
+                try await deferred.load($0)
+            }
+        }
+        await waitUntil { deferred.hasRequest(for: "shared") }
+
+        await controller.activate(assets: [asset(id: "shared")]) { asset in
+            ResolvedPlaybackGrant(
+                url: URL(fileURLWithPath: "/tmp/current-\(asset.id).mp4"),
+                expiresAt: Date().addingTimeInterval(300)
+            )
+        }
+        deferred.resolve("shared")
+        await firstActivation.value
+        controller.deactivate()
+
+        var replacementLoads = 0
+        await controller.activate(assets: [asset(id: "shared")]) { asset in
+            replacementLoads += 1
+            return ResolvedPlaybackGrant(
+                url: URL(fileURLWithPath: "/tmp/replacement-\(asset.id).mp4"),
+                expiresAt: Date().addingTimeInterval(300)
+            )
+        }
+
+        XCTAssertEqual(replacementLoads, 0)
+        XCTAssertNotNil(controller.player.currentItem)
         controller.deactivate()
     }
 
@@ -209,6 +294,13 @@ final class DayPreviewPlaybackControllerTests: XCTestCase {
             transcriptionStatus: .completed,
             transcriptPreview: nil,
             transcriptUrl: "/v1/assets/\(id)/transcript"
+        )
+    }
+
+    private func grant(id: String, now: Date) -> ResolvedPlaybackGrant {
+        ResolvedPlaybackGrant(
+            url: URL(fileURLWithPath: "/tmp/\(id).mp4"),
+            expiresAt: now.addingTimeInterval(300)
         )
     }
 

@@ -57,6 +57,12 @@ enum UploadCancellationCleanup {
     }
 }
 
+enum TimelineLoadState: Equatable {
+    case loading
+    case loaded
+    case failed
+}
+
 struct ImportSelectionSummary: Equatable {
     let selectedCount: Int
     let skippedCount: Int
@@ -84,11 +90,28 @@ struct ImportSelectionSummary: Equatable {
 
 @MainActor
 final class AppModel: ObservableObject {
+    private struct AuthScope: Equatable, Sendable {
+        let ownerID: String
+        let generationID: UUID
+    }
+
+    private struct TimelineRefresh {
+        let id: UUID
+        let authScope: AuthScope
+        let task: Task<Void, Error>
+    }
+
     @Published private(set) var isAuthenticated = false
     @Published private(set) var isBootstrapping = true
     @Published private(set) var assets: [Asset] = []
     @Published private(set) var dailyWeather: [String: DailyWeather] = [:]
     @Published private(set) var isLoadingTimeline = false
+    @Published private(set) var timelineLoadState: TimelineLoadState = .loading
+    @Published private(set) var isLoadingMore = false
+    @Published private(set) var paginationFailed = false
+    @Published private(set) var timelineGeneration = 0
+    @Published private(set) var transientNotice: String?
+    @Published private(set) var isDiscardingBackgroundUpload = false
     @Published var upload: UploadPresentation?
     @Published private(set) var importSelectionSummary: ImportSelectionSummary?
     @Published private(set) var backgroundUploadNeedsRetry = false
@@ -114,6 +137,24 @@ final class AppModel: ObservableObject {
     private var pendingAccountDeletionAuthorizationCode: String?
     private var isRecordingDailyWeather = false
     private var shouldRepeatDailyWeatherRecording = false
+    private var authScopeGeneration = UUID()
+    private var authScope: AuthScope?
+    private var timelineRefresh: TimelineRefresh?
+    private var transientNoticeTask: Task<Void, Never>?
+
+    var hasActiveBackgroundUpload: Bool {
+        uploadTask != nil
+            || isDiscardingBackgroundUpload
+            || BackgroundUploadManager.shared.hasPendingUpload
+    }
+
+    var hasPersistedBackgroundUpload: Bool {
+        BackgroundUploadManager.shared.hasPendingUpload
+    }
+
+    var requiresCancellationCleanup: Bool {
+        BackgroundUploadManager.shared.requiresCancellationCleanup
+    }
 
     init(
         api: APIClient,
@@ -188,9 +229,39 @@ final class AppModel: ObservableObject {
             }
             currentSession = session
             await api.setSession(session)
+            let user = try await api.currentUser()
+            guard session.context.accountID == nil
+                    || session.context.accountID == user.id else {
+                await clearLocalSession(ifCurrent: session.context)
+                throw AfterimageError.invalidResponse
+            }
+            if session.context.accountID == nil {
+                let resolvedSession = StoredSession(
+                    token: session.token,
+                    context: AuthSessionContext(
+                        generationID: session.context.generationID,
+                        accountID: user.id
+                    )
+                )
+                try sessionStore.save(resolvedSession)
+                await authGeneration.unbind(ifCurrent: session.context)
+                guard await authGeneration.bind(resolvedSession.context) else {
+                    throw AfterimageError.invalidResponse
+                }
+                currentSession = resolvedSession
+                await api.setSession(resolvedSession)
+            }
+            guard await beginAuthGeneration(
+                ownerID: user.id,
+                cleanupContext: nil,
+                cleanupPendingUpload: false
+            ) else { return }
             accountDeletionState = .idle
             isAuthenticated = true
-            await resumeBackgroundUploadIfNeeded(retryAfterFailure: false)
+            await resumeBackgroundUploadIfNeeded(
+                retryAfterFailure: false,
+                adoptLegacyOwner: true
+            )
             do {
                 try await refreshTimeline()
                 await refreshAIConsent(showFailure: false)
@@ -220,8 +291,34 @@ final class AppModel: ObservableObject {
         guard await authGeneration.bind(session.context) else { return }
         currentSession = session
         await api.setSession(session)
+        do {
+            let user = try await api.currentUser()
+            let resolvedSession = StoredSession(
+                token: token,
+                context: AuthSessionContext(
+                    generationID: session.context.generationID,
+                    accountID: user.id
+                )
+            )
+            await authGeneration.unbind(ifCurrent: session.context)
+            guard await authGeneration.bind(resolvedSession.context) else { return }
+            currentSession = resolvedSession
+            await api.setSession(resolvedSession)
+            guard await beginAuthGeneration(
+                ownerID: user.id,
+                cleanupContext: nil,
+                cleanupPendingUpload: false
+            ) else { return }
+        } catch {
+            show(error: error)
+            return
+        }
         accountDeletionState = .idle
         isAuthenticated = true
+        await resumeBackgroundUploadIfNeeded(
+            retryAfterFailure: false,
+            adoptLegacyOwner: true
+        )
         do {
             try await refreshTimeline()
             await refreshAIConsent(showFailure: false)
@@ -275,6 +372,20 @@ final class AppModel: ObservableObject {
                 displayName: displayName
             )
             try await establishSession(response)
+            let cleanupContext = try await api.backgroundUploadContext()
+            let manager = BackgroundUploadManager.shared
+            let shouldDiscardPendingUpload = manager.hasPendingUpload
+                && manager.pendingOwnerID != response.user.id
+            guard await beginAuthGeneration(
+                ownerID: response.user.id,
+                cleanupContext: cleanupContext,
+                cleanupPendingUpload: shouldDiscardPendingUpload
+            ) else {
+                _ = try? await refreshTimeline()
+                haptics.play(.failure)
+                return
+            }
+            await resumeBackgroundUploadIfNeeded(retryAfterFailure: false)
             haptics.play(.success)
             try await refreshTimeline()
             await refreshAIConsent(showFailure: false)
@@ -286,68 +397,155 @@ final class AppModel: ObservableObject {
 
     func signOut() async {
         guard let session = currentSession else { return }
-        let activeUploadTask = uploadTask
-        activeUploadTask?.cancel()
         importSelectionSummary = nil
         backgroundUploadNeedsRetry = false
         localCleanupNeedsRetry = false
         notice = nil
 
-        let cleanupSucceeded = await BackgroundUploadManager.shared.cancelAllAndWaitForCleanup()
-        if let activeUploadTask {
-            await activeUploadTask.value
-        }
+        let previousOwnerID = authScope?.ownerID
+        let cleanupContext = try? await api.backgroundUploadContext()
+        let cleanupSucceeded = await beginAuthGeneration(
+            ownerID: nil,
+            cleanupContext: cleanupContext,
+            cleanupPendingUpload: true
+        )
         guard cleanupSucceeded else {
-            localCleanupNeedsRetry = true
-            upload = nil
+            restoreAuthGeneration(ownerID: previousOwnerID)
             haptics.play(.failure)
-            show(error: LocalCleanupError.failed)
             return
         }
 
         do {
             try await api.revokeSession()
-            await clearLocalSession(ifCurrent: session.context)
-            haptics.play(.selection)
         } catch {
             guard currentSession?.context == session.context,
                   await authGeneration.currentContext() == session.context else {
                 return
             }
+            restoreAuthGeneration(ownerID: previousOwnerID)
             haptics.play(.failure)
             show(error: error)
+            return
         }
+        await clearLocalSession(ifCurrent: session.context)
+        backgroundUploadNeedsRetry = false
+        haptics.play(.selection)
     }
 
     func refreshTimeline() async throws {
-        guard !isLoadingTimeline else { return }
+        guard let authScope else { throw AfterimageError.missingCredential }
+        if let timelineRefresh, timelineRefresh.authScope == authScope {
+            try await awaitTimelineRefresh(timelineRefresh)
+            return
+        }
+        try await awaitTimelineRefresh(startTimelineRefresh(authScope: authScope))
+    }
+
+    func refreshTimelineEnsuringFresh() async throws {
+        guard let authScope else { throw AfterimageError.missingCredential }
+        if let timelineRefresh, timelineRefresh.authScope == authScope {
+            _ = try? await awaitTimelineRefresh(timelineRefresh)
+        }
+        guard isCurrentAuthScope(authScope) else { throw CancellationError() }
+        try await awaitTimelineRefresh(startTimelineRefresh(authScope: authScope))
+    }
+
+    func refreshTimelineReportingFailure() async {
+        do {
+            try await refreshTimeline()
+        } catch {
+            if await handleIfSessionExpired(error) { return }
+            showTransient(L10n.string("timeline.refresh_failed"))
+        }
+    }
+
+    private func startTimelineRefresh(authScope: AuthScope) -> TimelineRefresh {
+        let id = UUID()
+        let task = Task { @MainActor [weak self] in
+            guard let self else { throw CancellationError() }
+            try await self.fetchTimeline(authScope: authScope)
+        }
+        let refresh = TimelineRefresh(id: id, authScope: authScope, task: task)
+        timelineRefresh = refresh
+        return refresh
+    }
+
+    private func awaitTimelineRefresh(_ refresh: TimelineRefresh) async throws {
+        defer {
+            if timelineRefresh?.id == refresh.id {
+                timelineRefresh = nil
+            }
+        }
+        try await refresh.task.value
+    }
+
+    private func fetchTimeline(authScope: AuthScope) async throws {
+        guard isCurrentAuthScope(authScope) else { throw CancellationError() }
         isLoadingTimeline = true
-        defer { isLoadingTimeline = false }
-        let page = try await api.timeline()
-        let readyAssets = page.assets.filter { $0.status == .ready }
-        assets = readyAssets
-        nextCursor = page.nextCursor
-        await loadDailyWeather(for: assets)
-        await postReminderScheduler.refresh(
-            observedLastPostedAt: readyAssets.map(\.createdAt).max()
-        )
+        defer {
+            if isCurrentAuthScope(authScope) {
+                isLoadingTimeline = false
+            }
+        }
+        do {
+            let page = try await api.timeline()
+            guard isCurrentAuthScope(authScope), !Task.isCancelled else {
+                throw CancellationError()
+            }
+            let readyAssets = page.assets.filter { $0.status == .ready }
+            assets = readyAssets
+            nextCursor = page.nextCursor
+            timelineLoadState = .loaded
+            paginationFailed = false
+            timelineGeneration += 1
+            await loadDailyWeather(for: readyAssets, authScope: authScope)
+            guard isCurrentAuthScope(authScope), !Task.isCancelled else {
+                throw CancellationError()
+            }
+            await postReminderScheduler.refresh(
+                observedLastPostedAt: readyAssets.map(\.createdAt).max()
+            )
+        } catch {
+            if await handleIfSessionExpired(error) { throw error }
+            if isCurrentAuthScope(authScope), assets.isEmpty {
+                timelineLoadState = .failed
+            }
+            throw error
+        }
     }
 
     func loadMoreIfNeeded(after asset: Asset) async {
-        guard asset.id == assets.last?.id, let cursor = nextCursor, !isLoadingTimeline else { return }
-        isLoadingTimeline = true
-        defer { isLoadingTimeline = false }
+        guard let authScope,
+              asset.id == assets.last?.id,
+              let cursor = nextCursor,
+              !paginationFailed,
+              !isLoadingMore,
+              !isLoadingTimeline else { return }
+        isLoadingMore = true
+        defer {
+            if isCurrentAuthScope(authScope) {
+                isLoadingMore = false
+            }
+        }
         do {
             let page = try await api.timeline(cursor: cursor)
+            guard isCurrentAuthScope(authScope), !Task.isCancelled else { return }
             let existing = Set(assets.map(\.id))
             let additions = page.assets.filter { $0.status == .ready && !existing.contains($0.id) }
             assets.append(contentsOf: additions)
             nextCursor = page.nextCursor
-            await loadDailyWeather(for: additions)
+            await loadDailyWeather(for: additions, authScope: authScope)
             await recordTodayWeather()
         } catch {
-            show(error: error)
+            if await handleIfSessionExpired(error) { return }
+            paginationFailed = true
         }
+    }
+
+    func retryPagination() async {
+        paginationFailed = false
+        guard let last = assets.last else { return }
+        await loadMoreIfNeeded(after: last)
     }
 
     func weather(for day: Date) -> DailyWeather? {
@@ -355,6 +553,7 @@ final class AppModel: ObservableObject {
     }
 
     func recordTodayWeather() async {
+        guard isAuthenticated else { return }
         guard !isRecordingDailyWeather else {
             shouldRepeatDailyWeatherRecording = true
             return
@@ -372,41 +571,57 @@ final class AppModel: ObservableObject {
     private func recordCurrentDailyWeatherIfNeeded() async {
         let localDate = DailyWeatherDate.localDate(for: .now)
         if dailyWeather[localDate] != nil { return }
-        if let existing = try? await api.dailyWeather(in: localDate...localDate),
+        if let existing = try? await withSessionInvalidation({
+            try await api.dailyWeather(in: localDate...localDate)
+        }),
            let weather = existing.first {
             mergeDailyWeather([weather])
             return
         }
+        guard isAuthenticated else { return }
         guard let draft = try? await weatherRecorder.snapshot(),
-              let weather = try? await api.saveDailyWeather(draft) else { return }
+              let weather = try? await withSessionInvalidation({
+                  try await api.saveDailyWeather(draft)
+              }) else { return }
         mergeDailyWeather([weather])
     }
 
     private func backfillMissingDailyWeather() async {
+        guard isAuthenticated else { return }
         let requests = DailyWeatherBackfillPlan.requests(
             assets: assets,
             storedLocalDates: Set(dailyWeather.keys)
         )
         let weather = await DailyWeatherBackfillExecutor.execute(
             requests: requests,
-            existingWeather: { [api] localDate in
-                let existing = try await api.dailyWeather(in: localDate...localDate)
+            existingWeather: { [self] localDate in
+                let existing = try await withSessionInvalidation {
+                    try await api.dailyWeather(in: localDate...localDate)
+                }
                 return existing.first
             },
             snapshot: { [weatherRecorder] request in
                 try await weatherRecorder.snapshot(for: request)
             },
-            save: { [api] draft in
-                try await api.saveDailyWeather(draft)
+            save: { [self] draft in
+                try await withSessionInvalidation {
+                    try await api.saveDailyWeather(draft)
+                }
             }
         )
+        guard isAuthenticated else { return }
         mergeDailyWeather(weather)
     }
 
-    private func loadDailyWeather(for assets: [Asset]) async {
-        guard let range = DailyWeatherDate.range(for: assets.map(\.capturedAt)),
-              let weather = try? await api.dailyWeather(in: range) else { return }
-        mergeDailyWeather(weather)
+    private func loadDailyWeather(for assets: [Asset], authScope: AuthScope) async {
+        guard let range = DailyWeatherDate.range(for: assets.map(\.capturedAt)) else { return }
+        do {
+            let weather = try await api.dailyWeather(in: range)
+            guard isCurrentAuthScope(authScope) else { return }
+            mergeDailyWeather(weather)
+        } catch {
+            _ = await handleIfSessionExpired(error)
+        }
     }
 
     private func mergeDailyWeather(_ weather: [DailyWeather]) {
@@ -425,7 +640,11 @@ final class AppModel: ObservableObject {
 
     func importItems(_ items: [PhotosPickerItem]) {
         guard !items.isEmpty,
-              canAddMedia else { return }
+              let authScope,
+              canAddMedia,
+              !hasActiveBackgroundUpload,
+              uploadTask == nil,
+              !BackgroundUploadManager.shared.hasPendingUpload else { return }
         haptics.play(.lift)
         importSelectionSummary = nil
         upload = UploadPresentation(stage: .checking, progress: 0.01, current: 0, total: items.count)
@@ -446,6 +665,7 @@ final class AppModel: ObservableObject {
                 if plan.uploadIndexes.isEmpty {
                     self.haptics.play(.selection)
                 } else {
+                    var failedItemCount = 0
                     for (position, index) in plan.uploadIndexes.enumerated() {
                         if Task.isCancelled { break }
                         do {
@@ -455,7 +675,14 @@ final class AppModel: ObservableObject {
                                 current: position + 1,
                                 total: plan.uploadIndexes.count
                             )
-                            let media = try await MediaImporter.load(items[index])
+                            let media: ImportedMedia
+                            do {
+                                media = try await MediaImporter.load(items[index])
+                            } catch {
+                                if Task.isCancelled { break }
+                                failedItemCount += 1
+                                continue
+                            }
                             try await self.process(
                                 media: media,
                                 identity: identities[index],
@@ -470,12 +697,21 @@ final class AppModel: ObservableObject {
                             )
                             continue
                         } catch {
-                            if !Task.isCancelled {
-                                self.haptics.play(.failure)
-                                self.show(error: error)
+                            if Task.isCancelled { break }
+                            if Self.isItemScopedFailure(error) {
+                                failedItemCount += 1
+                                continue
                             }
+                            self.haptics.play(.failure)
+                            self.show(error: error)
                             break
                         }
+                    }
+                    if failedItemCount > 0, self.isCurrentAuthScope(authScope) {
+                        self.haptics.play(.failure)
+                        self.showTransient(
+                            L10n.format("upload.batch_failures", Int64(failedItemCount))
+                        )
                     }
                 }
             } catch {
@@ -485,14 +721,28 @@ final class AppModel: ObservableObject {
                 }
             }
 
-            self.upload = nil
-            self.uploadTask = nil
+            if self.isCurrentAuthScope(authScope) {
+                self.upload = nil
+                self.uploadTask = nil
+                self.syncBackgroundUploadRecovery()
+            }
+        }
+    }
+
+    private static func isItemScopedFailure(_ error: Error) -> Bool {
+        switch error as? AfterimageError {
+        case .unsupportedMedia, .captureDateUnavailable, .compressionFailed:
+            return true
+        default:
+            return false
         }
     }
 
     @discardableResult
     func importCapturedMedia(_ media: ImportedMedia) -> Bool {
-        guard CameraIngestPolicy.canAccept(
+        guard let authScope,
+              !hasActiveBackgroundUpload,
+              CameraIngestPolicy.canAccept(
             hasUploadTask: uploadTask != nil,
             hasPendingBackgroundUpload: !canAddMedia
         ) else {
@@ -516,42 +766,49 @@ final class AppModel: ObservableObject {
                     self.show(error: error)
                 }
             }
-            self.upload = nil
-            self.uploadTask = nil
+            if self.isCurrentAuthScope(authScope) {
+                self.upload = nil
+                self.uploadTask = nil
+                self.syncBackgroundUploadRecovery()
+            }
         }
         return true
     }
 
-    func cancelUpload() {
-        guard !localCleanupNeedsRetry else { return }
+    func cancelUpload() async {
+        await discardBackgroundUpload()
+    }
+
+    func discardBackgroundUpload() async {
+        guard !localCleanupNeedsRetry,
+              !isDiscardingBackgroundUpload else { return }
         let activeUploadTask = uploadTask
-        uploadTask?.cancel()
+        activeUploadTask?.cancel()
+        uploadTask = nil
+        upload = nil
         backgroundUploadNeedsRetry = false
-        notice = nil
-        upload = UploadPresentation(
-            stage: .finishing,
-            progress: upload?.progress ?? 0,
-            current: upload?.current ?? 1,
-            total: upload?.total ?? 1
+        isDiscardingBackgroundUpload = true
+        let context = try? await api.backgroundUploadContext()
+        let cleanupSucceeded = await BackgroundUploadManager.shared.cancelAllAndWaitForCleanup(
+            context: context
         )
-        Task { [weak self] in
-            guard let self else { return }
-            let succeeded = await BackgroundUploadManager.shared
-                .cancelAllAndWaitForCleanup()
-            if let activeUploadTask {
-                await activeUploadTask.value
-            }
-            self.uploadTask = nil
-            self.upload = nil
-            if succeeded {
-                self.localCleanupNeedsRetry = false
-                self.haptics.play(.delete)
-            } else {
-                self.localCleanupNeedsRetry = true
-                self.haptics.play(.failure)
-                self.show(error: LocalCleanupError.failed)
-            }
+        if let activeUploadTask {
+            await activeUploadTask.value
         }
+        isDiscardingBackgroundUpload = false
+        if cleanupSucceeded {
+            backgroundUploadNeedsRetry = false
+            notice = nil
+            haptics.play(.delete)
+        } else {
+            backgroundUploadNeedsRetry = BackgroundUploadManager.shared.hasPendingUpload
+            publishBackgroundUploadRecoveryFailure()
+            haptics.play(.failure)
+        }
+    }
+
+    func resumeBackgroundUpload() async {
+        await resumeBackgroundUploadIfNeeded(retryAfterFailure: true)
     }
 
     func setAgentAccess(_ asset: Asset, enabled: Bool) async -> Bool {
@@ -590,50 +847,72 @@ final class AppModel: ObservableObject {
     }
 
     func thumbnailData(for asset: Asset) async throws -> Data {
-        try await api.thumbnailData(assetID: asset.id)
+        try await withSessionInvalidation {
+            try await api.thumbnailData(assetID: asset.id)
+        }
     }
 
     func photoData(for asset: Asset) async throws -> Data {
-        try await api.contentData(assetID: asset.id)
+        try await withSessionInvalidation {
+            try await api.contentData(assetID: asset.id)
+        }
     }
 
     func playbackGrant(for asset: Asset) async throws -> ResolvedPlaybackGrant {
-        try await api.playbackGrant(assetID: asset.id)
+        try await withSessionInvalidation {
+            try await api.playbackGrant(assetID: asset.id)
+        }
     }
 
     func dailyPlayback(in interval: DateInterval) async throws -> DailyPlaybackResponse {
-        try await api.dailyPlayback(startAt: interval.start, endAt: interval.end)
+        try await withSessionInvalidation {
+            try await api.dailyPlayback(startAt: interval.start, endAt: interval.end)
+        }
     }
 
     func dailySummary(in interval: DateInterval) async throws -> DailySummaryResponse {
-        try await api.dailySummary(startAt: interval.start, endAt: interval.end)
+        try await withSessionInvalidation {
+            try await api.dailySummary(startAt: interval.start, endAt: interval.end)
+        }
     }
 
     func searchMemories(query: String, cursor: String? = nil) async throws -> MemorySearchPage {
         guard let query = MemorySearchPolicy.query(from: query) else {
             throw AfterimageError.invalidConfiguration
         }
-        return try await api.searchMemories(query: query, cursor: cursor)
+        return try await withSessionInvalidation {
+            try await api.searchMemories(query: query, cursor: cursor)
+        }
     }
 
     func videoAnalysis(for asset: Asset) async throws -> VideoAnalysisResponse {
-        try await api.videoAnalysis(assetID: asset.id)
+        try await withSessionInvalidation {
+            try await api.videoAnalysis(assetID: asset.id)
+        }
     }
 
     func transcript(for asset: Asset) async throws -> TranscriptResponse {
-        try await api.transcript(assetID: asset.id)
+        try await withSessionInvalidation {
+            try await api.transcript(assetID: asset.id)
+        }
     }
 
     func transcript(for asset: Asset) async throws -> AssetTranscript {
-        try await api.transcript(assetID: asset.id)
+        try await withSessionInvalidation {
+            try await api.transcript(assetID: asset.id)
+        }
     }
 
     func mcpEndpoint() async throws -> URL {
-        try await api.mcpEndpoint()
+        try await withSessionInvalidation {
+            try await api.mcpEndpoint()
+        }
     }
 
     func mcpTokens() async throws -> [MCPToken] {
-        try await api.mcpTokens()
+        try await withSessionInvalidation {
+            try await api.mcpTokens()
+        }
     }
 
     func createMCPToken(name: String) async throws -> MCPTokenCreationResponse {
@@ -644,11 +923,15 @@ final class AppModel: ObservableObject {
                 message: "consent required"
             )
         }
-        try await api.createMCPToken(name: name)
+        try await withSessionInvalidation {
+            try await api.createMCPToken(name: name)
+        }
     }
 
     func revokeMCPToken(id: String) async throws {
-        try await api.revokeMCPToken(id: id)
+        try await withSessionInvalidation {
+            try await api.revokeMCPToken(id: id)
+        }
         haptics.play(.delete)
     }
 
@@ -825,6 +1108,9 @@ final class AppModel: ObservableObject {
         current: Int,
         total: Int
     ) async throws {
+        guard let operationScope = authScope else {
+            throw AfterimageError.missingCredential
+        }
         var optimized: OptimizedMedia?
         var remoteAssetID: String?
         var activityID: String?
@@ -835,10 +1121,12 @@ final class AppModel: ObservableObject {
             upload = UploadPresentation(stage: .compressing(media.kind), progress: 0.04, current: current, total: total)
             optimized = try await compressor.optimize(media) { [weak self] value in
                 Task { @MainActor in
-                    self?.upload?.progress = 0.04 + value * 0.46
+                    guard let self, self.isCurrentAuthScope(operationScope) else { return }
+                    self.upload?.progress = 0.04 + value * 0.46
                 }
             }
             try Task.checkCancellation()
+            guard isCurrentAuthScope(operationScope) else { throw CancellationError() }
             guard let optimized else {
                 throw AfterimageError.compressionFailed(L10n.string("compression.output_missing"))
             }
@@ -857,7 +1145,11 @@ final class AppModel: ObservableObject {
             ))
             remoteAssetID = created.asset.id
             try Task.checkCancellation()
+            guard isCurrentAuthScope(operationScope) else { throw CancellationError() }
             let context = try await api.backgroundUploadContext()
+            guard context.ownerID == operationScope.ownerID else {
+                throw CancellationError()
+            }
             try UploadHandoffGate.checkCancellation()
 
             upload = UploadPresentation(stage: .uploading, progress: 0.50, current: current, total: total)
@@ -887,9 +1179,10 @@ final class AppModel: ObservableObject {
                         context: context,
                         activityID: activityID,
                         progress: { [weak self] _, progress, _, _ in
-                            guard let self else { return }
+                            guard let self, self.isCurrentAuthScope(operationScope) else { return }
                             self.upload?.progress = 0.50 + progress * 0.44
-                            self.upload?.preview = BackgroundUploadManager.shared.currentPreviewDescriptor
+                            self.upload?.preview =
+                                BackgroundUploadManager.shared.currentPreviewDescriptor
                         },
                         completion: { result in
                             Task { @MainActor [weak self] in
@@ -897,11 +1190,15 @@ final class AppModel: ObservableObject {
                                     continuation.resume(throwing: AfterimageError.cancelled)
                                     return
                                 }
+                                guard self.isCurrentAuthScope(operationScope) else {
+                                    continuation.resume(throwing: AfterimageError.cancelled)
+                                    return
+                                }
                                 switch result {
                                 case .success:
                                     self.upload?.beginFinalizing()
                                     await self.postReminderScheduler.recordPost()
-                                    try? await self.refreshTimeline()
+                                    try? await self.refreshTimelineEnsuringFresh()
                                     self.haptics.play(.success)
                                     continuation.resume()
                                 case .failure(let error):
@@ -946,10 +1243,22 @@ final class AppModel: ObservableObject {
         }
     }
 
-    func resumeBackgroundUploadIfNeeded(retryAfterFailure: Bool = false) async {
-        guard isAuthenticated else { return }
+    func resumeBackgroundUploadIfNeeded(
+        retryAfterFailure: Bool = false,
+        adoptLegacyOwner: Bool = false
+    ) async {
+        guard isAuthenticated, let authScope else { return }
         let manager = BackgroundUploadManager.shared
-        guard manager.hasPendingUpload else { return }
+        guard manager.hasPendingUpload else {
+            backgroundUploadNeedsRetry = false
+            return
+        }
+        if manager.requiresCancellationCleanup {
+            backgroundUploadNeedsRetry = true
+            upload = nil
+            publishBackgroundUploadRecoveryFailure()
+            return
+        }
         if manager.requiresExplicitRetry && !retryAfterFailure {
             backgroundUploadNeedsRetry = true
             upload = nil
@@ -965,11 +1274,20 @@ final class AppModel: ObservableObject {
             _ = manager.resumePendingUpload(retryAfterFailure: retryAfterFailure)
             return
         }
-        guard let context = try? await api.backgroundUploadContext() else { return }
+        let context: BackgroundUploadContext
+        do {
+            context = try await api.backgroundUploadContext()
+        } catch {
+            backgroundUploadNeedsRetry = true
+            show(error: error)
+            return
+        }
+        guard isCurrentAuthScope(authScope),
+              context.ownerID == authScope.ownerID else { return }
         let resumed = manager.resumePendingUpload(
             context: context,
             progress: { [weak self] _, progress, current, total in
-                guard let self else { return }
+                guard let self, self.isCurrentAuthScope(authScope) else { return }
                 self.upload = UploadPresentation(
                     stage: .uploading,
                     progress: 0.50 + progress * 0.44,
@@ -980,17 +1298,17 @@ final class AppModel: ObservableObject {
             },
             completion: { [weak self] result in
                 Task { @MainActor in
-                    guard let self else { return }
+                    guard let self, self.isCurrentAuthScope(authScope) else { return }
                     self.upload = nil
                     switch result {
                     case .success:
                         self.backgroundUploadNeedsRetry = false
                         await self.postReminderScheduler.recordPost()
-                        try? await self.refreshTimeline()
+                        try? await self.refreshTimelineEnsuringFresh()
                         self.haptics.play(.success)
                     case .failure(let error):
                         if case .some(.cancelled) = error as? AfterimageError {
-                            self.backgroundUploadNeedsRetry = false
+                            self.syncBackgroundUploadRecovery()
                             return
                         }
                         if (error as? AfterimageError)?.invalidatesSession == true {
@@ -1000,15 +1318,15 @@ final class AppModel: ObservableObject {
                         self.backgroundUploadNeedsRetry = true
                         self.show(error: error)
                     }
+                    self.syncBackgroundUploadRecovery()
                 }
             },
+            adoptLegacyOwner: adoptLegacyOwner,
             retryAfterFailure: retryAfterFailure
         )
         if !resumed, manager.hasPendingUpload {
-            discardsPendingUploadOnRetry = true
-            localCleanupNeedsRetry = true
-            show(error: LocalCleanupError.failed)
-            return
+            backgroundUploadNeedsRetry = true
+            publishBackgroundUploadRecoveryFailure()
         }
         if resumed, upload == nil {
             backgroundUploadNeedsRetry = false
@@ -1019,10 +1337,29 @@ final class AppModel: ObservableObject {
                 total: 1,
                 preview: manager.currentPreviewDescriptor
             )
+        } else if !resumed {
+            backgroundUploadNeedsRetry = true
+            publishBackgroundUploadRecoveryFailure()
         }
     }
 
     func retryBackgroundUpload() async {
+        if BackgroundUploadManager.shared.requiresCancellationCleanup {
+            let context = try? await api.backgroundUploadContext()
+            isDiscardingBackgroundUpload = true
+            let cleanupSucceeded = await BackgroundUploadManager.shared.cancelAllAndWaitForCleanup(
+                context: context
+            )
+            isDiscardingBackgroundUpload = false
+            syncBackgroundUploadRecovery()
+            if cleanupSucceeded && !backgroundUploadNeedsRetry {
+                notice = nil
+            } else {
+                backgroundUploadNeedsRetry = true
+                publishBackgroundUploadRecoveryFailure()
+            }
+            return
+        }
         await resumeBackgroundUploadIfNeeded(retryAfterFailure: true)
         if BackgroundUploadManager.shared.requiresExplicitRetry {
             backgroundUploadNeedsRetry = true
@@ -1041,7 +1378,7 @@ final class AppModel: ObservableObject {
 
     private func installSessionTerminationHandler() async {
         await authGeneration.setTerminationHandler { [weak self] context in
-            await self?.clearLocalSession(ifCurrent: context)
+            await self?.expireSession(ifCurrent: context)
         }
     }
 
@@ -1074,6 +1411,11 @@ final class AppModel: ObservableObject {
         }
         currentSession = session
         await api.setSession(session)
+        _ = await beginAuthGeneration(
+            ownerID: response.user.id,
+            cleanupContext: nil,
+            cleanupPendingUpload: false
+        )
         accountDeletionState = .idle
         isAuthenticated = true
     }
@@ -1085,17 +1427,134 @@ final class AppModel: ObservableObject {
         guard currentSession?.context == context else { return }
         currentSession = nil
         uploadTask?.cancel()
+        _ = await beginAuthGeneration(
+            ownerID: nil,
+            cleanupContext: nil,
+            cleanupPendingUpload: false
+        )
         uploadTask = nil
         upload = nil
         importSelectionSummary = nil
-        backgroundUploadNeedsRetry = false
         assets = []
         dailyWeather = [:]
         nextCursor = nil
+        timelineLoadState = .loading
+        paginationFailed = false
         aiConsent = nil
         pendingAccountDeletionAuthorizationCode = nil
         isAuthenticated = false
         await postReminderScheduler.clear()
+    }
+
+    private func beginAuthGeneration(
+        ownerID: String?,
+        cleanupContext: BackgroundUploadContext?,
+        cleanupPendingUpload: Bool
+    ) async -> Bool {
+        authScopeGeneration = UUID()
+        authScope = ownerID.map {
+            AuthScope(ownerID: $0, generationID: authScopeGeneration)
+        }
+        timelineRefresh?.task.cancel()
+        timelineRefresh = nil
+        isLoadingTimeline = false
+        isLoadingMore = false
+        transientNoticeTask?.cancel()
+        transientNoticeTask = nil
+        transientNotice = nil
+
+        guard cleanupPendingUpload else {
+            if ownerID == nil {
+                uploadTask?.cancel()
+                uploadTask = nil
+                upload = nil
+            }
+            syncBackgroundUploadRecovery()
+            return true
+        }
+
+        let activeUploadTask = uploadTask
+        activeUploadTask?.cancel()
+        uploadTask = nil
+        upload = nil
+        importSelectionSummary = nil
+        backgroundUploadNeedsRetry = false
+        isDiscardingBackgroundUpload = activeUploadTask != nil
+            || BackgroundUploadManager.shared.hasPendingUpload
+        let cleanupSucceeded = await BackgroundUploadManager.shared.cancelAllAndWaitForCleanup(
+            context: cleanupContext
+        )
+        if let activeUploadTask {
+            await activeUploadTask.value
+        }
+        isDiscardingBackgroundUpload = false
+        guard cleanupSucceeded else {
+            backgroundUploadNeedsRetry = BackgroundUploadManager.shared.hasPendingUpload
+            publishBackgroundUploadRecoveryFailure()
+            return false
+        }
+        backgroundUploadNeedsRetry = false
+        notice = nil
+        return true
+    }
+
+    private func restoreAuthGeneration(ownerID: String?) {
+        authScopeGeneration = UUID()
+        authScope = ownerID.map {
+            AuthScope(ownerID: $0, generationID: authScopeGeneration)
+        }
+        isAuthenticated = ownerID != nil
+        syncBackgroundUploadRecovery()
+        if BackgroundUploadManager.shared.hasPendingUpload {
+            backgroundUploadNeedsRetry = true
+            publishBackgroundUploadRecoveryFailure()
+        }
+    }
+
+    private func isCurrentAuthScope(_ scope: AuthScope) -> Bool {
+        authScope == scope
+    }
+
+    private func syncBackgroundUploadRecovery() {
+        let manager = BackgroundUploadManager.shared
+        backgroundUploadNeedsRetry = manager.requiresExplicitRetry
+            || manager.requiresCancellationCleanup
+    }
+
+    private func publishBackgroundUploadRecoveryFailure() {
+        let message = BackgroundUploadManager.shared.requiresCancellationCleanup
+            ? L10n.string("upload.discard_retry")
+            : L10n.string("api.upload_failed")
+        notice = AppNotice(
+            title: L10n.string("error.generic_title"),
+            message: message
+        )
+    }
+
+    private func withSessionInvalidation<T>(
+        _ operation: () async throws -> T
+    ) async throws -> T {
+        do {
+            return try await operation()
+        } catch {
+            _ = await handleIfSessionExpired(error)
+            throw error
+        }
+    }
+
+    @discardableResult
+    private func handleIfSessionExpired(_ error: Error) async -> Bool {
+        (error as? AfterimageError)?.invalidatesSession == true
+    }
+
+    private func expireSession(ifCurrent context: AuthSessionContext) async {
+        guard currentSession?.context == context else { return }
+        await clearLocalSession(ifCurrent: context)
+        backgroundUploadNeedsRetry = BackgroundUploadManager.shared.hasPendingUpload
+        notice = AppNotice(
+            title: L10n.string("auth.session_expired_title"),
+            message: L10n.string("auth.session_expired_message")
+        )
     }
 
     private func finishAcceptedAccountDeletionCleanup(
@@ -1149,6 +1608,16 @@ final class AppModel: ObservableObject {
     private func show(error: Error) {
         let message = (error as? LocalizedError)?.errorDescription ?? error.localizedDescription
         notice = AppNotice(title: L10n.string("error.generic_title"), message: message)
+    }
+
+    private func showTransient(_ message: String) {
+        transientNoticeTask?.cancel()
+        transientNotice = message
+        transientNoticeTask = Task { @MainActor [weak self] in
+            try? await Task.sleep(for: .seconds(4))
+            guard !Task.isCancelled else { return }
+            self?.transientNotice = nil
+        }
     }
 }
 

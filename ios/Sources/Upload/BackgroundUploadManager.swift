@@ -3,6 +3,7 @@ import Foundation
 struct BackgroundUploadContext: Sendable {
     let baseURL: URL
     let session: StoredSession
+    let ownerID: String
 }
 
 struct UploadPreviewDescriptor: Equatable, Sendable {
@@ -29,6 +30,7 @@ struct BackgroundUploadState: Codable, Sendable {
 
     let generationID: UUID
     var authContext: AuthSessionContext
+    var ownerID: String?
     let baseURL: URL
     let activityID: String?
     var items: [Item]
@@ -66,6 +68,7 @@ struct BackgroundUploadState: Codable, Sendable {
             generationID: UUID(),
             accountID: nil
         ),
+        ownerID: String? = nil,
         baseURL: URL,
         activityID: String?,
         items: [Item],
@@ -77,6 +80,7 @@ struct BackgroundUploadState: Codable, Sendable {
     ) {
         self.generationID = generationID
         self.authContext = authContext
+        self.ownerID = ownerID
         self.baseURL = baseURL
         self.activityID = activityID
         self.items = items
@@ -90,6 +94,7 @@ struct BackgroundUploadState: Codable, Sendable {
     private enum CodingKeys: String, CodingKey {
         case generationID
         case authContext
+        case ownerID
         case baseURL
         case activityID
         case items
@@ -103,10 +108,14 @@ struct BackgroundUploadState: Codable, Sendable {
     init(from decoder: Decoder) throws {
         let container = try decoder.container(keyedBy: CodingKeys.self)
         generationID = try container.decodeIfPresent(UUID.self, forKey: .generationID) ?? UUID()
-        authContext = try container.decodeIfPresent(
+        let decodedAuthContext = try container.decodeIfPresent(
             AuthSessionContext.self,
             forKey: .authContext
-        ) ?? AuthSessionContext(generationID: UUID(), accountID: nil)
+        )
+        authContext = decodedAuthContext
+            ?? AuthSessionContext(generationID: UUID(), accountID: nil)
+        ownerID = try container.decodeIfPresent(String.self, forKey: .ownerID)
+            ?? decodedAuthContext?.accountID
         baseURL = try container.decode(URL.self, forKey: .baseURL)
         activityID = try container.decodeIfPresent(String.self, forKey: .activityID)
         items = try container.decode([Item].self, forKey: .items)
@@ -358,16 +367,24 @@ final class BackgroundUploadManager: NSObject, @unchecked Sendable {
         lock.withLock { state?.currentPreviewDescriptor }
     }
 
+    var pendingOwnerID: String? {
+        lock.withLock { state?.ownerID ?? state?.authContext.accountID }
+    }
+
     var requiresExplicitRetry: Bool {
         lock.withLock {
             state != nil && isPausedAfterFailure && !cancellationRequested
         }
     }
 
-    var requiresCancellationCleanupRetry: Bool {
+    var requiresCancellationCleanup: Bool {
         lock.withLock {
             state != nil && cancellationRequested
         }
+    }
+
+    var requiresCancellationCleanupRetry: Bool {
+        requiresCancellationCleanup
     }
 
     // MARK: - Public API
@@ -387,6 +404,7 @@ final class BackgroundUploadManager: NSObject, @unchecked Sendable {
             state = BackgroundUploadState(
                 generationID: UUID(),
                 authContext: context.session.context,
+                ownerID: context.ownerID,
                 baseURL: context.baseURL,
                 activityID: activityID,
                 items: stagedItems,
@@ -418,23 +436,22 @@ final class BackgroundUploadManager: NSObject, @unchecked Sendable {
         context: BackgroundUploadContext? = nil,
         progress: (@MainActor (String, Double, Int, Int) -> Void)? = nil,
         completion: (@Sendable (Result<Void, Error>) -> Void)? = nil,
+        adoptLegacyOwner: Bool = false,
         retryAfterFailure: Bool = false
     ) -> Bool {
         var shouldFinishCancellation = false
         let pending = lock.withLock { () -> Bool in
-            guard state != nil else { return false }
+            guard var currentState = state else { return false }
             if let context {
-                guard let state,
-                      BackgroundUploadAuthorizationPolicy.canUse(
-                          owner: state.authContext,
-                          current: context.session.context
-                      ) else {
-                    return false
+                if let ownerID = currentState.ownerID {
+                    guard ownerID == context.ownerID else { return false }
+                } else {
+                    guard adoptLegacyOwner else { return false }
+                    currentState.ownerID = context.ownerID
                 }
+                currentState.authContext = context.session.context
+                state = currentState
                 storedSession = context.session
-                var rebound = state
-                rebound.authContext = context.session.context
-                self.state = rebound
                 saveStateLocked()
             }
             if let progress { progressHandler = progress }
@@ -475,9 +492,11 @@ final class BackgroundUploadManager: NSObject, @unchecked Sendable {
         _ = resumePendingUpload()
     }
 
-    func cancelAllAndWaitForCleanup() async -> Bool {
+    func cancelAllAndWaitForCleanup(
+        context: BackgroundUploadContext? = nil
+    ) async -> Bool {
         await withCheckedContinuation { continuation in
-            cancelAll(cleanupCompletion: { succeeded in
+            cancelAll(context: context, cleanupCompletion: { succeeded in
                 continuation.resume(returning: succeeded)
             })
         }
@@ -563,6 +582,7 @@ final class BackgroundUploadManager: NSObject, @unchecked Sendable {
     }
 
     func cancelAll(
+        context: BackgroundUploadContext? = nil,
         cleanupCompletion: (@Sendable (Bool) -> Void)? = nil
     ) {
         var completeImmediately = false
@@ -574,6 +594,10 @@ final class BackgroundUploadManager: NSObject, @unchecked Sendable {
             guard var state else {
                 completeImmediately = true
                 return nil
+            }
+            if let context {
+                storedSession = context.session
+                state.authContext = context.session.context
             }
             if let cleanupCompletion {
                 cancellationCleanupWaiters[state.generationID, default: []].append(cleanupCompletion)

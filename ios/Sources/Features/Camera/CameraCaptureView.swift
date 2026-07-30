@@ -24,13 +24,13 @@ struct CameraCaptureView: View {
             model.discard()
         }
         .onChange(of: scenePhase) { _, phase in
-            switch phase {
-            case .active:
+            switch CameraCapturePolicy.sceneChangeAction(for: sceneChange(for: phase)) {
+            case .resume:
                 model.sceneBecameActive()
-            case .inactive, .background:
-                model.sceneBecameInactive()
-            @unknown default:
+            case .ignore:
                 break
+            case .suspend:
+                model.sceneBecameInactive()
             }
         }
         .onChange(of: model.state) { _, state in
@@ -207,6 +207,14 @@ struct CameraCaptureView: View {
                 }
             }
         )
+    }
+
+    private func sceneChange(for phase: ScenePhase) -> CameraScenePhaseChange {
+        switch phase {
+        case .active: .active
+        case .background: .background
+        default: .inactive
+        }
     }
 
     private func requestClose() {

@@ -36,6 +36,24 @@ final class CameraCapturePolicyTests: XCTestCase {
         )
     }
 
+    func testControlCenterInactiveDoesNotSuspendCapture() {
+        XCTAssertEqual(
+            CameraCapturePolicy.sceneChangeAction(for: .inactive),
+            .ignore
+        )
+    }
+
+    func testBackgroundSuspendsCaptureAndActiveResumes() {
+        XCTAssertEqual(
+            CameraCapturePolicy.sceneChangeAction(for: .background),
+            .suspend
+        )
+        XCTAssertEqual(
+            CameraCapturePolicy.sceneChangeAction(for: .active),
+            .resume
+        )
+    }
+
     func testCameraSwitchIsLimitedToReadyState() {
         XCTAssertTrue(CameraCapturePolicy.allowsCameraSwitch(phase: .ready))
         XCTAssertFalse(CameraCapturePolicy.allowsCameraSwitch(phase: .recording))

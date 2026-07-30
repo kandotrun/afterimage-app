@@ -69,6 +69,12 @@ function declaration(source, signature) {
   assert.fail(`unterminated declaration: ${signature}`);
 }
 
+function declarationScope(source, startPattern, label) {
+  const match = startPattern.exec(source);
+  assert.ok(match, `missing declaration: ${label}`);
+  return declaration(source, match[0]);
+}
+
 const project = read("ios/project.yml");
 const info = read("ios/Resources/Info.plist");
 const entitlements = read("ios/Resources/afterimage.entitlements");
@@ -332,7 +338,7 @@ assert.match(
 );
 assert.match(
   timeline,
-  /UploadDock\([\s\S]*previewPlaybackAllowed:[\s\S]*cameraRoute\s*==\s*nil[\s\S]*!isShowingMemorySearch[\s\S]*!isShowingAIConnection/,
+  /UploadDock\([\s\S]*previewPlaybackAllowed:[\s\S]*cameraRoute\s*==\s*nil[\s\S]*!isShowingMemorySearch[\s\S]*!isShowingSettings/,
   "covered timeline surfaces must pause the upload preview",
 );
 assert.match(
@@ -347,7 +353,7 @@ assert.match(
 );
 assert.match(
   appModel,
-  /let\s+context\s*=\s*try\s+await\s+api\.backgroundUploadContext\(\)\s*try\s+UploadHandoffGate\.checkCancellation\(\)[\s\S]*BackgroundUploadManager\.shared\.startUpload\(/,
+  /let\s+context\s*=\s*try\s+await\s+api\.backgroundUploadContext\(\)[\s\S]{0,220}?guard\s+context\.ownerID\s*==\s*operationScope\.ownerID[\s\S]{0,160}?try\s+UploadHandoffGate\.checkCancellation\(\)[\s\S]*BackgroundUploadManager\.shared\.startUpload\(/,
   "cancellation must be checked after the final await and before background upload handoff",
 );
 assert.match(
@@ -391,12 +397,12 @@ assert.match(
 );
 assert.match(
   timeline,
-  /Button\("再読み込み"[\s\S]{0,240}?refreshTimeline\(\)[\s\S]{0,120}?recordTodayWeather\(\)/,
+  /Button\("再読み込み"[\s\S]{0,240}?refreshTimelineReportingFailure\(\)[\s\S]{0,120}?recordTodayWeather\(\)/,
   "account-menu reload must record missing daily weather after refreshing assets",
 );
 assert.match(
   appModel,
-  /func loadMoreIfNeeded\(after asset: Asset\)[\s\S]{0,900}?loadDailyWeather\(for: additions\)[\s\S]{0,120}?recordTodayWeather\(\)/,
+  /func loadMoreIfNeeded\(after asset: Asset\)[\s\S]{0,1200}?loadDailyWeather\(for: additions,\s*authScope:\s*authScope\)[\s\S]{0,120}?recordTodayWeather\(\)/,
   "pagination must record missing daily weather after appending visible assets",
 );
 assert.match(
@@ -441,7 +447,7 @@ assert.match(
 );
 assert.match(
   appModel,
-  /bootstrap\(\)[\s\S]*resumeBackgroundUploadIfNeeded\(retryAfterFailure:\s*false\)/,
+  /bootstrap\(\)[\s\S]*resumeBackgroundUploadIfNeeded\([\s\S]{0,120}?retryAfterFailure:\s*false,[\s\S]{0,120}?adoptLegacyOwner:\s*true/,
   "background bootstrap must reattach without clearing terminal retry bounds",
 );
 assert.match(
@@ -454,16 +460,21 @@ assert.match(
   /func\s+retryBackgroundUpload\(\)\s+async[\s\S]*resumeBackgroundUploadIfNeeded\(retryAfterFailure:\s*true\)/,
   "only the explicit retry action may rearm a terminal upload",
 );
-const signOut = declaration(appModel, "func signOut() async");
+const signOutBody = declarationScope(appModel, /func signOut\(\) async/, "AppModel.signOut");
 assert.match(
-  signOut,
-  /await\s+BackgroundUploadManager\.shared\.cancelAllAndWaitForCleanup\(\)[\s\S]*guard\s+cleanupSucceeded[\s\S]*revokeSession\(\)[\s\S]*clearLocalSession/,
+  signOutBody,
+  /beginAuthGeneration\([\s\S]*guard\s+cleanupSucceeded[\s\S]*revokeSession\(\)[\s\S]*clearLocalSession\(ifCurrent:/,
   "sign-out must not revoke or clear credentials before remote upload cleanup succeeds",
 );
+const beginAuthBody = declarationScope(
+  appModel,
+  /private func beginAuthGeneration\(/,
+  "AppModel.beginAuthGeneration",
+);
 assert.match(
-  signOut,
-  /let\s+activeUploadTask\s*=\s*uploadTask[\s\S]*activeUploadTask\?\.cancel\(\)[\s\S]*await\s+activeUploadTask\.value[\s\S]*revokeSession\(\)/,
-  "sign-out must await pre-handoff upload cancellation before revoking credentials",
+  beginAuthBody,
+  /let\s+activeUploadTask\s*=\s*uploadTask[\s\S]*activeUploadTask\?\.cancel\(\)[\s\S]*cancelAllAndWaitForCleanup\([\s\S]*await\s+activeUploadTask\.value/,
+  "sign-out must await pre-handoff upload cancellation and remote cleanup before revoking credentials",
 );
 assert.doesNotMatch(
   appModel,
@@ -584,24 +595,49 @@ assert.match(
   /if\s+action\.finalize[\s\S]{0,180}?finalizeCurrentItem\(ifCurrent:\s*scope\)[\s\S]{0,120}?completeSystemEventsIfPossible\(\)/,
   "starting authenticated finalization must promptly release UIKit background-session events",
 );
-assert.match(
+const cancelAllBody = declarationScope(
   backgroundUploadManager,
-  /cancelAll[\s\S]*state\.cancellationRequested\s*=\s*true[\s\S]*finishCancellation\(ifCurrentGeneration:\s*generationID\)/,
+  /func cancelAll\(/,
+  "BackgroundUploadManager.cancelAll",
+);
+assert.match(
+  cancelAllBody,
+  /state\.cancellationRequested\s*=\s*true[\s\S]*finishCancellation\(ifCurrentGeneration:\s*generationID\)/,
   "cancellation cleanup must remain bound to the generation that requested it",
 );
 assert.match(
-  backgroundUploadManager,
-  /func\s+cancelAll\(\s*cleanupCompletion:[\s\S]*finalizationTask\?\.cancel\(\)[\s\S]*finishCancellation\(ifCurrentGeneration:/,
+  cancelAllBody,
+  /finalizationTask\?\.cancel\(\)[\s\S]*finishCancellation\(ifCurrentGeneration:/,
   "cancellation must stop generation-scoped authenticated finalization",
 );
-assert.match(
+const finishCancellationBody = declarationScope(
   backgroundUploadManager,
-  /private\s+func\s+finishCancellation[\s\S]*deleteAsset\(assetID:\s*assetID\)[\s\S]*finishCancellationCleanup[\s\S]*clearStateLocked\(\)/,
-  "cancellation state must remain persisted until authenticated remote deletion succeeds",
+  /private func finishCancellation\(/,
+  "BackgroundUploadManager.finishCancellation",
 );
 assert.match(
+  finishCancellationBody,
+  /deleteAsset\(assetID:\s*assetID\)[\s\S]*finishCancellationCleanup/,
+  "remote deletion must complete before cancellation cleanup is finalized",
+);
+const finishCancellationCleanupBody = declarationScope(
   backgroundUploadManager,
-  /func\s+cancelAllAndWaitForCleanup\(\)\s+async\s*->\s*Bool[\s\S]*withCheckedContinuation[\s\S]*cancelAll\(cleanupCompletion:/,
+  /private func finishCancellationCleanup\(/,
+  "BackgroundUploadManager.finishCancellationCleanup",
+);
+assert.match(
+  finishCancellationCleanupBody,
+  /removeStagedFiles[\s\S]*clearStateLocked\(\)/,
+  "cancellation state must remain persisted until authenticated remote deletion succeeds",
+);
+const cancelAndWaitBody = declarationScope(
+  backgroundUploadManager,
+  /func cancelAllAndWaitForCleanup\(/,
+  "BackgroundUploadManager.cancelAllAndWaitForCleanup",
+);
+assert.match(
+  cancelAndWaitBody,
+  /withCheckedContinuation[\s\S]*cancelAll\(context:\s*context,\s*cleanupCompletion:/,
   "sign-out must be able to await generation-scoped remote cancellation cleanup",
 );
 assert.match(
