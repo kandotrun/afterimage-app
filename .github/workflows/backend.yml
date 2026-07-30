@@ -7,10 +7,17 @@ on:
       - "backend/**"
       - "package.json"
       - "package-lock.json"
+      - "scripts/deploy-backend-production.sh"
+      - "backend/wrangler.example.jsonc"
       - ".github/workflows/backend.yml"
+  workflow_dispatch:
 
 permissions:
   contents: read
+
+concurrency:
+  group: backend-${{ github.ref }}
+  cancel-in-progress: false
 
 jobs:
   check:
@@ -23,3 +30,36 @@ jobs:
           node-version: 24
       - run: npm ci
       - run: npm run check
+
+  deploy:
+    needs: check
+    if: github.ref == 'refs/heads/main' && (github.event_name == 'push' || github.event_name == 'workflow_dispatch')
+    runs-on: [self-hosted, macOS, ARM64, afterimage-ci]
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: 24
+      - run: npm ci
+      - name: Deploy backend to production
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          AFTERIMAGE_PRODUCTION_WRANGLER_CONFIG: ${{ secrets.AFTERIMAGE_PRODUCTION_WRANGLER_CONFIG }}
+          D1_DATABASE: DB
+          PRODUCTION_ORIGIN: https://afterimage.2-38.com
+          DEPLOY_MESSAGE: "afterimage backend production ${{ github.sha }}"
+        run: |
+          set -euo pipefail
+          if [[ -z "${CLOUDFLARE_API_TOKEN:-}" ]]; then
+            echo "::error::CLOUDFLARE_API_TOKEN is not configured"
+            exit 1
+          fi
+          if [[ -z "${AFTERIMAGE_PRODUCTION_WRANGLER_CONFIG:-}" ]]; then
+            echo "::error::AFTERIMAGE_PRODUCTION_WRANGLER_CONFIG is not configured"
+            exit 1
+          fi
+          printf '%s' "$AFTERIMAGE_PRODUCTION_WRANGLER_CONFIG" > backend/wrangler.jsonc
+          chmod 600 backend/wrangler.jsonc
+          trap 'rm -f backend/wrangler.jsonc' EXIT
+          ./scripts/deploy-backend-production.sh

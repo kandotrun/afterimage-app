@@ -10,6 +10,7 @@ import {
   verifyEvidence,
   verifyEvidenceProvenance,
   verifyDeployWorkflow,
+  verifyBackendWorkflow,
   verifyBackendRolloutScript,
   verifyPrivacyManifest,
   verifyRepository,
@@ -219,6 +220,49 @@ jobs:
   }]);
 
   assert.ok(failures.some((failure) => failure.id === "ci.pr.trigger"));
+});
+
+test("backend workflow はcheck成功後のmain pushだけでproduction deployし、configをcleanupする", () => {
+  const safe = [
+    "name: backend",
+    "on:",
+    "  push:",
+    "    branches: [\"**\"]",
+    "  workflow_dispatch:",
+    "permissions:",
+    "  contents: read",
+    "jobs:",
+    "  check:",
+    "    runs-on: [self-hosted, macOS, ARM64, afterimage-ci]",
+    "    steps:",
+    "      - run: npm run check",
+    "  deploy:",
+    "    needs: check",
+    "    if: github.ref == 'refs/heads/main' && (github.event_name == 'push' || github.event_name == 'workflow_dispatch')",
+    "    runs-on: [self-hosted, macOS, ARM64, afterimage-ci]",
+    "    steps:",
+    "      - uses: actions/checkout@0123456789abcdef0123456789abcdef01234567",
+    "      - uses: actions/setup-node@0123456789abcdef0123456789abcdef01234567",
+    "      - run: npm ci",
+    "      - name: Deploy backend to production",
+    "        env:",
+    "          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}",
+    "          AFTERIMAGE_PRODUCTION_WRANGLER_CONFIG: ${{ secrets.AFTERIMAGE_PRODUCTION_WRANGLER_CONFIG }}",
+    "        run: |",
+    "          set -euo pipefail",
+    "          printf '%s' \"$AFTERIMAGE_PRODUCTION_WRANGLER_CONFIG\" > backend/wrangler.jsonc",
+    "          trap 'rm -f backend/wrangler.jsonc' EXIT",
+    "          ./scripts/deploy-backend-production.sh",
+  ].join("\n");
+  const unsafe = safe.replace(
+    "github.event_name == 'push' || github.event_name == 'workflow_dispatch'",
+    "github.event_name == 'pull_request'",
+  );
+
+  assert.deepEqual(verifyBackendWorkflow(safe), []);
+  assert.ok(
+    verifyBackendWorkflow(unsafe).some((failure) => failure.id === "ci.backend.main-gate"),
+  );
 });
 
 test("TestFlight export前にarchive read-back gateを要求する", () => {

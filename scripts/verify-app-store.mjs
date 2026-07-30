@@ -738,6 +738,95 @@ export function verifyWorkflowTrust(workflows) {
   return failures;
 }
 
+export function verifyBackendWorkflow(source) {
+  const failures = [];
+  let workflow;
+  try {
+    workflow = parseWorkflow(source);
+  } catch (error) {
+    failures.push(failure(
+      "ci.backend-yaml",
+      `backend workflowを安全にYAML解析できません: ${error.message}`,
+    ));
+    return failures;
+  }
+
+  const push = workflow.on && typeof workflow.on === "object"
+    ? workflow.on.push
+    : undefined;
+  const branches = push && typeof push === "object" ? push.branches : undefined;
+  const branchList = Array.isArray(branches) ? branches : branches ? [branches] : [];
+  if (!branchList.includes("main") && !branchList.includes("**")) {
+    failures.push(failure(
+      "ci.backend.trigger",
+      "backend workflowはmainへのpushをtriggerに含める必要があります。",
+    ));
+  }
+
+  const jobs = workflow.jobs && typeof workflow.jobs === "object"
+    ? workflow.jobs
+    : {};
+  const deploy = jobs.deploy;
+  if (!deploy || typeof deploy !== "object" || Array.isArray(deploy)) {
+    failures.push(failure(
+      "ci.backend.deploy-job",
+      "backend workflowにdeploy jobが必要です。",
+    ));
+    return failures;
+  }
+
+  const needs = Array.isArray(deploy.needs) ? deploy.needs : [deploy.needs];
+  if (!needs.includes("check")) {
+    failures.push(failure(
+      "ci.backend.needs",
+      "production deploy jobはcheck jobの成功後に実行してください。",
+    ));
+  }
+
+  const condition = String(deploy.if ?? "");
+  if (!condition.includes("github.ref == 'refs/heads/main'")
+      || !condition.includes("github.event_name == 'push'")
+      || !condition.includes("github.event_name == 'workflow_dispatch'")) {
+    failures.push(failure(
+      "ci.backend.main-gate",
+      "production deployはmainのtrusted pushまたはworkflow_dispatchだけに制限してください。",
+    ));
+  }
+
+  const steps = Array.isArray(deploy.steps) ? deploy.steps : [];
+  const shell = steps
+    .map((step) => step && typeof step.run === "string" ? step.run : "")
+    .join("\n");
+  if (!source.includes("${{ secrets.CLOUDFLARE_API_TOKEN }}")) {
+    failures.push(failure(
+      "ci.backend.cloudflare-auth",
+      "production deployにはCLOUDFLARE_API_TOKEN secretを明示的に渡してください。",
+    ));
+  }
+  if (!source.includes("${{ secrets.AFTERIMAGE_PRODUCTION_WRANGLER_CONFIG }}")) {
+    failures.push(failure(
+      "ci.backend.wrangler-config",
+      "production deployにはAFTERIMAGE_PRODUCTION_WRANGLER_CONFIG secretが必要です。",
+    ));
+  }
+  const deployIndex = shell.indexOf("scripts/deploy-backend-production.sh");
+  if (deployIndex < 0) {
+    failures.push(failure(
+      "ci.backend.script",
+      "repo管理のscripts/deploy-backend-production.shをproduction deployで使ってください。",
+    ));
+  }
+  if (!shell.includes("backend/wrangler.jsonc")
+      || !shell.includes("trap")
+      || !shell.includes("rm -f backend/wrangler.jsonc")) {
+    failures.push(failure(
+      "ci.backend.config-cleanup",
+      "一時的なproduction Wrangler configはdeploy後に必ず削除してください。",
+    ));
+  }
+  return failures;
+}
+
 export function verifyBackendRolloutScript(source) {
   const failures = [];
   const executable = normalizedLines(source)
@@ -1484,6 +1573,17 @@ export function verifyRepository({
     failures.push(failure("ci.deploy-file", ".github/workflows/ios-deploy.yml がありません。"));
   } else {
     failures.push(...verifyDeployWorkflow(deploy.content));
+  }
+  const backendWorkflow = workflows.find((workflow) =>
+    workflow.path.endsWith("/backend.yml")
+  );
+  if (!backendWorkflow) {
+    failures.push(failure(
+      "ci.backend-file",
+      ".github/workflows/backend.yml がありません。",
+    ));
+  } else {
+    failures.push(...verifyBackendWorkflow(backendWorkflow.content));
   }
   const screenshotWorkflow = workflows.find((workflow) =>
     workflow.path.endsWith("/app-store-screenshots.yml")

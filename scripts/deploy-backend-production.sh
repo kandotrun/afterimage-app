@@ -7,6 +7,7 @@ cd "$ROOT/backend"
 WRANGLER_CONFIG="${WRANGLER_CONFIG:-wrangler.jsonc}"
 D1_DATABASE="${D1_DATABASE:-DB}"
 PRODUCTION_ORIGIN="${PRODUCTION_ORIGIN:-https://afterimage.2-38.com}"
+DEPLOY_MESSAGE="${DEPLOY_MESSAGE:-App Store privacy and deletion safety rollout}"
 TEMP_DIR="$(mktemp -d "${TMPDIR:-/tmp}/afterimage-prod-rollout.XXXXXX")"
 MAINTENANCE_ACTIVE=0
 
@@ -102,7 +103,7 @@ npx wrangler d1 migrations list "$D1_DATABASE" --remote --config "$WRANGLER_CONF
 
 # Phase 2: activate code that requires and enforces the migrated schema.
 npx wrangler deploy --config "$WRANGLER_CONFIG" --keep-vars \
-  --message "App Store privacy and deletion safety rollout"
+  --message "$DEPLOY_MESSAGE"
 expect_status 200
 expect_status 200 /privacy
 expect_status 200 /support
