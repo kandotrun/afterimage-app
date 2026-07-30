@@ -253,6 +253,31 @@ assert.match(
   "a relaunched background upload must restore its generation-scoped preview descriptor",
 );
 assert.match(
+  appModel,
+  /enum\s+UploadHandoffGate[\s\S]*Task\.checkCancellation\(\)/,
+  "the upload handoff gate must reject a cancelled task",
+);
+assert.match(
+  appModel,
+  /let\s+context\s*=\s*try\s+await\s+api\.backgroundUploadContext\(\)\s*try\s+UploadHandoffGate\.checkCancellation\(\)[\s\S]*BackgroundUploadManager\.shared\.startUpload\(/,
+  "cancellation must be checked after the final await and before background upload handoff",
+);
+assert.match(
+  appModel,
+  /case\s+\.success:\s*self\.upload\?\.beginFinalizing\(\)\s*await\s+self\.postReminderScheduler\.recordPost\(\)/,
+  "successful background upload must detach the staged preview before post-upload awaits",
+);
+assert.match(
+  appModel,
+  /enum\s+UploadCancellationCleanup[\s\S]*Task\.detached[\s\S]*await\s+cleanup\.value/,
+  "remote asset cleanup must run independently from the cancelled upload task",
+);
+assert.match(
+  appModel,
+  /if\s+let\s+remoteAssetID[\s\S]*await\s+UploadCancellationCleanup\.run[\s\S]*api\.deleteAsset\(assetID:\s*remoteAssetID\)/,
+  "pre-handoff cancellation must use cancellation-independent remote cleanup",
+);
+assert.match(
   timeline,
   /Menu\s*\{[\s\S]*?Button\([\s\S]*?camera\.source\.record[\s\S]*?Button\([\s\S]*?camera\.source\.library[\s\S]*?isShowingLibrary\s*=\s*true[\s\S]*?\}\s*label:\s*\{\s*Image\(systemName:\s*"plus"\)[\s\S]*?\}\s*\.buttonStyle\(\.glassProminent\)\s*\.buttonBorderShape\(\.circle\)/,
   "upload source menu must trigger the external picker from an icon-only circular prominent glass button",

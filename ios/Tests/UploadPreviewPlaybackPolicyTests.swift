@@ -1,6 +1,14 @@
 import XCTest
 @testable import afterimage
 
+private actor UploadCancellationCleanupProbe {
+    private(set) var didRun = false
+
+    func markRun() {
+        didRun = true
+    }
+}
+
 final class UploadPreviewPlaybackPolicyTests: XCTestCase {
     private let stagedURL = URL(fileURLWithPath: "/tmp/afterimage-uploads/asset-1/media.mov")
 
@@ -115,5 +123,67 @@ final class UploadPreviewPlaybackPolicyTests: XCTestCase {
                 reduceMotion: false
             )
         )
+    }
+
+    func testCancelledTaskCannotCrossBackgroundUploadHandoffGate() async {
+        let task = Task { () -> Bool in
+            while !Task.isCancelled {
+                await Task.yield()
+            }
+            do {
+                try UploadHandoffGate.checkCancellation()
+                return false
+            } catch is CancellationError {
+                return true
+            } catch {
+                return false
+            }
+        }
+
+        task.cancel()
+        let wasRejected = await task.value
+
+        XCTAssertTrue(wasRejected)
+    }
+
+    func testBeginningFinalizationImmediatelyDetachesPreview() {
+        var upload = UploadPresentation(
+            stage: .uploading,
+            progress: 0.94,
+            current: 1,
+            total: 1,
+            preview: preview
+        )
+
+        upload.beginFinalizing()
+
+        XCTAssertEqual(upload.stage, .finishing)
+        XCTAssertEqual(upload.progress, 1)
+        XCTAssertNil(upload.preview)
+        XCTAssertNil(
+            UploadPreviewPlaybackPolicy.playableDescriptor(
+                for: upload,
+                isPlaybackAllowed: true,
+                reduceMotion: false
+            )
+        )
+    }
+
+    func testCancellationCleanupRunsOutsideCancelledParentTask() async {
+        let probe = UploadCancellationCleanupProbe()
+        let task = Task { () -> Bool in
+            while !Task.isCancelled {
+                await Task.yield()
+            }
+            await UploadCancellationCleanup.run {
+                await probe.markRun()
+            }
+            return await probe.didRun
+        }
+
+        task.cancel()
+        let didRun = await task.value
+
+        XCTAssertTrue(didRun)
     }
 }
