@@ -14,7 +14,12 @@ import {
 } from "./apple";
 import { legalPageResponse } from "./legal";
 import { handleMcpRequest } from "./mcp";
-import { createGpuJobRoutes } from "./gpu-jobs";
+import {
+  ACTIVE_EXTERNAL_AI_WORK_LIMIT,
+  ACTIVE_GPU_JOB_LIMIT,
+  createGpuJobRoutes,
+  queueAvailableVideoAnalyses,
+} from "./gpu-jobs";
 import {
   AI_CONSENT_VERSION,
   aiConsentJson,
@@ -280,8 +285,6 @@ const APPLE_CHALLENGE_RATE_LIMIT = 10;
 const ASSET_CREATION_WINDOW_MS = 24 * 60 * 60 * 1_000;
 const ASSET_CREATION_LIMIT = 200;
 const ACTIVE_STORAGE_QUOTA_BYTES = 30 * 1024 * 1024 * 1024;
-const ACTIVE_GPU_JOB_LIMIT = 4;
-const ACTIVE_EXTERNAL_AI_WORK_LIMIT = 4;
 const EXTERNAL_AI_WORK_LEASE_MS = 2 * 60 * 1_000;
 const COMPLETED_DELETION_RETENTION_MS = 30 * 24 * 60 * 60 * 1_000;
 
@@ -443,7 +446,13 @@ function mcpTokenJson(token: McpTokenRow) {
 
 function ownerVideoAnalysisStatusSql(assetAlias = "assets"): string {
   return `CASE
-    WHEN ${assetAlias}.kind <> 'video' OR ${assetAlias}.agent_access_enabled = 0 THEN NULL
+    WHEN ${assetAlias}.kind <> 'video' THEN NULL
+    WHEN NOT EXISTS (
+      SELECT 1 FROM ai_consents consent
+       WHERE consent.user_id = ${assetAlias}.user_id
+         AND consent.version = '${AI_CONSENT_VERSION}'
+         AND consent.consented_at IS NOT NULL AND consent.withdrawn_at IS NULL
+    ) THEN NULL
     WHEN EXISTS (
       SELECT 1 FROM video_analyses va WHERE va.asset_id = ${assetAlias}.id
     ) THEN 'completed'
@@ -636,7 +645,7 @@ async function queueVideoAnalysis(
     SELECT ?, a.id, 'analysis', 'queued', '{}', 0, 0, ?, ?, ?
       FROM assets a
      WHERE a.id = ? AND a.user_id = ?
-       AND a.kind = 'video' AND a.status = 'ready' AND a.agent_access_enabled = 1
+       AND a.kind = 'video' AND a.status = 'ready'
        AND EXISTS (
          SELECT 1 FROM ai_consents consent
           WHERE consent.user_id = a.user_id AND consent.version = ?
@@ -1480,7 +1489,11 @@ export function createApp(overrides: Partial<AppDependencies> = {}) {
                  WHERE consent.user_id = a.user_id AND consent.version = ?
                    AND consent.consented_at IS NOT NULL AND consent.withdrawn_at IS NULL
               )
-              AND (g.id LIKE 'transcription:%' OR a.agent_access_enabled = 1)
+              AND (
+                g.id LIKE 'transcription:%'
+                OR g.purpose = 'worker'
+                OR (g.purpose = 'agent' AND a.agent_access_enabled = 1)
+              )
             )
           )
           AND (
@@ -1541,6 +1554,11 @@ export function createApp(overrides: Partial<AppDependencies> = {}) {
           withdrawn_at = NULL,
           updated_at = excluded.updated_at`,
       ).bind(auth.userId, AI_CONSENT_VERSION, nowIso, nowIso).run();
+      try {
+        await queueAvailableVideoAnalyses(context.env, auth.userId, dependencies.now());
+      } catch (error) {
+        console.error(JSON.stringify({ event: "video_analysis_backfill_failed", userId: auth.userId, message: error instanceof Error ? error.message : String(error) }));
+      }
     } else {
       await context.env.DB.batch([
         context.env.DB.prepare(
@@ -1723,10 +1741,23 @@ export function createApp(overrides: Partial<AppDependencies> = {}) {
     if (!parsed.data.enabled) {
       statements.push(
         context.env.DB.prepare(
-          "DELETE FROM media_grants WHERE asset_id = ? AND purpose IN ('agent', 'worker')",
+          `DELETE FROM media_grants
+             WHERE asset_id = ?
+               AND purpose IN ('agent', 'worker')
+               AND (
+                 purpose = 'agent'
+                 OR derivative_id IS NOT NULL
+                 OR NOT EXISTS (
+                   SELECT 1 FROM gpu_jobs analysis_job
+                    WHERE analysis_job.asset_id = media_grants.asset_id
+                      AND analysis_job.kind = 'analysis'
+                      AND analysis_job.status IN ('queued', 'leased')
+                 )
+               )`,
         ).bind(assetId),
-        context.env.DB.prepare("DELETE FROM gpu_jobs WHERE asset_id = ?").bind(assetId),
-        context.env.DB.prepare("DELETE FROM video_analyses WHERE asset_id = ?").bind(assetId),
+        context.env.DB.prepare(
+          "DELETE FROM gpu_jobs WHERE asset_id = ? AND kind IN ('frame', 'clip')",
+        ).bind(assetId),
         context.env.DB.prepare("DELETE FROM media_derivatives WHERE asset_id = ?").bind(assetId),
       );
     }
@@ -1734,35 +1765,7 @@ export function createApp(overrides: Partial<AppDependencies> = {}) {
     if ((updated?.meta.changes ?? 0) !== 1) {
       return errorResponse(context, 404, "asset_not_found", "Asset was not found.");
     }
-    if (parsed.data.enabled) {
-      const queueResult = await queueVideoAnalysis(context.env, assetId, auth.userId, now);
-      if (queueResult === "analysis_queue_limit" || queueResult === "external_ai_work_limit") {
-        await context.env.DB.prepare(
-          `UPDATE assets SET agent_access_enabled = 0, updated_at = ?
-            WHERE id = ? AND user_id = ?`,
-        ).bind(updatedAt, assetId, auth.userId).run();
-        return errorResponse(
-          context,
-          429,
-          queueResult,
-          queueResult === "analysis_queue_limit"
-            ? "At most four Mage jobs may be active."
-            : "At most four external AI jobs may be active.",
-        );
-      }
-      if (queueResult === "not_eligible") {
-        await context.env.DB.prepare(
-          `UPDATE assets SET agent_access_enabled = 0, updated_at = ?
-            WHERE id = ? AND user_id = ?`,
-        ).bind(updatedAt, assetId, auth.userId).run();
-        return errorResponse(
-          context,
-          409,
-          "agent_access_conflict",
-          "Agent access could not be enabled.",
-        );
-      }
-    } else {
+    if (!parsed.data.enabled) {
       const keep = new Set([asset.object_key, ...(asset.thumbnail_key ? [asset.thumbnail_key] : [])]);
       await deleteAssetPrefixObjects(context.env, auth.userId, assetId, keep);
     }
@@ -2361,7 +2364,7 @@ export function createApp(overrides: Partial<AppDependencies> = {}) {
       } catch {
       }
     }
-    if (completed.kind === "video" && completed.agent_access_enabled === 1) {
+    if (completed.kind === "video") {
       try {
         await queueVideoAnalysis(context.env, completed.id, auth.userId, dependencies.now());
       } catch (error) {
@@ -2560,7 +2563,7 @@ export function createApp(overrides: Partial<AppDependencies> = {}) {
                 va.summary AS visual_summary
            FROM assets a
            LEFT JOIN video_analyses va
-             ON va.asset_id = a.id AND a.agent_access_enabled = 1
+             ON va.asset_id = a.id
           WHERE ${rangeWhere}
             AND ((${transcriptWhere}) OR va.asset_id IS NOT NULL)
        ), segment_totals AS (
@@ -2613,7 +2616,7 @@ export function createApp(overrides: Partial<AppDependencies> = {}) {
                 va.backend AS visual_backend, va.coverage_mode AS visual_coverage_mode
            FROM assets a
            LEFT JOIN video_analyses va
-             ON va.asset_id = a.id AND a.agent_access_enabled = 1
+             ON va.asset_id = a.id
           WHERE ${rangeWhere}
             AND ((${transcriptWhere}) OR va.asset_id IS NOT NULL)
           ORDER BY julianday(a.captured_at) ASC, a.id ASC
@@ -2624,7 +2627,7 @@ export function createApp(overrides: Partial<AppDependencies> = {}) {
                 segment.start_ms, segment.end_ms, segment.caption
            FROM video_analysis_segments segment
            JOIN assets a ON a.id = segment.analysis_asset_id
-          WHERE ${rangeWhere} AND a.agent_access_enabled = 1
+          WHERE ${rangeWhere}
           ORDER BY segment.analysis_asset_id, segment.position
           LIMIT ?`,
       ).bind(auth.userId, startIso, endIso, MAX_DAILY_SUMMARY_SOURCE_ROWS + 1).all<DailySummaryVisualSegmentRow>(),
@@ -2941,7 +2944,7 @@ export function createApp(overrides: Partial<AppDependencies> = {}) {
               matched_segment.caption AS matched_segment_caption
          FROM assets a
          LEFT JOIN video_analyses va
-           ON va.asset_id = a.id AND a.agent_access_enabled = 1
+           ON va.asset_id = a.id
          LEFT JOIN video_analysis_segments matched_segment
            ON matched_segment.analysis_asset_id = a.id
           AND va.asset_id IS NOT NULL
@@ -3003,6 +3006,9 @@ export function createApp(overrides: Partial<AppDependencies> = {}) {
   api.get("/assets/:assetId/analysis", async (context) => {
     setPrivateResponseHeaders(context);
     const auth = context.get("auth");
+    if (!await hasActiveAiConsent(context.env, auth.userId)) {
+      return errorResponse(context, 403, "ai_consent_required", "Active AI consent is required for video analysis.");
+    }
     const asset = await findOwnedAsset(context.env, context.req.param("assetId"), auth.userId);
     if (!asset || asset.kind !== "video" || asset.status !== "ready") {
       return errorResponse(context, 404, "asset_not_found", "Asset was not found.");
@@ -3017,14 +3023,14 @@ export function createApp(overrides: Partial<AppDependencies> = {}) {
              FROM video_analyses va
              JOIN assets a ON a.id = va.asset_id
             WHERE va.asset_id = ? AND a.user_id = ? AND a.kind = 'video'
-              AND a.status = 'ready' AND a.agent_access_enabled = 1`,
+              AND a.status = 'ready'`,
         ).bind(asset.id, auth.userId).first<VideoAnalysisRow>(),
         context.env.DB.prepare(
           `SELECT range_item.position, range_item.start_ms, range_item.end_ms
              FROM video_analysis_ranges range_item
              JOIN assets a ON a.id = range_item.analysis_asset_id
             WHERE range_item.analysis_asset_id = ? AND a.user_id = ?
-              AND a.kind = 'video' AND a.status = 'ready' AND a.agent_access_enabled = 1
+              AND a.kind = 'video' AND a.status = 'ready'
             ORDER BY range_item.position`,
         ).bind(asset.id, auth.userId).all<VideoAnalysisRangeRow>(),
         context.env.DB.prepare(
@@ -3032,7 +3038,7 @@ export function createApp(overrides: Partial<AppDependencies> = {}) {
              FROM video_analysis_segments segment
              JOIN assets a ON a.id = segment.analysis_asset_id
             WHERE segment.analysis_asset_id = ? AND a.user_id = ?
-              AND a.kind = 'video' AND a.status = 'ready' AND a.agent_access_enabled = 1
+              AND a.kind = 'video' AND a.status = 'ready'
             ORDER BY segment.position`,
         ).bind(asset.id, auth.userId).all<VideoAnalysisSegmentRow>(),
       ])

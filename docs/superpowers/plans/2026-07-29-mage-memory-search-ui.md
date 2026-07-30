@@ -40,7 +40,7 @@ Response:
 
 Rules:
 - `auth.userId`、`kind='video'`、`status='ready'`を必ずbindする。
-- ownerアプリ検索はMCPと異なり`agent_access_enabled`でtranscriptを隠さない。Mage解析は共有OFF時に既存処理でpurge済み。
+- ownerアプリ検索はMCPと異なり`agent_access_enabled`でtranscriptを隠さない。activeなグローバルAI同意がMage解析・検索をゲートし、`agent_access_enabled`は動画ごとのMCP共有だけを制御する。共有OFFでもownerのMage解析は取消・非表示にしない。
 - `%`、`_`、`\\`をliteralとしてescapeする。
 - 他ownerの文字起こし・解析・filenameを応答/ログへ出さない。
 - `Cache-Control: private, no-store`、`Pragma: no-cache`、`Vary: Authorization`。
@@ -164,5 +164,5 @@ Rules:
 - segmentを押すと該当時刻へseekする。
 - 解析中/失敗/共有OFFが無表示にならず説明される。
 - visual-only videoが日次要約へ反映される。
-- 既存MCPの`agent_access_enabled`境界とworker grant境界を変えない。
+- 既存MCPの`agent_access_enabled`境界とagent grant境界を維持し、Mage workerはactiveなグローバルAI同意でゲートする。
 - backend全テスト、typecheck、root check、macOS self-hosted iOS testが成功する。

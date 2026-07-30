@@ -1,4 +1,5 @@
 import { cleanupExpiredState, createApp, pollTranscriptions } from "./app";
+import { pollVideoAnalyses } from "./gpu-jobs";
 import { processPendingAccountDeletions } from "./account-deletion";
 
 const app = createApp();
@@ -17,6 +18,7 @@ export default {
     } else {
       context.waitUntil(Promise.all([
         pollTranscriptions(env, time),
+        pollVideoAnalyses(env, time),
         processPendingAccountDeletions(env, time),
       ]));
     }

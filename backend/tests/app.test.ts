@@ -2284,12 +2284,12 @@ describe("agent access privacy boundary", () => {
       items: [{
         id: owner.assetId,
         agentAccessEnabled: false,
-        videoAnalysisStatus: null,
+        videoAnalysisStatus: "queued",
       }],
     });
     await expect(env.DB.prepare(
-      "SELECT COUNT(*) AS count FROM gpu_jobs WHERE asset_id = ?",
-    ).bind(owner.assetId).first()).resolves.toEqual({ count: 0 });
+      "SELECT kind, status FROM gpu_jobs WHERE asset_id = ?",
+    ).bind(owner.assetId).first()).resolves.toEqual({ kind: "analysis", status: "queued" });
   });
 
   it("reports the owner-visible video analysis lifecycle", async () => {
@@ -2300,7 +2300,7 @@ describe("agent access privacy boundary", () => {
       body: JSON.stringify({ enabled: false }),
     }, env);
     await expect(disabled.json()).resolves.toMatchObject({
-      asset: { videoAnalysisStatus: null },
+      asset: { videoAnalysisStatus: "queued" },
     });
 
     const enabled = await owner.app.request(`/v1/assets/${owner.assetId}/agent-access`, {
@@ -2376,7 +2376,7 @@ describe("agent access privacy boundary", () => {
     await expect(response.json()).resolves.toMatchObject({ error: { code: "asset_not_found" } });
   });
 
-  it("keeps app grants valid while revoking agent and worker grants", async () => {
+  it("keeps app and Mage worker grants while revoking agent grants", async () => {
     const owner = await createReadyVideo("agent-access-grants");
     const appGrant = await owner.app.request(`/v1/assets/${owner.assetId}/playback`, {
       method: "POST",
@@ -2385,6 +2385,7 @@ describe("agent access privacy boundary", () => {
     const appGrantBody = await appGrant.json<{ url: string }>();
     const agentToken = "a".repeat(43);
     const workerGrantToken = "b".repeat(43);
+    const derivativeWorkerToken = "c".repeat(43);
     const expiresAt = new Date(NOW.getTime() + 300_000).toISOString();
     await env.DB.batch([
       env.DB.prepare(
@@ -2395,6 +2396,11 @@ describe("agent access privacy boundary", () => {
         `INSERT INTO media_grants (id, asset_id, user_id, token_hash, expires_at, created_at, purpose)
          SELECT 'worker-grant', id, user_id, ?, ?, ?, 'worker' FROM assets WHERE id = ?`,
       ).bind(await tokenHash(workerGrantToken), expiresAt, NOW.toISOString(), owner.assetId),
+      env.DB.prepare(
+        `INSERT INTO media_grants (id, asset_id, user_id, token_hash, expires_at, created_at, purpose, derivative_id)
+         SELECT 'derivative-worker-grant', id, user_id, ?, ?, ?, 'worker', 'derivative-worker'
+           FROM assets WHERE id = ?`,
+      ).bind(await tokenHash(derivativeWorkerToken), expiresAt, NOW.toISOString(), owner.assetId),
     ]);
 
     await owner.app.request(`/v1/assets/${owner.assetId}/agent-access`, {
@@ -2405,7 +2411,8 @@ describe("agent access privacy boundary", () => {
 
     expect((await owner.app.request(appGrantBody.url, {}, env)).status).toBe(200);
     expect((await owner.app.request(`/v1/media/${agentToken}`, {}, env)).status).toBe(404);
-    expect((await owner.app.request(`/v1/media/${workerGrantToken}`, {}, env)).status).toBe(404);
+    expect((await owner.app.request(`/v1/media/${workerGrantToken}`, {}, env)).status).toBe(200);
+    expect((await owner.app.request(`/v1/media/${derivativeWorkerToken}`, {}, env)).status).toBe(404);
   });
 
   it("does not create an agent grant after access is disabled following asset lookup", async () => {
@@ -2490,7 +2497,7 @@ describe("agent access privacy boundary", () => {
       "SELECT COUNT(*) AS count FROM media_derivatives WHERE asset_id = ?",
     ).bind(owner.assetId).first()).resolves.toEqual({ count: 0 });
     await expect(env.DB.prepare(
-      "SELECT COUNT(*) AS count FROM gpu_jobs WHERE asset_id = ?",
+      "SELECT COUNT(*) AS count FROM gpu_jobs WHERE asset_id = ? AND kind IN ('frame', 'clip')",
     ).bind(owner.assetId).first()).resolves.toEqual({ count: 0 });
   });
 
@@ -2525,7 +2532,7 @@ describe("agent access privacy boundary", () => {
     });
   });
 
-  it("rejects stale analysis completion after agent access is disabled", async () => {
+  it("rejects stale analysis completion after AI consent is withdrawn", async () => {
     const owner = await createReadyVideo("agent-access-stale-job");
     const workerEnvironment = await gpuEnv();
     const lease = await owner.app.request("/v1/internal/gpu-jobs/lease", {
@@ -2541,10 +2548,10 @@ describe("agent access privacy boundary", () => {
     }, workerEnvironment);
     const leased = await lease.json<{ job: { id: string; leaseToken: string } }>();
 
-    await owner.app.request(`/v1/assets/${owner.assetId}/agent-access`, {
-      method: "PATCH",
+    await owner.app.request("/v1/privacy/ai", {
+      method: "PUT",
       headers: { authorization: owner.authorization, "content-type": "application/json" },
-      body: JSON.stringify({ enabled: false }),
+      body: JSON.stringify({ version: AI_CONSENT_VERSION, consented: false }),
     }, env);
     const completed = await owner.app.request(`/v1/internal/gpu-jobs/${leased.job.id}/analysis`, {
       method: "POST",
@@ -2570,7 +2577,7 @@ describe("agent access privacy boundary", () => {
     ).bind(owner.assetId).first<{ count: number }>()).toEqual({ count: 0 });
   });
 
-  it("rejects analysis completion when agent access is disabled after lease validation", async () => {
+  it("rejects analysis completion when AI consent is withdrawn after lease validation", async () => {
     const owner = await createReadyVideo("agent-access-interleaved-disable");
     const workerEnvironment = await gpuEnv();
     const lease = await owner.app.request("/v1/internal/gpu-jobs/lease", {
@@ -2587,10 +2594,10 @@ describe("agent access privacy boundary", () => {
     const leased = await lease.json<{ job: { id: string; leaseToken: string } }>();
     const interleavedEnvironment = {
       ...envWithFirstResultHook("j.lease_token_hash = ?", async () => {
-        await owner.app.request(`/v1/assets/${owner.assetId}/agent-access`, {
-          method: "PATCH",
+        await owner.app.request("/v1/privacy/ai", {
+          method: "PUT",
           headers: { authorization: owner.authorization, "content-type": "application/json" },
-          body: JSON.stringify({ enabled: false }),
+          body: JSON.stringify({ version: AI_CONSENT_VERSION, consented: false }),
         }, env);
       }),
       MAGE_WORKER_TOKEN_HASH: workerEnvironment.MAGE_WORKER_TOKEN_HASH,
@@ -3442,7 +3449,7 @@ describe("daily Qwen summary", () => {
     });
   });
 
-  it("does not count disabled Mage output against daily summary source bounds", async () => {
+  it("counts Mage output against daily summary source bounds even when agent sharing is disabled", async () => {
     const generator = vi.fn<TestDailySummaryGenerator>(async () => ({
       summary: "文字起こしだけを要約した。",
       model: "qwen3.8-max-preview",
@@ -3478,17 +3485,11 @@ describe("daily Qwen summary", () => {
     const response = await owner.app.request(summaryPath, {
       headers: { authorization: owner.authorization },
     }, env);
-    expect(response.status).toBe(200);
+    expect(response.status).toBe(413);
     await expect(response.json()).resolves.toMatchObject({
-      sourceTranscriptCount: 1,
-      sourceVisualAnalysisCount: 0,
+      error: { code: "daily_summary_too_large" },
     });
-    expect(generator).toHaveBeenCalledWith(expect.anything(), [{
-      capturedAt: "2026-07-27T03:00:00.000Z",
-      transcript: "文字起こしだけを使う。",
-      visualSummary: null,
-      visualSegments: [],
-    }]);
+    expect(generator).not.toHaveBeenCalled();
   });
 
   it("regenerates the cached summary after a source transcript changes", async () => {

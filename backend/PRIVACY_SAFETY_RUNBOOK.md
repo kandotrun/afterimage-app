@@ -24,6 +24,14 @@ After migration, verify:
 - no agent, worker, or transcription media grant from before the consent boundary remains;
 - no pre-migration GPU job remains.
 
+Mage-VL operation after this rollout is gated by the active global AI consent, not
+by `assets.agent_access_enabled`. The latter is the per-asset MCP/agent boundary.
+On every minute tick the Worker fills at most four consented Mage analysis jobs per
+owner; completing or failing a job refills the next eligible video. Withdrawing AI
+consent cancels queued/leased worker jobs and revokes worker grants. Disabling only
+agent access cancels frame/clip derivatives and agent grants but leaves Mage
+analysis work intact.
+
 ## Account deletion retries
 
 Account deletion records intent before external cleanup, revokes sessions immediately, and is resumed by the minute and daily scheduled handlers. A pending job keeps bounded error metadata in `last_error_code`, `attempt_count`, and `next_attempt_at`. Do not delete a pending job to work around a provider outage.
