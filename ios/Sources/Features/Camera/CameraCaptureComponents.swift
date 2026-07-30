@@ -144,6 +144,7 @@ struct CameraCaptureStatusView: View {
                 )
                 .buttonStyle(.glassProminent)
                 .accessibilityLabel(L10n.string("camera.action.retry"))
+                .accessibilityIdentifier("cameraRetryButton")
             }
             Button(
                 L10n.string("camera.action.close"),
