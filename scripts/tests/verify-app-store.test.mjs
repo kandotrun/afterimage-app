@@ -228,6 +228,15 @@ test("backend workflow はcheck成功後のmain pushだけでproduction deploy�
     "on:",
     "  push:",
     "    branches: [\"**\"]",
+    "    paths:",
+    "      - backend/**",
+    "      - package.json",
+    "      - package-lock.json",
+    "      - scripts/deploy-backend-production.sh",
+    "      - scripts/verify-app-store.mjs",
+    "      - scripts/tests/verify-app-store.test.mjs",
+    "      - backend/wrangler.example.jsonc",
+    "      - .github/workflows/backend.yml",
     "  workflow_dispatch:",
     "permissions:",
     "  contents: read",
@@ -258,7 +267,10 @@ test("backend workflow はcheck成功後のmain pushだけでproduction deploy�
     "            fi",
     "          }",
     "          trap cleanup EXIT",
+    "          trap 'cleanup; exit 130' INT",
+    "          trap 'cleanup; exit 143' TERM",
     "          printf '%s' \"$AFTERIMAGE_PRODUCTION_WRANGLER_CONFIG\" > \"$CONFIG_PATH\"",
+    "          chmod 600 \"$CONFIG_PATH\"",
     "          node --input-type=module - \"$CONFIG_PATH\" \"$GITHUB_WORKSPACE/backend\" <<'NODE'",
     "          const mainPath = path.join(backendRoot, \"src\", \"index.ts\");",
     "          const migrationsPath = path.join(backendRoot, \"migrations\");",
@@ -282,6 +294,21 @@ test("backend workflow はcheck成功後のmain pushだけでproduction deploy�
       "          ./scripts/deploy-backend-production.sh",
       `          ./scripts/deploy-backend-production.sh\n${configWriteLine}`,
     );
+  const noWorkflowDispatch = safe.replace("  workflow_dispatch:\n", "");
+  const missingBackendPath = safe.replace("      - backend/**\n", "");
+  const weakCheck = safe.replace("      - run: npm run check", "      - run: true");
+  const jobScopedSecret = safe.replace(
+    "  deploy:\n",
+    "  deploy:\n    env:\n      CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}\n",
+  );
+  const directDeploy = safe.replace(
+    "          ./scripts/deploy-backend-production.sh",
+    "          npx wrangler deploy --config \"$WRANGLER_CONFIG\"\n          ./scripts/deploy-backend-production.sh",
+  );
+  const alwaysDeployStep = safe.replace(
+    "      - name: Deploy backend to production\n",
+    "      - name: Deploy backend to production\n        if: always()\n",
+  );
 
   assert.deepEqual(verifyBackendWorkflow(safe), []);
   assert.ok(
@@ -296,6 +323,24 @@ test("backend workflow はcheck成功後のmain pushだけでproduction deploy�
   assert.ok(
     verifyBackendWorkflow(configAfterDeploy).some((failure) => failure.id === "ci.backend.config-cleanup"),
   );
+  assert.ok(verifyBackendWorkflow(noWorkflowDispatch).some((failure) =>
+    failure.id === "ci.backend.workflow-dispatch"
+  ));
+  assert.ok(verifyBackendWorkflow(missingBackendPath).some((failure) =>
+    failure.id === "ci.backend.paths"
+  ));
+  assert.ok(verifyBackendWorkflow(weakCheck).some((failure) =>
+    failure.id === "ci.backend.check-command"
+  ));
+  assert.ok(verifyBackendWorkflow(jobScopedSecret).some((failure) =>
+    failure.id === "ci.backend.secret-scope"
+  ));
+  assert.ok(verifyBackendWorkflow(directDeploy).some((failure) =>
+    failure.id === "ci.backend.direct-rollout"
+  ));
+  assert.ok(verifyBackendWorkflow(alwaysDeployStep).some((failure) =>
+    failure.id === "ci.backend.step-gate"
+  ));
 });
 
 test("TestFlight export前にarchive read-back gateを要求する", () => {
@@ -347,20 +392,29 @@ require_secret APPLE_PRIVATE_KEY
 wrangler deploy src/maintenance.ts --config "$WRANGLER_CONFIG"
 expect_status 503
 wrangler d1 migrations apply "$D1_DATABASE" --remote --config "$WRANGLER_CONFIG"
-wrangler deploy --config "$WRANGLER_CONFIG"
+wrangler deploy --config "$WRANGLER_CONFIG" --keep-vars --message "production"
 expect_status 200
 `;
   const missingAppleCredentials = `
 wrangler deploy src/maintenance.ts --config "$WRANGLER_CONFIG"
 expect_status 503
 wrangler d1 migrations apply "$D1_DATABASE" --remote --config "$WRANGLER_CONFIG"
-wrangler deploy --config "$WRANGLER_CONFIG"
+wrangler deploy --config "$WRANGLER_CONFIG" --keep-vars --message "production"
 expect_status 200
 `;
   const unsafe = `
 wrangler d1 migrations apply "$D1_DATABASE" --remote --config "$WRANGLER_CONFIG"
-wrangler deploy --config "$WRANGLER_CONFIG"
+wrangler deploy --config "$WRANGLER_CONFIG" --keep-vars --message "production"
 `;
+  const missingRemote = safe.replace(" --remote --config", " --config");
+  const missingListRemote = safe.replace(
+    "wrangler d1 migrations apply \"$D1_DATABASE\" --remote --config \"$WRANGLER_CONFIG\"",
+    "wrangler d1 migrations list \"$D1_DATABASE\" --config \"$WRANGLER_CONFIG\"\nwrangler d1 migrations apply \"$D1_DATABASE\" --remote --config \"$WRANGLER_CONFIG\"",
+  );
+  const finalDryRun = safe.replace(
+    "--keep-vars --message \"production\"",
+    "--dry-run --keep-vars --message \"production\"",
+  );
 
   assert.deepEqual(verifyBackendRolloutScript(safe), []);
   assert.ok(verifyBackendRolloutScript(unsafe).some((failure) =>
@@ -368,6 +422,15 @@ wrangler deploy --config "$WRANGLER_CONFIG"
   ));
   assert.ok(verifyBackendRolloutScript(missingAppleCredentials).some((failure) =>
     failure.id === "backend.rollout.apple-credentials"
+  ));
+  assert.ok(verifyBackendRolloutScript(missingRemote).some((failure) =>
+    failure.id === "backend.rollout.remote"
+  ));
+  assert.ok(verifyBackendRolloutScript(missingListRemote).some((failure) =>
+    failure.id === "backend.rollout.remote"
+  ));
+  assert.ok(verifyBackendRolloutScript(finalDryRun).some((failure) =>
+    failure.id === "backend.rollout.final-deploy"
   ));
 });
 
