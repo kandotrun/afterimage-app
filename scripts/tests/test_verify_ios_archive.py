@@ -1,4 +1,5 @@
 import json
+import os
 import plistlib
 import subprocess
 import tempfile
@@ -25,6 +26,11 @@ class VerifyIOSArchiveTests(unittest.TestCase):
         app = archive / "Products" / "Applications" / "afterimage.app"
         extension = app / "PlugIns" / "AfterimageUploadWidget.appex"
         extension.mkdir(parents=True)
+        tool_bin = root / "bin"
+        tool_bin.mkdir()
+        codesign = tool_bin / "codesign"
+        codesign.write_text("#!/bin/sh\nexit 0\n", encoding="utf-8")
+        codesign.chmod(0o755)
         family = [1] if device_family is None else device_family
         with (app / "Info.plist").open("wb") as handle:
             plistlib.dump({
@@ -60,6 +66,8 @@ class VerifyIOSArchiveTests(unittest.TestCase):
         return temporary, archive, root / "evidence.json"
 
     def run_verifier(self, archive, report):
+        environment = os.environ.copy()
+        environment["PATH"] = f"{archive.parent / 'bin'}:{environment['PATH']}"
         return subprocess.run([
             "python3",
             str(SCRIPT),
@@ -73,7 +81,7 @@ class VerifyIOSArchiveTests(unittest.TestCase):
             str(ROOT / "ios" / "Resources" / "PrivacyInfo.xcprivacy"),
             "--report",
             str(report),
-        ], capture_output=True, text=True, check=False)
+        ], capture_output=True, text=True, check=False, env=environment)
 
     def test_valid_archive_writes_commit_bound_evidence(self):
         temporary, archive, report = self.make_archive()
@@ -127,6 +135,24 @@ class VerifyIOSArchiveTests(unittest.TestCase):
 
         self.assertNotEqual(result.returncode, 0)
         self.assertIn("CFBundleExecutable", result.stderr)
+        self.assertFalse(report.exists())
+
+    def test_invalid_code_signature_is_rejected_on_macos(self):
+        if os.uname().sysname != "Darwin":
+            self.skipTest("codesign verification is macOS-only")
+        temporary, archive, report = self.make_archive()
+        self.addCleanup(temporary.cleanup)
+        codesign = archive.parent / "bin" / "codesign"
+        codesign.write_text(
+            "#!/bin/sh\necho invalid-signature >&2\nexit 1\n",
+            encoding="utf-8",
+        )
+
+        result = self.run_verifier(archive, report)
+
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("codesign", result.stderr)
+        self.assertIn("invalid-signature", result.stderr)
         self.assertFalse(report.exists())
 
 
