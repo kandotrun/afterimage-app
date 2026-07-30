@@ -571,43 +571,35 @@ assert.equal(localizedValue("upload.stage.importing", "ko"), "기억을 받아�
 assert.equal(localizedValue("daily.playback.subtitle", "ja"), "この動画のことば");
 assert.equal(localizedValue("transcript.pending_title", "ja"), "ことばを書き起こしています");
 assert.equal(localizedValue("transcript.failed_title", "ja"), "ことばを残せませんでした");
+assert.equal(localizedValue("privacy.ai.title", "ja"), "AI処理への同意");
 assert.equal(
-  localizedValue("privacy.ai.qwen", "ja"),
-  "Alibaba Cloud Qwen：文字起こし、映像解析テキスト、撮影日時を受け取り、日次要約を生成",
+  localizedValue("privacy.ai.introduction", "ja"),
+  "撮影・保存・再生・削除は同意なしで使えます。AI機能と、あなたが許可した連携だけが、明示的な同意後に始まります。",
 );
 assert.equal(
-  localizedValue("privacy.ai.qwen", "en"),
-  "Alibaba Cloud Qwen: receives transcripts, visual-analysis text, and capture dates to create daily summaries",
+  localizedValue("privacy.ai.purpose", "ja"),
+  "AI機能と、あなたが許可した連携を提供するために使用します。広告や追跡には使いません。",
 );
 assert.equal(
-  localizedValue("privacy.ai.qwen", "zh-Hans"),
-  "阿里云通义千问：接收转写、视频分析文本和拍摄日期，用于生成每日摘要",
+  localizedValue("privacy.ai.existing_data", "ja"),
+  "同意を撤回すると新しいAI処理と外部連携を停止します。既存のデータは非公開のまま残り、個別削除またはアカウント削除で消去できます。",
 );
-assert.equal(
-  localizedValue("privacy.ai.qwen", "ko"),
-  "Alibaba Cloud Qwen: 전사, 영상 분석 텍스트, 촬영 날짜를 받아 일일 요약 생성",
-);
-assert.equal(
-  localizedValue("privacy.ai.soniox", "ja"),
-  "Soniox：動画ファイル全体（映像・音声）を送信し、音声の文字起こしを生成",
-);
-assert.equal(
-  localizedValue("privacy.ai.soniox", "en"),
-  "Soniox: receives the complete video file, including video and audio, to transcribe its audio",
-);
-assert.equal(
-  localizedValue("privacy.ai.soniox", "zh-Hans"),
-  "Soniox：接收包含画面和音频的完整视频文件，用于转写其中的音频",
-);
-assert.equal(
-  localizedValue("privacy.ai.soniox", "ko"),
-  "Soniox: 영상과 오디오가 포함된 전체 동영상 파일을 받아 오디오를 전사",
-);
+for (const key of [
+  "privacy.ai.destination_title",
+  "privacy.ai.mcp",
+  "privacy.ai.qwen",
+  "privacy.ai.soniox",
+]) {
+  assert.equal(catalog.strings[key], undefined, `removed implementation detail key remains: ${key}`);
+}
 assert.ok(
-  aiConnectionUITests.includes(
-    "Soniox：動画ファイル全体（映像・音声）を送信し、音声の文字起こしを生成",
-  ),
-  "AI consent UI test must assert the complete-video Soniox disclosure",
+  aiConnectionUITests.includes('XCTAssertTrue(app.staticTexts["AI処理への同意"].exists)')
+    && aiConnectionUITests.includes('XCTAssertFalse(app.staticTexts["送信先と送信データ"].exists)')
+    && aiConnectionUITests.includes('label CONTAINS[c] %@')
+    && aiConnectionUITests.includes('"Soniox"')
+    && aiConnectionUITests.includes('"Alibaba Cloud Qwen"')
+    && aiConnectionUITests.includes('"MCP client / AIエージェント"'),
+  "AI consent UI test must keep the main settings copy high-level",
 );
 assert.equal(
   localizedValue("mcp.connection.description", "ja"),
