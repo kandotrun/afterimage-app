@@ -1,7 +1,10 @@
 import { env } from "cloudflare:workers";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { cleanupExpiredState, createApp, type AppleIdentity } from "../src/app";
-import { processPendingAccountDeletions } from "../src/account-deletion";
+import {
+  createAccountDeletionIntent,
+  processPendingAccountDeletions,
+} from "../src/account-deletion";
 
 const NOW = new Date("2026-07-30T00:00:00.000Z");
 const AI_CONSENT_VERSION = "2026-07-30";
@@ -1337,6 +1340,118 @@ describe("durable account deletion", () => {
     expect(providers.revokeAppleToken).toHaveBeenCalledTimes(2);
     expect(await env.DB.prepare("SELECT id FROM users WHERE id = ?")
       .bind(fixtures.owner.userId).first()).toBeNull();
+  });
+
+  it("re-quarantines a repeated deletion intent and fences it onto the fresh Apple credential", async () => {
+    const clock = { value: NOW };
+    const providers = deletionProviders();
+    providers.revokeAppleToken.mockRejectedValueOnce(new Error("stale credential"));
+    const app = makeDeletionApp(clock, providers);
+    const fixtures = await createDeletionFixtures(app, env, "deletion-repeat-owner");
+
+    const first = await app.request("/v1/account", {
+      method: "DELETE",
+      headers: {
+        authorization: fixtures.owner.authorization,
+        "content-type": "application/json",
+      },
+      body: JSON.stringify(await accountDeletionCredentials(
+        app,
+        "deletion-repeat-owner",
+        "apple-authorization-code-repeat-owner",
+      )),
+    }, env);
+    expect(first.status).toBe(202);
+    const existing = await env.DB.prepare(
+      "SELECT id FROM account_deletion_jobs WHERE user_id = ?",
+    ).bind(fixtures.owner.userId).first<{ id: string }>();
+    expect(existing).not.toBeNull();
+
+    clock.value = new Date(NOW.getTime() + 1_000);
+    await expect(createAccountDeletionIntent(
+      env,
+      { userId: fixtures.owner.userId, appleSubject: "deletion-repeat-owner" },
+      { token: "fresh-apple-refresh-token", tokenType: "refresh_token" },
+      clock.value,
+    )).resolves.toEqual({ id: existing!.id, status: "pending" });
+    expect(await env.DB.prepare(
+      `SELECT status, owner_token, revocation_token, revocation_token_type,
+              apple_revoked_at, next_attempt_at
+         FROM account_deletion_jobs WHERE id = ?`,
+    ).bind(existing!.id).first()).toEqual({
+      status: "pending",
+      owner_token: null,
+      revocation_token: "fresh-apple-refresh-token",
+      revocation_token_type: "refresh_token",
+      apple_revoked_at: null,
+      next_attempt_at: clock.value.toISOString(),
+    });
+
+    await expect(processPendingAccountDeletions(env, clock.value, providers))
+      .resolves.toEqual({ processed: 1 });
+    expect(providers.revokeAppleToken).toHaveBeenLastCalledWith(
+      env,
+      "fresh-apple-refresh-token",
+      "refresh_token",
+    );
+  });
+
+  it("blocks new authenticated resources once account deletion is durable", async () => {
+    const clock = { value: NOW };
+    const providers = deletionProviders();
+    providers.revokeAppleToken.mockRejectedValue(new Error("keep deletion pending"));
+    const app = makeDeletionApp(clock, providers);
+    const fixtures = await createDeletionFixtures(app, env, "deletion-insert-guard");
+    const first = await app.request("/v1/account", {
+      method: "DELETE",
+      headers: {
+        authorization: fixtures.owner.authorization,
+        "content-type": "application/json",
+      },
+      body: JSON.stringify(await accountDeletionCredentials(
+        app,
+        "deletion-insert-guard",
+        "apple-authorization-code-insert-guard",
+      )),
+    }, env);
+    expect(first.status).toBe(202);
+
+    const nowIso = clock.value.toISOString();
+    await expect(env.DB.prepare(
+      `INSERT INTO sessions (id, user_id, token_hash, expires_at, created_at)
+       VALUES (?, ?, ?, ?, ?)`,
+    ).bind(
+      crypto.randomUUID(),
+      fixtures.owner.userId,
+      await sha256Hex("late-session"),
+      new Date(clock.value.getTime() + 60_000).toISOString(),
+      nowIso,
+    ).run()).rejects.toThrow(/account_deletion_in_progress/);
+    await expect(env.DB.prepare(
+      `INSERT INTO mcp_tokens (id, user_id, name, token_hash, created_at, expires_at)
+       VALUES (?, ?, 'late-token', ?, ?, ?)`,
+    ).bind(
+      crypto.randomUUID(),
+      fixtures.owner.userId,
+      await sha256Hex("late-mcp-token"),
+      nowIso,
+      new Date(clock.value.getTime() + 60_000).toISOString(),
+    ).run()).rejects.toThrow(/account_deletion_in_progress/);
+    const lateAssetId = crypto.randomUUID();
+    await expect(env.DB.prepare(
+      `INSERT INTO assets (
+        id, user_id, kind, filename, content_type, byte_size, captured_at,
+        status, object_key, upload_mode, created_at, updated_at
+      ) VALUES (?, ?, 'video', 'late.mp4', 'video/mp4', 1, ?,
+        'pending', ?, 'single', ?, ?)`,
+    ).bind(
+      lateAssetId,
+      fixtures.owner.userId,
+      nowIso,
+      `users/${fixtures.owner.userId}/assets/${lateAssetId}/media`,
+      nowIso,
+      nowIso,
+    ).run()).rejects.toThrow(/account_deletion_in_progress/);
   });
 
   it("retries a failed multipart abort before completing deletion", async () => {

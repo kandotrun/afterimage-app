@@ -96,6 +96,36 @@ CREATE TABLE IF NOT EXISTS account_deletion_assets (
 CREATE INDEX IF NOT EXISTS account_deletion_assets_pending_idx
   ON account_deletion_assets(job_id, soniox_cleaned_at, r2_cleaned_at);
 
+CREATE TRIGGER IF NOT EXISTS sessions_block_account_deletion
+BEFORE INSERT ON sessions
+WHEN EXISTS (
+  SELECT 1 FROM account_deletion_jobs
+  WHERE user_id = NEW.user_id AND status IN ('pending', 'processing')
+)
+BEGIN
+  SELECT RAISE(ABORT, 'account_deletion_in_progress');
+END;
+
+CREATE TRIGGER IF NOT EXISTS mcp_tokens_block_account_deletion
+BEFORE INSERT ON mcp_tokens
+WHEN EXISTS (
+  SELECT 1 FROM account_deletion_jobs
+  WHERE user_id = NEW.user_id AND status IN ('pending', 'processing')
+)
+BEGIN
+  SELECT RAISE(ABORT, 'account_deletion_in_progress');
+END;
+
+CREATE TRIGGER IF NOT EXISTS assets_block_account_deletion
+BEFORE INSERT ON assets
+WHEN EXISTS (
+  SELECT 1 FROM account_deletion_jobs
+  WHERE user_id = NEW.user_id AND status IN ('pending', 'processing')
+)
+BEGIN
+  SELECT RAISE(ABORT, 'account_deletion_in_progress');
+END;
+
 CREATE TRIGGER IF NOT EXISTS assets_agent_access_default_off
 AFTER INSERT ON assets
 WHEN NEW.agent_access_enabled <> 0

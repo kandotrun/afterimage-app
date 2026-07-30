@@ -158,6 +158,66 @@ export async function findAccountDeletionByReceipt(
   ).bind(tokenHash).first<AccountDeletionReceipt>();
 }
 
+async function requarantineExistingDeletionIntent(
+  bindings: Env,
+  jobId: string,
+  user: DeletionUser,
+  credential: AppleRevocationCredential,
+  nowIso: string,
+): Promise<AccountDeletionReceipt> {
+  await bindings.DB.batch([
+    bindings.DB.prepare(
+      `UPDATE account_deletion_jobs
+          SET user_id = ?, apple_subject = ?, status = 'pending',
+              owner_token = NULL, revocation_token = ?,
+              revocation_token_type = ?, apple_revoked_at = NULL,
+              next_attempt_at = ?, last_error_code = NULL, updated_at = ?
+        WHERE id = ?`,
+    ).bind(
+      user.userId,
+      user.appleSubject,
+      credential.token,
+      credential.tokenType,
+      nowIso,
+      nowIso,
+      jobId,
+    ),
+    bindings.DB.prepare(
+      `INSERT OR IGNORE INTO account_deletion_receipts (
+        token_hash, job_id, created_at
+      )
+      SELECT token_hash, ?, ? FROM sessions WHERE user_id = ?`,
+    ).bind(jobId, nowIso, user.userId),
+    bindings.DB.prepare(
+      `INSERT OR IGNORE INTO account_deletion_assets (
+        job_id, asset_id, user_id, object_key, upload_mode, upload_id,
+        soniox_file_id, soniox_transcription_id
+      )
+      SELECT ?, id, user_id, object_key, upload_mode, upload_id,
+             soniox_file_id, soniox_transcription_id
+        FROM assets WHERE user_id = ?`,
+    ).bind(jobId, user.userId),
+    bindings.DB.prepare(
+      `UPDATE assets
+          SET agent_access_enabled = 0,
+              deletion_requested_at = COALESCE(deletion_requested_at, ?),
+              updated_at = ?
+        WHERE user_id = ?`,
+    ).bind(nowIso, nowIso, user.userId),
+    bindings.DB.prepare(
+      `UPDATE ai_consents
+          SET withdrawn_at = COALESCE(withdrawn_at, ?), updated_at = ?
+        WHERE user_id = ?`,
+    ).bind(nowIso, nowIso, user.userId),
+    bindings.DB.prepare(
+      `UPDATE mcp_tokens SET revoked_at = ?
+        WHERE user_id = ? AND revoked_at IS NULL`,
+    ).bind(nowIso, user.userId),
+    bindings.DB.prepare("DELETE FROM sessions WHERE user_id = ?").bind(user.userId),
+  ]);
+  return { id: jobId, status: "pending" };
+}
+
 export async function createAccountDeletionIntent(
   bindings: Env,
   user: DeletionUser,
@@ -169,10 +229,18 @@ export async function createAccountDeletionIntent(
        FROM account_deletion_jobs
       WHERE user_id = ?`,
   ).bind(user.userId).first<AccountDeletionReceipt>();
-  if (existing) return existing;
+  const nowIso = now.toISOString();
+  if (existing) {
+    return requarantineExistingDeletionIntent(
+      bindings,
+      existing.id,
+      user,
+      credential,
+      nowIso,
+    );
+  }
 
   const jobId = crypto.randomUUID();
-  const nowIso = now.toISOString();
   try {
     await bindings.DB.batch([
       bindings.DB.prepare(
@@ -231,7 +299,15 @@ export async function createAccountDeletionIntent(
     const raced = await bindings.DB.prepare(
       "SELECT id, status FROM account_deletion_jobs WHERE user_id = ?",
     ).bind(user.userId).first<AccountDeletionReceipt>();
-    if (raced) return raced;
+    if (raced) {
+      return requarantineExistingDeletionIntent(
+        bindings,
+        raced.id,
+        user,
+        credential,
+        nowIso,
+      );
+    }
     throw error;
   }
   return { id: jobId, status: "pending" };
