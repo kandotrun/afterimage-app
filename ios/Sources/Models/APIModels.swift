@@ -392,10 +392,17 @@ struct APIErrorCode: RawRepresentable, Codable, Hashable, Sendable {
     static let reauthenticationRequired = Self(rawValue: "reauthentication_required")
 }
 
+struct AssetCreationQuotaDetails: Decodable, Equatable, Sendable {
+    let limit: Int?
+    let remaining: Int?
+    let resetsAt: Date?
+}
+
 struct APIErrorEnvelope: Decodable, Sendable {
     struct Detail: Decodable, Sendable {
         let code: APIErrorCode
         let message: String
+        let details: AssetCreationQuotaDetails?
     }
     let error: Detail
 }
@@ -407,6 +414,7 @@ enum AfterimageError: LocalizedError, Sendable {
     case missingCredential
     case unsupportedMedia
     case captureDateUnavailable
+    case assetCreationQuotaExceeded(limit: Int, remaining: Int, resetsAt: Date)
     case compressionFailed(String)
     case uploadPlanInvalid
     case cancelled
@@ -458,6 +466,13 @@ enum AfterimageError: LocalizedError, Sendable {
         case .missingCredential: L10n.string("error.missing_credential")
         case .unsupportedMedia: L10n.string("error.unsupported_media")
         case .captureDateUnavailable: L10n.string("error.capture_date_unavailable")
+        case let .assetCreationQuotaExceeded(limit, remaining, resetsAt):
+            L10n.format(
+                "api.asset_creation_quota_exceeded_retry_at",
+                Int64(limit),
+                Int64(remaining),
+                resetsAt.formatted(date: .numeric, time: .standard) as NSString
+            )
         case let .compressionFailed(reason): L10n.format("error.compression_failed", reason as NSString)
         case .uploadPlanInvalid: L10n.string("error.upload_plan_invalid")
         case .cancelled: L10n.string("error.cancelled")

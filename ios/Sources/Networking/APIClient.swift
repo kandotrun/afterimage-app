@@ -520,11 +520,26 @@ actor APIClient {
         guard (200..<300).contains(http.statusCode) else {
             let error: AfterimageError
             if let data, let envelope = try? decoder.decode(APIErrorEnvelope.self, from: data) {
-                error = AfterimageError.api(
-                    status: http.statusCode,
-                    code: envelope.error.code,
-                    message: envelope.error.message
-                )
+                if envelope.error.code == .assetCreationQuotaExceeded,
+                   let details = envelope.error.details,
+                   let limit = details.limit,
+                   let remaining = details.remaining,
+                   let resetsAt = details.resetsAt,
+                   limit > 0,
+                   remaining >= 0,
+                   remaining <= limit {
+                    error = AfterimageError.assetCreationQuotaExceeded(
+                        limit: limit,
+                        remaining: remaining,
+                        resetsAt: resetsAt
+                    )
+                } else {
+                    error = AfterimageError.api(
+                        status: http.statusCode,
+                        code: envelope.error.code,
+                        message: envelope.error.message
+                    )
+                }
             } else {
                 error = AfterimageError.api(
                     status: http.statusCode,

@@ -164,6 +164,26 @@ async function createAsset(
   }, bindings);
 }
 
+async function seedAssetCreationLedger(
+  userId: string,
+  count: number,
+  createdAt: Date,
+  bindings: Env = env,
+) {
+  for (let offset = 0; offset < count; offset += 30) {
+    const chunkSize = Math.min(30, count - offset);
+    const values = Array.from({ length: chunkSize }, () => "(?, ?, ?)").join(", ");
+    const parameters = Array.from({ length: chunkSize }, () => [
+      crypto.randomUUID(),
+      userId,
+      createdAt.toISOString(),
+    ]).flat();
+    await bindings.DB.prepare(
+      `INSERT INTO asset_creation_ledger (id, user_id, created_at) VALUES ${values}`,
+    ).bind(...parameters).run();
+  }
+}
+
 function envWithDeletionMediaHooks(hooks: {
   abort?: () => void;
   beforeAbort?: () => void;
@@ -1781,22 +1801,48 @@ describe("durable account deletion", () => {
 });
 
 describe("abuse and cost quotas", () => {
-  it("enforces ten asset creations per rolling 24 hours with a bounded ledger", async () => {
-    const owner = await signIn("asset-rate-owner");
-    const responses = await Promise.all(
-      Array.from({ length: 11 }, (_, index) => createAsset(owner, {
-        filename: `quota-${index}.mp4`,
-      })),
-    );
-    expect(responses.filter((response) => response.status === 201)).toHaveLength(10);
-    const rejected = responses.find((response) => response.status !== 201);
-    expect(rejected?.status).toBe(429);
-    await expect(rejected!.json()).resolves.toMatchObject({
-      error: { code: "asset_creation_quota_exceeded" },
-    });
+  it("admits exactly one concurrent creation at the 200-asset rolling limit", async () => {
+    const clock = { value: NOW };
+    const app = makeApp(clock);
+    const owner = await signIn("asset-rate-owner", app);
+    await seedAssetCreationLedger(owner.userId, 199, NOW);
+
+    const responses = await Promise.all([
+      createAsset(owner, { filename: "quota-200.mp4" }),
+      createAsset(owner, { filename: "quota-201.mp4" }),
+    ]);
+
+    expect(responses.map((response) => response.status).sort()).toEqual([201, 429]);
     expect(await env.DB.prepare(
       "SELECT COUNT(*) AS count FROM asset_creation_ledger WHERE user_id = ?",
-    ).bind(owner.userId).first<{ count: number }>()).toMatchObject({ count: 10 });
+    ).bind(owner.userId).first<{ count: number }>()).toMatchObject({ count: 200 });
+  });
+
+  it("reports when the rolling asset quota reopens and accepts the next asset then", async () => {
+    const clock = { value: NOW };
+    const app = makeApp(clock);
+    const owner = await signIn("asset-rate-reset-owner", app);
+    const oldestCreation = new Date(NOW.getTime() - 23 * 60 * 60 * 1_000);
+    const resetsAt = new Date(oldestCreation.getTime() + 24 * 60 * 60 * 1_000);
+    await seedAssetCreationLedger(owner.userId, 200, oldestCreation);
+
+    const blocked = await createAsset(owner, { filename: "blocked.mp4" });
+
+    expect(blocked.status).toBe(429);
+    expect(blocked.headers.get("retry-after")).toBe("3600");
+    await expect(blocked.json()).resolves.toMatchObject({
+      error: {
+        code: "asset_creation_quota_exceeded",
+        details: {
+          limit: 200,
+          remaining: 0,
+          resetsAt: resetsAt.toISOString(),
+        },
+      },
+    });
+
+    clock.value = resetsAt;
+    expect((await createAsset(owner, { filename: "reopened.mp4" })).status).toBe(201);
   });
 
   it("enforces 30 GiB of active declared storage atomically", async () => {

@@ -62,6 +62,7 @@ for (const key of [
   "api.trusted_client_ip_required",
   "api.rate_limited",
   "api.asset_creation_quota_exceeded",
+  "api.asset_creation_quota_exceeded_retry_at",
   "api.daily_asset_quota_exceeded",
   "api.storage_quota_exceeded",
   "api.analysis_queue_limit",

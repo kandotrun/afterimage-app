@@ -278,7 +278,7 @@ const APPLE_CHALLENGE_TTL_MS = 5 * 60 * 1_000;
 const APPLE_CHALLENGE_RATE_WINDOW_MS = 60 * 1_000;
 const APPLE_CHALLENGE_RATE_LIMIT = 10;
 const ASSET_CREATION_WINDOW_MS = 24 * 60 * 60 * 1_000;
-const ASSET_CREATION_LIMIT = 10;
+const ASSET_CREATION_LIMIT = 200;
 const ACTIVE_STORAGE_QUOTA_BYTES = 30 * 1024 * 1024 * 1024;
 const ACTIVE_GPU_JOB_LIMIT = 4;
 const ACTIVE_EXTERNAL_AI_WORK_LIMIT = 4;
@@ -1855,12 +1855,34 @@ export function createApp(overrides: Partial<AppDependencies> = {}) {
       ASSET_CREATION_LIMIT,
     ).run();
     if ((quotaClaim.meta.changes ?? 0) !== 1) {
-      return errorResponse(
-        context,
-        429,
-        "asset_creation_quota_exceeded",
-        "At most ten assets may be created in a rolling 24-hour window.",
+      const oldestCreation = await context.env.DB.prepare(
+        `SELECT MIN(created_at) AS created_at
+           FROM asset_creation_ledger
+          WHERE user_id = ? AND created_at > ?`,
+      ).bind(auth.userId, creationWindowStart).first<{ created_at: string | null }>();
+      const oldestCreationMs = oldestCreation?.created_at
+        ? Date.parse(oldestCreation.created_at)
+        : Number.NaN;
+      const resetsAt = new Date(
+        (Number.isFinite(oldestCreationMs) ? oldestCreationMs : now.getTime())
+        + ASSET_CREATION_WINDOW_MS,
       );
+      const retryAfterSeconds = Math.max(
+        1,
+        Math.ceil((resetsAt.getTime() - now.getTime()) / 1_000),
+      );
+      context.header("Retry-After", String(retryAfterSeconds));
+      return context.json({
+        error: {
+          code: "asset_creation_quota_exceeded",
+          message: `At most ${ASSET_CREATION_LIMIT} assets may be created in a rolling 24-hour window.`,
+          details: {
+            limit: ASSET_CREATION_LIMIT,
+            remaining: 0,
+            resetsAt: resetsAt.toISOString(),
+          },
+        },
+      }, 429);
     }
     const objectKey = `users/${auth.userId}/assets/${assetId}/media`;
     const singleLimit = integerBinding(context.env.SINGLE_UPLOAD_MAX_BYTES, 5_242_880, 1, 100 * 1024 * 1024);
