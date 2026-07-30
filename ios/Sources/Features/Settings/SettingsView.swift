@@ -83,20 +83,6 @@ struct SettingsView: View {
                 )
             }
             VStack(alignment: .leading, spacing: 10) {
-                Text(L10n.string("privacy.ai.destination_title"))
-                    .font(.headline)
-                Label(
-                    L10n.string("privacy.ai.soniox"),
-                    systemImage: "waveform"
-                )
-                Label(
-                    L10n.string("privacy.ai.qwen"),
-                    systemImage: "sparkles"
-                )
-                Label(
-                    L10n.string("privacy.ai.mcp"),
-                    systemImage: "link"
-                )
                 Text(L10n.string("privacy.ai.purpose"))
                     .font(.footnote)
                     .foregroundStyle(.secondary)
