@@ -7,6 +7,8 @@
   "vars": {
     "ENVIRONMENT": "development",
     "APPLE_BUNDLE_ID": "com.2-38.afterimage",
+    "APPLE_TEAM_ID": "LOCALTEAMID",
+    "APPLE_KEY_ID": "LOCALKEYID",
     "SESSION_TTL_SECONDS": "2592000",
     "PLAYBACK_GRANT_TTL_SECONDS": "300",
     "SINGLE_UPLOAD_MAX_BYTES": "5242880",

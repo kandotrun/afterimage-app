@@ -1,5 +1,44 @@
 import Foundation
 
+enum LegalPage: Hashable, Sendable {
+    case privacy
+    case support
+    case terms
+
+    var path: String {
+        switch self {
+        case .privacy: "/privacy"
+        case .support: "/support"
+        case .terms: "/terms"
+        }
+    }
+}
+
+struct AccountDeletionReauthorization: Encodable, Equatable, Sendable {
+    let authorizationCode: String
+    let identityToken: String
+    let challengeId: String
+}
+
+enum LegalURLPolicy {
+    static func resolve(_ page: LegalPage, against baseURL: URL) throws -> URL {
+        guard baseURL.scheme?.lowercased() == "https",
+              baseURL.host != nil,
+              baseURL.user == nil,
+              baseURL.password == nil else {
+            throw AfterimageError.invalidConfiguration
+        }
+        var components = URLComponents(url: baseURL, resolvingAgainstBaseURL: false)
+        components?.path = page.path
+        components?.query = nil
+        components?.fragment = nil
+        guard let url = components?.url else {
+            throw AfterimageError.invalidConfiguration
+        }
+        return url
+    }
+}
+
 struct APIPathResolver: Sendable {
     let baseURL: URL
 
@@ -47,45 +86,137 @@ struct APIPathResolver: Sendable {
     }
 }
 
+private struct BoundAPIRequest {
+    var urlRequest: URLRequest
+    let authContext: AuthSessionContext?
+}
+
 actor APIClient {
     private let resolver: APIPathResolver
     private let session: URLSession
-    private var bearerToken: String?
+    private let authGeneration: AuthGenerationGate
+    private var storedSession: StoredSession?
     private let decoder = JSONDecoder.afterimage
     private let encoder = JSONEncoder.afterimage
 
-    init(baseURL: URL, session: URLSession = .shared) {
+    init(
+        baseURL: URL,
+        session: URLSession = .shared,
+        authGeneration: AuthGenerationGate = .shared
+    ) {
         resolver = APIPathResolver(baseURL: baseURL)
         self.session = session
+        self.authGeneration = authGeneration
     }
 
-    func setBearerToken(_ token: String?) {
-        bearerToken = token
+    func setSession(_ session: StoredSession?) {
+        storedSession = session
+    }
+
+    @discardableResult
+    func clearSession(ifCurrent context: AuthSessionContext) -> Bool {
+        guard storedSession?.context == context else { return false }
+        storedSession = nil
+        return true
     }
 
     func backgroundUploadContext() throws -> BackgroundUploadContext {
-        guard let bearerToken else { throw AfterimageError.missingCredential }
-        return BackgroundUploadContext(baseURL: resolver.baseURL, bearerToken: bearerToken)
+        guard let storedSession,
+              let ownerID = storedSession.context.accountID else {
+            throw AfterimageError.missingCredential
+        }
+        return BackgroundUploadContext(
+            baseURL: resolver.baseURL,
+            session: storedSession,
+            ownerID: ownerID
+        )
+    }
+
+    func legalURL(_ page: LegalPage) throws -> URL {
+        try LegalURLPolicy.resolve(page, against: resolver.baseURL)
     }
 
     func revokeSession() async throws {
-        let request: URLRequest
-        do {
-            request = try makeRequest(path: "/v1/auth/session", method: "DELETE")
-        } catch {
-            bearerToken = nil
-            throw error
-        }
-        bearerToken = nil
-        let (data, response) = try await session.data(for: request)
-        try validate(response: response, data: data)
+        let request = try makeRequest(path: "/v1/auth/session", method: "DELETE")
+        let (data, response) = try await session.data(for: request.urlRequest)
+        try await validate(
+            response: response,
+            data: data,
+            authContext: request.authContext
+        )
     }
 
-    func signIn(identityToken: String, displayName: String?) async throws -> AuthResponse {
-        struct Body: Encodable { let identityToken: String; let displayName: String? }
-        let body = try encoder.encode(Body(identityToken: identityToken, displayName: displayName))
+    func appleAuthChallenge() async throws -> AppleAuthChallenge {
+        let request = try makeRequest(
+            path: "/v1/auth/apple/challenge",
+            method: "GET",
+            authenticated: false
+        )
+        return try await decode(request)
+    }
+
+    func signIn(
+        identityToken: String,
+        challengeID: String,
+        displayName: String?
+    ) async throws -> AuthResponse {
+        struct Body: Encodable {
+            let identityToken: String
+            let challengeId: String
+            let displayName: String?
+        }
+        let body = try encoder.encode(Body(
+            identityToken: identityToken,
+            challengeId: challengeID,
+            displayName: displayName
+        ))
         let request = try makeRequest(path: "/v1/auth/apple", method: "POST", body: body, contentType: "application/json", authenticated: false)
         return try await decode(request)
+    }
+
+    func aiConsent() async throws -> AIConsent {
+        let request = try makeRequest(path: "/v1/privacy/ai", method: "GET")
+        let response: AIConsentResponse = try await decode(request)
+        return response.consent
+    }
+
+    func updateAIConsent(granted: Bool) async throws -> AIConsent {
+        let request = try makeRequest(
+            path: "/v1/privacy/ai",
+            method: "PUT",
+            body: try encoder.encode(UpdateAIConsentRequest(
+                version: AIConsentPolicy.currentVersion,
+                consented: granted
+            )),
+            contentType: "application/json"
+        )
+        let response: AIConsentResponse = try await decode(request)
+        return response.consent
+    }
+
+    func deleteAccount(
+        reauthorization: AccountDeletionReauthorization? = nil
+    ) async throws {
+        let body = try reauthorization.map(encoder.encode)
+        let request = try makeRequest(
+            path: "/v1/account",
+            method: "DELETE",
+            body: body,
+            contentType: body == nil ? nil : "application/json"
+        )
+        let (data, response) = try await session.data(for: request.urlRequest)
+        try await validate(
+            response: response,
+            data: data,
+            authContext: request.authContext
+        )
+    }
+
+    func currentUser() async throws -> UserProfile {
+        struct Response: Decodable { let user: UserProfile }
+        let request = try makeRequest(path: "/v1/me", method: "GET")
+        let response: Response = try await decode(request)
+        return response.user
     }
 
     func timeline(cursor: String? = nil, limit: Int = 40) async throws -> TimelinePage {
@@ -191,9 +322,19 @@ actor APIClient {
 
     func uploadFile(_ fileURL: URL, to path: String, contentType: String) async throws {
         var request = try makeRequest(path: path, method: "PUT", contentType: contentType)
-        request.setValue(String(try contentLength(of: fileURL)), forHTTPHeaderField: "Content-Length")
-        let (_, response) = try await session.upload(for: request, fromFile: fileURL)
-        try validate(response: response, data: nil)
+        request.urlRequest.setValue(
+            String(try contentLength(of: fileURL)),
+            forHTTPHeaderField: "Content-Length"
+        )
+        let (_, response) = try await session.upload(
+            for: request.urlRequest,
+            fromFile: fileURL
+        )
+        try await validate(
+            response: response,
+            data: nil,
+            authContext: request.authContext
+        )
     }
 
     func uploadPart(_ data: Data, to path: String) async throws -> UploadPart {
@@ -217,9 +358,19 @@ actor APIClient {
 
     func uploadThumbnail(_ fileURL: URL, assetID: String) async throws {
         var request = try makeRequest(path: "/v1/assets/\(assetID)/thumbnail", method: "PUT", contentType: "image/jpeg")
-        request.setValue(String(try contentLength(of: fileURL)), forHTTPHeaderField: "Content-Length")
-        let (_, response) = try await session.upload(for: request, fromFile: fileURL)
-        try validate(response: response, data: nil)
+        request.urlRequest.setValue(
+            String(try contentLength(of: fileURL)),
+            forHTTPHeaderField: "Content-Length"
+        )
+        let (_, response) = try await session.upload(
+            for: request.urlRequest,
+            fromFile: fileURL
+        )
+        try await validate(
+            response: response,
+            data: nil,
+            authContext: request.authContext
+        )
     }
 
     func thumbnailData(assetID: String) async throws -> Data {
@@ -271,8 +422,12 @@ actor APIClient {
 
     func revokeMCPToken(id: String) async throws {
         let request = try makeRequest(path: "/v1/mcp/tokens/\(id)", method: "DELETE")
-        let (data, response) = try await session.data(for: request)
-        try validate(response: response, data: data)
+        let (data, response) = try await session.data(for: request.urlRequest)
+        try await validate(
+            response: response,
+            data: data,
+            authContext: request.authContext
+        )
     }
 
     func setAgentAccess(assetID: String, enabled: Bool) async throws -> Asset {
@@ -290,8 +445,12 @@ actor APIClient {
 
     func deleteAsset(assetID: String) async throws {
         let request = try makeRequest(path: "/v1/assets/\(assetID)", method: "DELETE")
-        let (data, response) = try await session.data(for: request)
-        try validate(response: response, data: data)
+        let (data, response) = try await session.data(for: request.urlRequest)
+        try await validate(
+            response: response,
+            data: data,
+            authContext: request.authContext
+        )
     }
 
     private func contentLength(of fileURL: URL) throws -> Int {
@@ -302,15 +461,23 @@ actor APIClient {
         return fileSize
     }
 
-    private func rawData(_ request: URLRequest) async throws -> Data {
-        let (data, response) = try await session.data(for: request)
-        try validate(response: response, data: data)
+    private func rawData(_ request: BoundAPIRequest) async throws -> Data {
+        let (data, response) = try await session.data(for: request.urlRequest)
+        try await validate(
+            response: response,
+            data: data,
+            authContext: request.authContext
+        )
         return data
     }
 
-    private func decode<T: Decodable>(_ request: URLRequest) async throws -> T {
-        let (data, response) = try await session.data(for: request)
-        try validate(response: response, data: data)
+    private func decode<T: Decodable>(_ request: BoundAPIRequest) async throws -> T {
+        let (data, response) = try await session.data(for: request.urlRequest)
+        try await validate(
+            response: response,
+            data: data,
+            authContext: request.authContext
+        )
         do { return try decoder.decode(T.self, from: data) }
         catch { throw AfterimageError.invalidResponse }
     }
@@ -321,7 +488,7 @@ actor APIClient {
         body: Data? = nil,
         contentType: String? = nil,
         authenticated: Bool = true
-    ) throws -> URLRequest {
+    ) throws -> BoundAPIRequest {
         let url = try resolver.resolve(path)
         var request = URLRequest(url: url)
         request.httpMethod = method
@@ -329,23 +496,46 @@ actor APIClient {
         request.timeoutInterval = 120
         request.setValue("application/json", forHTTPHeaderField: "Accept")
         if let contentType { request.setValue(contentType, forHTTPHeaderField: "Content-Type") }
-        if authenticated, resolver.isAPIOrigin(url), let bearerToken {
-            request.setValue("Bearer \(bearerToken)", forHTTPHeaderField: "Authorization")
+        let boundSession = authenticated && resolver.isAPIOrigin(url)
+            ? storedSession
+            : nil
+        if let boundSession {
+            request.setValue(
+                "Bearer \(boundSession.token)",
+                forHTTPHeaderField: "Authorization"
+            )
         }
-        return request
+        return BoundAPIRequest(
+            urlRequest: request,
+            authContext: boundSession?.context
+        )
     }
 
-    private func validate(response: URLResponse, data: Data?) throws {
+    private func validate(
+        response: URLResponse,
+        data: Data?,
+        authContext: AuthSessionContext?
+    ) async throws {
         guard let http = response as? HTTPURLResponse else { throw AfterimageError.invalidResponse }
         guard (200..<300).contains(http.statusCode) else {
+            let error: AfterimageError
             if let data, let envelope = try? decoder.decode(APIErrorEnvelope.self, from: data) {
-                throw AfterimageError.api(status: http.statusCode, code: envelope.error.code, message: envelope.error.message)
+                error = AfterimageError.api(
+                    status: http.statusCode,
+                    code: envelope.error.code,
+                    message: envelope.error.message
+                )
+            } else {
+                error = AfterimageError.api(
+                    status: http.statusCode,
+                    code: .httpError,
+                    message: L10n.format("error.http_status", Int64(http.statusCode))
+                )
             }
-            throw AfterimageError.api(
-                status: http.statusCode,
-                code: "http_error",
-                message: L10n.format("error.http_status", Int64(http.statusCode))
-            )
+            if error.invalidatesSession, let authContext {
+                await authGeneration.invalidate(authContext)
+            }
+            throw error
         }
     }
 }

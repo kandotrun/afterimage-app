@@ -30,4 +30,36 @@ final class APIPathResolverTests: XCTestCase {
         let base = URL(string: "https://afterimage.example.com")!
         XCTAssertThrowsError(try APIPathResolver.resolve("http://uploads.example.com/object", against: base))
     }
+
+    func testBuildsSameOriginHTTPSLegalURLs() throws {
+        let base = URL(string: "https://afterimage.example.com/api")!
+
+        XCTAssertEqual(
+            try LegalURLPolicy.resolve(.privacy, against: base).absoluteString,
+            "https://afterimage.example.com/privacy"
+        )
+        XCTAssertEqual(
+            try LegalURLPolicy.resolve(.support, against: base).absoluteString,
+            "https://afterimage.example.com/support"
+        )
+        XCTAssertEqual(
+            try LegalURLPolicy.resolve(.terms, against: base).absoluteString,
+            "https://afterimage.example.com/terms"
+        )
+    }
+
+    func testLegalURLsRejectHTTPAndCredentials() {
+        XCTAssertThrowsError(
+            try LegalURLPolicy.resolve(
+                .privacy,
+                against: URL(string: "http://afterimage.example.com")!
+            )
+        )
+        XCTAssertThrowsError(
+            try LegalURLPolicy.resolve(
+                .support,
+                against: URL(string: "https://user@example.com")!
+            )
+        )
+    }
 }

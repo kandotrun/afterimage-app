@@ -1,0 +1,111 @@
+{
+  "version": 1,
+  "releaseCommit": null,
+  "entries": [
+    {
+      "id": "AUTH_CHALLENGE",
+      "status": "pending",
+      "requiredForSubmission": true,
+      "instructions": "Sign in with Appleのnonce、期限、一回消費、replay拒否をbackendとiOSのtest結果で記録する。",
+      "evidence": []
+    },
+    {
+      "id": "ACCOUNT_DELETION",
+      "status": "pending",
+      "requiredForSubmission": true,
+      "instructions": "アプリ内削除、owner-scoped backend cleanup、Apple revoke、再試行のテストと実測結果を記録する。",
+      "evidence": []
+    },
+    {
+      "id": "AI_CONSENT",
+      "status": "pending",
+      "requiredForSubmission": true,
+      "instructions": "versioned opt-in、撤回、未同意時の送信停止、agent access default OFFのテスト結果を記録する。",
+      "evidence": []
+    },
+    {
+      "id": "LEGAL_PRIVACY",
+      "status": "pending",
+      "requiredForSubmission": true,
+      "instructions": "未認証privacy URLのHTTP 200、最終本文、アプリ内導線を日時付きで記録する。",
+      "evidence": []
+    },
+    {
+      "id": "LEGAL_SUPPORT",
+      "status": "pending",
+      "requiredForSubmission": true,
+      "instructions": "未認証support URLのHTTP 200、問い合わせ導線、アプリ内導線を日時付きで記録する。",
+      "evidence": []
+    },
+    {
+      "id": "LEGAL_TERMS",
+      "status": "pending",
+      "requiredForSubmission": true,
+      "instructions": "未認証terms URLのHTTP 200、最終本文、アプリ内導線を日時付きで記録する。",
+      "evidence": []
+    },
+    {
+      "id": "BACKEND_MIGRATIONS",
+      "status": "pending",
+      "requiredForSubmission": true,
+      "instructions": "staging適用、read-back、production適用、read-back、rollback判断をmigration番号とともに記録する。",
+      "evidence": []
+    },
+    {
+      "id": "IOS_TESTS",
+      "status": "pending",
+      "requiredForSubmission": true,
+      "instructions": "self-hosted macOSのunit/UI test xcresult、Xcode、simulator、commit SHAを記録する。",
+      "evidence": []
+    },
+    {
+      "id": "REAL_DEVICE_SMOKE",
+      "status": "pending",
+      "requiredForSubmission": true,
+      "instructions": "実機、OS、build、各smoke項目の結果、既知制約をrelease checklistへ記録する。",
+      "evidence": []
+    },
+    {
+      "id": "SCREENSHOTS_69",
+      "status": "pending",
+      "requiredForSubmission": true,
+      "instructions": "macOS artifactで生成した日本語6.9-inch PNG 3枚以上とverification reportを記録する。",
+      "evidence": []
+    },
+    {
+      "id": "ARCHIVE_EXPORT",
+      "status": "pending",
+      "requiredForSubmission": true,
+      "instructions": "Release archive、export、validation結果とRequired Reason API警告の有無を記録する。",
+      "evidence": []
+    },
+    {
+      "id": "ASC_PREFLIGHT",
+      "status": "pending",
+      "requiredForSubmission": true,
+      "instructions": "ASC secret名の存在、一時key/keychain cleanup、build metadataの確認結果を値を含めず記録する。",
+      "evidence": []
+    },
+    {
+      "id": "REQUIRED_REASON_API",
+      "status": "pending",
+      "requiredForSubmission": true,
+      "instructions": "archive内PrivacyInfo.xcprivacyとApple upload処理のRequired Reason API警告なしを記録する。",
+      "evidence": []
+    },
+    {
+      "id": "SECRET_SCAN",
+      "status": "pending",
+      "requiredForSubmission": true,
+      "instructions": "GitGuardianまたは承認済みsecret scannerのcommit SHA付き結果を記録する。",
+      "evidence": []
+    },
+    {
+      "id": "REVIEW_CLEARANCE",
+      "status": "pending",
+      "requiredForSubmission": true,
+      "instructions": "対象commitに対するレビュー完了と未解決P0/P1なしを記録する。",
+      "evidence": []
+    }
+  ]
+}

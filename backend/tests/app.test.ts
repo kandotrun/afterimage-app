@@ -1,6 +1,7 @@
 import { env } from "cloudflare:workers";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { cleanupExpiredState, createApp, pollTranscriptions, type AppleIdentity } from "../src/app";
+import { AI_CONSENT_VERSION } from "../src/privacy";
 
 const NOW = new Date("2026-07-27T00:00:00.000Z");
 
@@ -59,14 +60,29 @@ async function signIn(subject = "apple-user-a", generateDailySummary?: TestDaily
     { subject, email: `${subject}@example.com`, displayName: subject },
     generateDailySummary,
   );
+  const challengeResponse = await app.request("/v1/auth/apple/challenge", {
+    headers: { "cf-connecting-ip": "203.0.113.200" },
+  }, env);
+  expect(challengeResponse.status).toBe(200);
+  const challenge = await challengeResponse.json<{ challengeId: string }>();
   const response = await app.request("/v1/auth/apple", {
     method: "POST",
     headers: { "content-type": "application/json" },
-    body: JSON.stringify({ identityToken: `token-for-${subject}` }),
+    body: JSON.stringify({
+      challengeId: challenge.challengeId,
+      identityToken: `token-for-${subject}`,
+    }),
   }, env);
   expect(response.status).toBe(200);
   const body = await response.json<{ token: string }>();
-  return { app, authorization: "Bearer " + body.token };
+  const authorization = "Bearer " + body.token;
+  const consent = await app.request("/v1/privacy/ai", {
+    method: "PUT",
+    headers: { authorization, "content-type": "application/json" },
+    body: JSON.stringify({ version: AI_CONSENT_VERSION, consented: true }),
+  }, env);
+  expect(consent.status).toBe(200);
+  return { app, authorization };
 }
 
 function deferred() {
@@ -268,6 +284,12 @@ function envWithFirstResultHook(sqlFragment: string, afterFirst: () => Promise<v
 
 beforeEach(async () => {
   await env.DB.batch([
+    env.DB.prepare("DELETE FROM account_deletion_receipts"),
+    env.DB.prepare("DELETE FROM account_deletion_assets"),
+    env.DB.prepare("DELETE FROM account_deletion_jobs"),
+    env.DB.prepare("DELETE FROM asset_creation_ledger"),
+    env.DB.prepare("DELETE FROM ai_consents"),
+    env.DB.prepare("DELETE FROM apple_auth_challenges"),
     env.DB.prepare("DELETE FROM upload_parts"),
     env.DB.prepare("DELETE FROM mcp_tokens"),
     env.DB.prepare("DELETE FROM assets"),
@@ -668,6 +690,9 @@ describe("asset upload and private timeline", () => {
     }, env);
     expect(complete.status).toBe(200);
     await expect(complete.json()).resolves.toMatchObject({ asset: { status: "ready", byteSize: total } });
+    expect(await env.DB.prepare(
+      "SELECT upload_id, part_size FROM assets WHERE id = ?",
+    ).bind(created.asset.id).first()).toMatchObject({ upload_id: null, part_size: null });
   }, 30_000);
 
   it("renews a stale multipart upload before storing a part", async () => {
@@ -984,7 +1009,7 @@ describe("asset upload and private timeline", () => {
     const firstCompletion = await app.request(`/v1/assets/${body.asset.id}/upload/complete`, {
       method: "POST",
       headers: { authorization },
-    }, envWithRunFailureBeforeCommit("UPDATE assets SET status = 'ready', updated_at"));
+    }, envWithRunFailureBeforeCommit("SET status = 'ready', upload_id = NULL"));
     expect(firstCompletion.status).toBe(500);
     expect(await env.DB.prepare("SELECT status FROM assets WHERE id = ?")
       .bind(body.asset.id).first()).toMatchObject({ status: "uploading" });
@@ -1277,7 +1302,7 @@ describe("asset upload and private timeline", () => {
     const completed = await app.request(`/v1/assets/${asset.id}/upload/complete`, {
       method: "POST",
       headers: { authorization },
-    }, envWithCommittedRunFailure("UPDATE assets SET status = 'ready', upload_lease"));
+    }, envWithCommittedRunFailure("SET status = 'ready', upload_lease = NULL"));
 
     expect(completed.status).toBe(500);
     expect(await env.DB.prepare("SELECT status FROM assets WHERE id = ?")
@@ -1965,6 +1990,9 @@ describe("MCP personal access tokens", () => {
         NOW.toISOString(),
       ),
     ]);
+    await env.DB.prepare(
+      "UPDATE assets SET agent_access_enabled = 1 WHERE id IN (?, ?)",
+    ).bind(ownerAssetId, silentAssetId).run();
     await env.MEDIA.put(`users/${ownerUser!.id}/assets/${ownerAssetId}/media`, "owner-video");
     await env.MEDIA.put(`users/${ownerUser!.id}/assets/${silentAssetId}/media`, "silent-video");
 
@@ -2201,7 +2229,7 @@ describe("agent access privacy boundary", () => {
     return { ...env, MAGE_WORKER_TOKEN_HASH: await tokenHash(workerToken) };
   }
 
-  async function createReadyVideo(subject: string) {
+  async function createReadyVideo(subject: string, enableAgentAccess = true) {
     const owner = await signIn(subject);
     const created = await owner.app.request("/v1/assets", {
       method: "POST",
@@ -2234,12 +2262,20 @@ describe("agent access privacy boundary", () => {
       method: "POST",
       headers: { authorization: owner.authorization },
     }, env);
+    if (enableAgentAccess) {
+      const enabled = await owner.app.request(`/v1/assets/${body.asset.id}/agent-access`, {
+        method: "PATCH",
+        headers: { authorization: owner.authorization, "content-type": "application/json" },
+        body: JSON.stringify({ enabled: true }),
+      }, env);
+      expect(enabled.status).toBe(200);
+    }
     return { ...owner, assetId: body.asset.id, createdAsset: body.asset };
   }
 
-  it("defaults existing and new assets to agent access enabled", async () => {
-    const owner = await createReadyVideo("agent-access-default");
-    expect(owner.createdAsset.agentAccessEnabled).toBe(true);
+  it("defaults existing and new assets to agent access disabled", async () => {
+    const owner = await createReadyVideo("agent-access-default", false);
+    expect(owner.createdAsset.agentAccessEnabled).toBe(false);
 
     const timeline = await owner.app.request("/v1/assets", {
       headers: { authorization: owner.authorization },
@@ -2247,10 +2283,13 @@ describe("agent access privacy boundary", () => {
     await expect(timeline.json()).resolves.toMatchObject({
       items: [{
         id: owner.assetId,
-        agentAccessEnabled: true,
-        videoAnalysisStatus: "queued",
+        agentAccessEnabled: false,
+        videoAnalysisStatus: null,
       }],
     });
+    await expect(env.DB.prepare(
+      "SELECT COUNT(*) AS count FROM gpu_jobs WHERE asset_id = ?",
+    ).bind(owner.assetId).first()).resolves.toEqual({ count: 0 });
   });
 
   it("reports the owner-visible video analysis lifecycle", async () => {
@@ -3169,6 +3208,9 @@ describe("daily Qwen summary", () => {
       options.text,
       NOW.toISOString(),
     ).run();
+    await env.DB.prepare("UPDATE assets SET agent_access_enabled = 1 WHERE id = ?")
+      .bind(options.id)
+      .run();
   }
 
   async function insertVisualAnalysis(options: {

@@ -1,6 +1,15 @@
 import Foundation
 import UserNotifications
 
+enum ReminderInvitePolicy {
+    static func shouldOffer(
+        wasOffered: Bool,
+        authorizationStatus: UNAuthorizationStatus
+    ) -> Bool {
+        !wasOffered && authorizationStatus == .notDetermined
+    }
+}
+
 enum DailyPostReminderPolicy {
     static let defaultHorizon = 60
     static let identifierPrefix = "daily-post-reminder."
@@ -146,9 +155,17 @@ final class DailyPostReminderScheduler {
     }
 
     private func removePendingReminders() async {
-        let identifiers = await center.pendingNotificationRequests()
+        let pendingIdentifiers = await center.pendingNotificationRequests()
             .map(\.identifier)
             .filter { $0.hasPrefix(Self.identifierPrefix) }
-        center.removePendingNotificationRequests(withIdentifiers: identifiers)
+        center.removePendingNotificationRequests(
+            withIdentifiers: pendingIdentifiers
+        )
+        let deliveredIdentifiers = await center.deliveredNotifications()
+            .map(\.request.identifier)
+            .filter { $0.hasPrefix(Self.identifierPrefix) }
+        center.removeDeliveredNotifications(
+            withIdentifiers: deliveredIdentifiers
+        )
     }
 }

@@ -1,0 +1,46 @@
+name: app-store-screenshots
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: app-store-screenshots-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  capture:
+    runs-on: [self-hosted, macOS, ARM64, afterimage-ci]
+    timeout-minutes: 35
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: 24
+      - run: npm ci
+      - name: Verify release contracts
+        run: npm run check:ios
+      - name: Verify XcodeGen
+        run: |
+          command -v xcodegen
+          xcodegen --version
+      - name: Capture deterministic Japanese screenshots
+        env:
+          AFTERIMAGE_SCREENSHOT_OUTPUT_DIR: ${{ runner.temp }}/afterimage-app-store-${{ github.run_id }}-${{ github.run_attempt }}/screenshots
+          AFTERIMAGE_SCREENSHOT_RESULT_BUNDLE: ${{ runner.temp }}/afterimage-app-store-${{ github.run_id }}-${{ github.run_attempt }}/AppStoreScreenshots.xcresult
+          AFTERIMAGE_SCREENSHOT_BUILD_LOG: ${{ runner.temp }}/afterimage-app-store-${{ github.run_id }}-${{ github.run_attempt }}/xcodebuild-screenshots.log
+          AFTERIMAGE_SCREENSHOT_DEVICE_NAME: iPhone 16 Pro Max
+        run: bash scripts/generate-app-store-screenshots.sh
+      - name: Upload screenshot and xcresult evidence
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: afterimage-app-store-screenshots
+          path: |
+            ${{ runner.temp }}/afterimage-app-store-${{ github.run_id }}-${{ github.run_attempt }}/screenshots
+            ${{ runner.temp }}/afterimage-app-store-${{ github.run_id }}-${{ github.run_attempt }}/AppStoreScreenshots.xcresult
+            ${{ runner.temp }}/afterimage-app-store-${{ github.run_id }}-${{ github.run_attempt }}/xcodebuild-screenshots.log
+          if-no-files-found: warn
+          retention-days: 14

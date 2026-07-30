@@ -54,8 +54,60 @@ for (const key of [
   "memory.analysis.segments",
   "memory.analysis.completed_empty",
   "memory.analysis.seek_at",
+  "api.auth_challenge_expired",
+  "api.auth_challenge_replayed",
+  "api.auth_challenge_invalid",
+  "api.invalid_apple_challenge",
+  "api.apple_challenge_rate_limited",
+  "api.trusted_client_ip_required",
+  "api.rate_limited",
+  "api.asset_creation_quota_exceeded",
+  "api.daily_asset_quota_exceeded",
+  "api.storage_quota_exceeded",
+  "api.analysis_queue_limit",
+  "api.mage_queue_busy",
+  "api.apple_reauthorization_required",
+  "api.reauthentication_required",
+  "api.ai_consent_required",
+  "auth.sign_in",
+  "auth.challenge_loading",
+  "auth.retry",
+  "privacy.ai.destination_title",
+  "privacy.ai.existing_data",
+  "privacy.ai.grant",
+  "privacy.ai.granted",
+  "privacy.ai.introduction",
+  "privacy.ai.mcp",
+  "privacy.ai.not_granted",
+  "privacy.ai.purpose",
+  "privacy.ai.qwen",
+  "privacy.ai.soniox",
+  "privacy.ai.title",
+  "privacy.ai.withdraw",
+  "privacy.ai.withdraw_confirm",
+  "privacy.ai.withdrawn",
+  "account.delete.action",
+  "account.delete.cancel",
+  "account.delete.cleanup_retry",
+  "account.delete.scope",
+  "account.delete.confirm",
+  "account.delete.progress",
+  "account.delete.reauth",
+  "account.delete.reauth_detail",
+  "account.delete.retry",
+  "account.delete.title",
+  "account.settings.title",
+  "action.close",
+  "error.local_cleanup_failed",
+  "legal.privacy",
+  "legal.support",
+  "legal.terms",
+  "settings.ai_connection",
+  "settings.legal",
+  "settings.reload",
+  "settings.sign_out",
 ]) {
-  assert.ok(catalog.strings[key], `missing Mage localization key: ${key}`);
+  assert.ok(catalog.strings[key], `missing required localization key: ${key}`);
 }
 
 for (const [key, entry] of Object.entries(catalog.strings)) {
@@ -86,25 +138,34 @@ const swiftFiles = readdirSync(sourceRoot, { recursive: true, withFileTypes: tru
   .map((entry) => path.join(entry.parentPath, entry.name));
 const japaneseLiteral = /"((?:\\.|[^"\\])*)"/g;
 const japaneseCharacters = /[ぁ-んァ-ヶ一-龠々ー]/;
-const semanticKey = /"((?:upload|compression|error|api|accessibility|timeline|memory|playback|mcp|common|camera)\.[a-z0-9_.]+)"/g;
+const semanticKey = /"((?:upload|compression|error|api|accessibility|timeline|memory|playback|mcp|common|camera|auth|privacy|account|legal|settings|action)\.[a-z0-9_.]+)"/g;
 for (const file of swiftFiles) {
   const source = readFileSync(file, "utf8");
+  const relativePath = path.relative(root, file);
+  if (relativePath === "ios/Sources/Features/AppStore/AppStoreScreenshotFixtureView.swift") {
+    assert.match(
+      source,
+      /^#if DEBUG[\s\S]*#endif\s*$/,
+      "fixed Japanese App Store screenshot copy must remain Debug-only",
+    );
+    continue;
+  }
   for (const match of source.matchAll(japaneseLiteral)) {
     const value = match[1].replaceAll("\\n", "\n");
     if (!japaneseCharacters.test(value)) continue;
     assert.ok(
       !value.includes("\\("),
-      `interpolated Japanese string must use a semantic L10n.format key: ${path.relative(root, file)}: ${value}`,
+      `interpolated Japanese string must use a semantic L10n.format key: ${relativePath}: ${value}`,
     );
     assert.ok(
       catalog.strings[value],
-      `Japanese source literal is missing from Localizable.xcstrings: ${path.relative(root, file)}: ${value}`,
+      `Japanese source literal is missing from Localizable.xcstrings: ${relativePath}: ${value}`,
     );
   }
   for (const match of source.matchAll(semanticKey)) {
     assert.ok(
       catalog.strings[match[1]],
-      `semantic localization key is missing from Localizable.xcstrings: ${path.relative(root, file)}: ${match[1]}`,
+      `semantic localization key is missing from Localizable.xcstrings: ${relativePath}: ${match[1]}`,
     );
   }
 }

@@ -1,11 +1,19 @@
 import AVFoundation
+import Combine
 import SwiftUI
 import UIKit
 
+enum PlayerChromeAccessibilityPolicy {
+    static func shouldAutoHide(
+        isVoiceOverRunning: Bool,
+        isSwitchControlRunning: Bool
+    ) -> Bool {
+        !isVoiceOverRunning && !isSwitchControlRunning
+    }
+}
+
 struct VideoMemoryView: View {
     @EnvironmentObject private var model: AppModel
-    @Environment(\.accessibilityVoiceOverEnabled) private var voiceOverEnabled
-    @Environment(\.accessibilitySwitchControlEnabled) private var switchControlEnabled
     let asset: Asset
     let isActive: Bool
     @Binding var chromeVisible: Bool
@@ -53,9 +61,12 @@ struct VideoMemoryView: View {
             await controller.activate { try await model.playbackGrant(for: asset) }
             while !Task.isCancelled {
                 try? await Task.sleep(for: .milliseconds(250))
-                // Auto-hide would strand assistive-tech users with no way to
-                // bring the controls back; keep chrome pinned for them.
-                if voiceOverEnabled || switchControlEnabled { continue }
+                guard PlayerChromeAccessibilityPolicy.shouldAutoHide(
+                    isVoiceOverRunning: UIAccessibility.isVoiceOverRunning,
+                    isSwitchControlRunning: UIAccessibility.isSwitchControlRunning
+                ) else {
+                    continue
+                }
                 withAnimation(.easeInOut(duration: 0.2)) {
                     chrome.apply(.clockTicked(at: Date()))
                 }
@@ -82,6 +93,16 @@ struct VideoMemoryView: View {
         }
         .onChange(of: requestedSeek) { _, _ in
             applyRequestedSeek()
+        }
+        .onReceive(NotificationCenter.default.publisher(
+            for: UIAccessibility.voiceOverStatusDidChangeNotification
+        )) { _ in
+            revealChromeForAssistiveAccess()
+        }
+        .onReceive(NotificationCenter.default.publisher(
+            for: UIAccessibility.switchControlStatusDidChangeNotification
+        )) { _ in
+            revealChromeForAssistiveAccess()
         }
     }
 
@@ -185,8 +206,6 @@ struct VideoMemoryView: View {
         }
     }
 
-    /// In-flight and failed transcriptions get a button too, so the sheet can say
-    /// what is happening instead of the video looking like it never had words.
     private var showsTranscriptButton: Bool {
         asset.transcriptUrl != nil
             || asset.transcriptionStatus == .pending
@@ -221,6 +240,14 @@ struct VideoMemoryView: View {
         controller.scrub(to: seconds)
         controller.scrubEnded()
         self.requestedSeek = nil
+    }
+
+    private func revealChromeForAssistiveAccess() {
+        guard !chrome.isVisible,
+              UIAccessibility.isVoiceOverRunning || UIAccessibility.isSwitchControlRunning else {
+            return
+        }
+        chrome.apply(.tapped(at: Date(), isPlaying: controller.phase == .playing))
     }
 }
 

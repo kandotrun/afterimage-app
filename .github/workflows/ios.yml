@@ -2,20 +2,24 @@ name: ios
 
 on:
   push:
-    branches: [main]
+    branches: ["**"]
     paths:
       - "ios/**"
+      - "docs/app-store/**"
+      - "package.json"
+      - "package-lock.json"
+      - "scripts/fixtures/app-store/**"
+      - "scripts/tests/verify-app-store.test.mjs"
+      - "scripts/tests/test_verify_ios_archive.py"
+      - "scripts/verify-app-store.mjs"
+      - "scripts/verify-ios-archive.py"
+      - "scripts/generate-app-store-screenshots.sh"
       - "scripts/verify-ios-contract.mjs"
+      - "scripts/verify-ios-pr37-port-contract.mjs"
+      - "scripts/verify-ios-pr39-port-contract.mjs"
       - "scripts/verify-ios-localizations.mjs"
       - "scripts/xcode-clang-probe"
-      - ".github/workflows/ios.yml"
-  pull_request:
-    paths:
-      - "ios/**"
-      - "scripts/verify-ios-contract.mjs"
-      - "scripts/verify-ios-localizations.mjs"
-      - "scripts/xcode-clang-probe"
-      - ".github/workflows/ios.yml"
+      - ".github/workflows/**"
 
 permissions:
   contents: read
@@ -29,16 +33,17 @@ jobs:
       - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
         with:
           node-version: 24
-      - name: Verify iOS source and localization contracts
+      - run: npm ci
+      - name: Verify iOS and App Store contracts
         run: |
-          node scripts/verify-ios-contract.mjs
-          node scripts/verify-ios-localizations.mjs
-      - name: Install XcodeGen
+          npm run check:ios
+          node scripts/verify-app-store.mjs \
+            --mode contracts \
+            --report ios/AppStoreContract.json
+      - name: Verify XcodeGen
         run: |
-          if ! command -v xcodegen >/dev/null; then
-            brew untap aws/tap 2>/dev/null || true
-            brew install xcodegen
-          fi
+          command -v xcodegen
+          xcodegen --version
       - name: Generate Xcode project
         working-directory: ios
         run: xcodegen generate
@@ -82,13 +87,22 @@ jobs:
               privacy = plistlib.load(handle)
           if privacy.get("NSPrivacyTracking") is not False:
               raise SystemExit("bundled privacy manifest must declare tracking=false")
+          accessed = {
+              item["NSPrivacyAccessedAPIType"]: item["NSPrivacyAccessedAPITypeReasons"]
+              for item in privacy.get("NSPrivacyAccessedAPITypes", [])
+          }
+          if "CA92.1" not in accessed.get("NSPrivacyAccessedAPICategoryUserDefaults", []):
+              raise SystemExit("bundled privacy manifest must declare UserDefaults CA92.1")
           print("bundled privacy manifest: PASS")
           PY
-      - name: Upload Xcode result bundle
+      - name: Upload iOS verification evidence
         if: always()
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
-          name: afterimage-xcresult
-          path: ios/TestResults.xcresult
+          name: afterimage-ios-evidence
+          path: |
+            ios/TestResults.xcresult
+            ios/xcodebuild.log
+            ios/AppStoreContract.json
           if-no-files-found: ignore
           retention-days: 7

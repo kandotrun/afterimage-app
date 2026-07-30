@@ -1,3 +1,4 @@
+import Combine
 import SwiftUI
 
 struct DayStorySection: View {
@@ -112,6 +113,7 @@ private struct DayStoryHero: View {
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @EnvironmentObject private var model: AppModel
     @StateObject private var preview = DayPreviewPlaybackController()
+    @State private var isLowPowerModeEnabled = ProcessInfo.processInfo.isLowPowerModeEnabled
 
     let asset: Asset
     let playbackVideos: [Asset]
@@ -123,7 +125,7 @@ private struct DayStoryHero: View {
     }
 
     private var previewRequestID: String {
-        "\(reduceMotion)|\(playbackVideos.map(\.id).joined(separator: ","))"
+        "\(reduceMotion)|\(isLowPowerModeEnabled)|\(playbackVideos.map(\.id).joined(separator: ","))"
     }
 
     var body: some View {
@@ -133,7 +135,7 @@ private struct DayStoryHero: View {
                 AuthenticatedThumbnail(asset: asset)
             }
             .overlay {
-                if !playbackVideos.isEmpty && !reduceMotion {
+                if !playbackVideos.isEmpty && !reduceMotion && !isLowPowerModeEnabled {
                     DayPreviewPlayerLayerView(player: preview.player)
                         .allowsHitTesting(false)
                 }
@@ -191,7 +193,7 @@ private struct DayStoryHero: View {
             .task(id: previewRequestID) {
                 guard !playbackVideos.isEmpty,
                       !reduceMotion,
-                      !ProcessInfo.processInfo.isLowPowerModeEnabled else {
+                      !isLowPowerModeEnabled else {
                     preview.deactivate()
                     return
                 }
@@ -201,6 +203,11 @@ private struct DayStoryHero: View {
             }
             .onDisappear {
                 preview.deactivate()
+            }
+            .onReceive(
+                NotificationCenter.default.publisher(for: .NSProcessInfoPowerStateDidChange)
+            ) { _ in
+                isLowPowerModeEnabled = ProcessInfo.processInfo.isLowPowerModeEnabled
             }
     }
 }

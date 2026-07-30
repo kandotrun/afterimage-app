@@ -1,0 +1,16 @@
+name: unsafe-pr
+
+on:
+  pull_request:
+
+permissions:
+  contents: write
+
+jobs:
+  test:
+    runs-on: [self-hosted, macOS, ARM64, afterimage-ci]
+    steps:
+      - uses: actions/checkout@1111111111111111111111111111111111111111
+      - run: brew install xcodegen
+        env:
+          ASC_PRIVATE_KEY: ${{ secrets.ASC_PRIVATE_KEY }}

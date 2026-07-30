@@ -2,7 +2,7 @@ import XCTest
 
 @MainActor
 final class AIConnectionNavigationUITests: XCTestCase {
-    func testAccountMenuOpensAIConnection() {
+    func testAccountMenuOpensExplicitAIConsentSettings() {
         let app = XCUIApplication()
         addUIInterruptionMonitor(withDescription: "Location Permission") { alert in
             for title in ["許可しない", "Don’t Allow", "Don't Allow"] {
@@ -19,6 +19,7 @@ final class AIConnectionNavigationUITests: XCTestCase {
             "-AppleLocale", "ja_JP",
             "-afterimageApiBase", "http://127.0.0.1:9",
             "-afterimageDevSession", "qa-session",
+            "-afterimageDevAccountID", "qa-user",
         ]
         app.launch()
 
@@ -29,16 +30,22 @@ final class AIConnectionNavigationUITests: XCTestCase {
             sessionAlert.buttons["閉じる"].tap()
         }
 
-        app.buttons["アカウント"].tap()
+        let accountMenu = app.buttons["アカウント"]
+        XCTAssertTrue(accountMenu.waitForExistence(timeout: 3))
+        accountMenu.tap()
+        let settings = app.buttons["設定"]
+        XCTAssertTrue(settings.waitForExistence(timeout: 3))
+        settings.tap()
 
-        let aiConnection = app.buttons["AI連携"]
-        guard aiConnection.waitForExistence(timeout: 3) else {
-            XCTFail("AI連携メニューが表示されません")
-            return
-        }
-        aiConnection.tap()
-
-        XCTAssertTrue(app.navigationBars["AI連携"].waitForExistence(timeout: 3))
-        XCTAssertTrue(app.staticTexts["MCPサーバー"].exists)
+        XCTAssertTrue(app.navigationBars["設定"].waitForExistence(timeout: 3))
+        XCTAssertTrue(app.staticTexts["外部AI処理への同意"].exists)
+        XCTAssertTrue(
+            app.staticTexts[
+                "Soniox：動画ファイル全体（映像・音声）を送信し、音声の文字起こしを生成"
+            ].exists
+        )
+        XCTAssertTrue(
+            app.buttons["説明に同意してAI処理を有効にする"].exists
+        )
     }
 }

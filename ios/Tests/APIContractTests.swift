@@ -101,8 +101,62 @@ final class APIContractTests: XCTestCase {
         XCTAssertNil(asset.videoAnalysisStatus)
         XCTAssertNil(asset.transcriptUrl)
         XCTAssertNil(asset.location)
-        XCTAssertTrue(asset.agentAccessEnabled)
+        XCTAssertFalse(asset.agentAccessEnabled)
         XCTAssertFalse(asset.canShareWithAgent)
+    }
+
+    func testAppleChallengeAndAIConsentDecodeBackendContracts() throws {
+        let challenge = try JSONDecoder.afterimage.decode(
+            AppleAuthChallenge.self,
+            from: Data(
+                """
+                {
+                  "challengeId": "challenge-1",
+                  "nonce": "raw-nonce",
+                  "expiresAt": "2026-07-30T12:00:00.000Z"
+                }
+                """.utf8
+            )
+        )
+        XCTAssertEqual(challenge.challengeId, "challenge-1")
+        XCTAssertEqual(challenge.nonce, "raw-nonce")
+
+        let consent = try JSONDecoder.afterimage.decode(
+            AIConsentResponse.self,
+            from: Data(
+                """
+                {
+                  "consent": {
+                    "version": "2026-07-30",
+                    "active": true,
+                    "consentedAt": "2026-07-30T12:00:00.000Z",
+                    "withdrawnAt": null
+                  }
+                }
+                """.utf8
+            )
+        )
+        XCTAssertTrue(consent.consent.granted)
+        XCTAssertNil(consent.consent.withdrawnAt)
+    }
+
+    func testAIConsentUpdateEncodesBackendContract() throws {
+        let data = try JSONEncoder.afterimage.encode(
+            UpdateAIConsentRequest(
+                version: AIConsentPolicy.currentVersion,
+                consented: true
+            )
+        )
+        let object = try XCTUnwrap(
+            JSONSerialization.jsonObject(with: data) as? [String: Any]
+        )
+
+        XCTAssertEqual(
+            object["version"] as? String,
+            AIConsentPolicy.currentVersion
+        )
+        XCTAssertEqual(object["consented"] as? Bool, true)
+        XCTAssertNil(object["granted"])
     }
 
     func testCreateAssetEncodesCaptureLocation() throws {

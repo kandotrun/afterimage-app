@@ -9,7 +9,7 @@ struct TimelineView: View {
     @State private var pendingOpen: Asset?
     @State private var pendingDay: DailyPlaybackRoute?
     @State private var isShowingMemorySearch = false
-    @State private var isShowingAIConnection = false
+    @State private var isShowingSettings = false
     @State private var isConfirmingSignOut = false
     @State private var cameraRoute: CameraRoute?
     @Namespace private var zoomTransition
@@ -138,8 +138,11 @@ struct TimelineView: View {
                 }
                 ToolbarItem(placement: .topBarTrailing) {
                     Menu {
-                        Button("AI連携", systemImage: "brain.head.profile") {
-                            isShowingAIConnection = true
+                        Button(
+                            L10n.string("account.settings.title"),
+                            systemImage: "gearshape"
+                        ) {
+                            isShowingSettings = true
                         }
                         Button("再読み込み", systemImage: "arrow.clockwise") {
                             Task {
@@ -182,8 +185,8 @@ struct TimelineView: View {
                     cameraRoute = .capture
                 }
             }
-            .sheet(isPresented: $isShowingAIConnection) {
-                AIConnectionView()
+            .sheet(isPresented: $isShowingSettings) {
+                SettingsView()
             }
             .sheet(isPresented: $isShowingMemorySearch) {
                 MemorySearchView()
@@ -202,7 +205,7 @@ struct TimelineView: View {
                     selection: $selection,
                     previewPlaybackAllowed: cameraRoute == nil
                         && !isShowingMemorySearch
-                        && !isShowingAIConnection,
+                        && !isShowingSettings,
                     recordVideo: { cameraRoute = .capture }
                 )
                     .padding(.horizontal, 14)
@@ -325,40 +328,43 @@ private struct ReminderInviteSheet: View {
     let decline: () -> Void
 
     var body: some View {
-        VStack(spacing: 18) {
-            Image(systemName: "moon.stars")
-                .font(.system(size: 44, weight: .light))
-                .foregroundStyle(.secondary)
-            Text(verbatim: L10n.string("notification.invite.title"))
-                .font(.title3.weight(.semibold))
-            Text(verbatim: L10n.string("notification.invite.body"))
-                .font(.subheadline)
-                .foregroundStyle(.secondary)
-                .multilineTextAlignment(.center)
-                .lineSpacing(3)
-            VStack(spacing: 10) {
-                Button {
-                    accept()
-                    dismiss()
-                } label: {
-                    Text(verbatim: L10n.string("notification.invite.accept"))
-                        .font(.headline)
-                        .frame(maxWidth: .infinity, minHeight: 44)
+        ScrollView {
+            VStack(spacing: 18) {
+                Image(systemName: "moon.stars")
+                    .font(.system(size: 44, weight: .light))
+                    .foregroundStyle(.secondary)
+                Text(verbatim: L10n.string("notification.invite.title"))
+                    .font(.title3.weight(.semibold))
+                Text(verbatim: L10n.string("notification.invite.body"))
+                    .font(.subheadline)
+                    .foregroundStyle(.secondary)
+                    .multilineTextAlignment(.center)
+                    .lineSpacing(3)
+                VStack(spacing: 10) {
+                    Button {
+                        accept()
+                        dismiss()
+                    } label: {
+                        Text(verbatim: L10n.string("notification.invite.accept"))
+                            .font(.headline)
+                            .frame(maxWidth: .infinity, minHeight: 44)
+                    }
+                    .buttonStyle(.glassProminent)
+                    Button {
+                        decline()
+                        dismiss()
+                    } label: {
+                        Text(verbatim: L10n.string("notification.invite.decline"))
+                            .frame(maxWidth: .infinity, minHeight: 44)
+                    }
+                    .buttonStyle(.glass)
                 }
-                .buttonStyle(.glassProminent)
-                Button {
-                    decline()
-                    dismiss()
-                } label: {
-                    Text(verbatim: L10n.string("notification.invite.decline"))
-                        .frame(maxWidth: .infinity, minHeight: 44)
-                }
-                .buttonStyle(.glass)
+                .padding(.top, 6)
             }
-            .padding(.top, 6)
+            .frame(maxWidth: .infinity)
+            .padding(28)
         }
-        .padding(28)
-        .presentationDetents([.height(340)])
+        .presentationDetents([.medium, .large])
         .interactiveDismissDisabled()
     }
 }
@@ -497,46 +503,52 @@ private struct UploadDock: View {
 
             GlassEffectContainer(spacing: 8) {
                 HStack(spacing: 12) {
-                    if let upload = model.upload {
-                        UploadStatusBar(
-                            upload: upload,
-                            isPreviewPlaybackAllowed: previewPlaybackAllowed && !isShowingLibrary
-                        )
+                    if model.hasActiveBackgroundUpload {
+                        if let upload = model.upload {
+                            UploadStatusBar(
+                                upload: upload,
+                                isPreviewPlaybackAllowed: previewPlaybackAllowed && !isShowingLibrary
+                            )
 
-                        Button(role: .cancel) {
-                            if upload.total > 1 {
-                                isConfirmingCancel = true
-                            } else {
-                                model.cancelUpload()
+                            Button(role: .cancel) {
+                                if upload.total > 1 {
+                                    isConfirmingCancel = true
+                                } else {
+                                    Task { await model.cancelUpload() }
+                                }
+                            } label: {
+                                Image(systemName: "xmark")
+                                    .frame(width: 44, height: 44)
                             }
-                        } label: {
-                            Image(systemName: "xmark")
-                                .frame(width: 44, height: 44)
-                        }
-                        .buttonStyle(.glass)
-                        .buttonBorderShape(.circle)
-                        .tint(.accentColor)
-                        .accessibilityLabel(L10n.string("upload.action.cancel"))
-                    } else if model.backgroundUploadNeedsRetry {
-                        Button {
-                            Task { await model.retryBackgroundUpload() }
-                        } label: {
-                            Label(L10n.string("upload.resume"), systemImage: "arrow.clockwise")
-                                .font(.headline)
-                                .frame(minHeight: 44)
-                                .padding(.horizontal, 4)
-                        }
-                        .buttonStyle(.glassProminent)
+                            .buttonStyle(.glass)
+                            .buttonBorderShape(.circle)
+                            .tint(.accentColor)
+                            .accessibilityLabel(L10n.string("upload.action.cancel"))
+                        } else if model.backgroundUploadNeedsRetry {
+                            Button {
+                                Task { await model.resumeBackgroundUpload() }
+                            } label: {
+                                Label(L10n.string("upload.resume"), systemImage: "arrow.clockwise")
+                                    .font(.headline)
+                                    .frame(minHeight: 44)
+                                    .padding(.horizontal, 4)
+                            }
+                            .buttonStyle(.glassProminent)
 
-                        Button(role: .destructive) {
-                            isConfirmingDiscardStalled = true
-                        } label: {
-                            Image(systemName: "trash")
+                            Button(role: .destructive) {
+                                isConfirmingDiscardStalled = true
+                            } label: {
+                                Image(systemName: "trash")
+                                    .frame(width: 44, height: 44)
+                            }
+                            .buttonStyle(.glass)
+                            .accessibilityLabel(L10n.string("upload.discard"))
+                        } else {
+                            ProgressView()
                                 .frame(width: 44, height: 44)
+                                .accessibilityLabel(L10n.string("upload.status.saving"))
                         }
-                        .buttonStyle(.glass)
-                        .accessibilityLabel(L10n.string("upload.discard"))
-                    } else {
+                    } else if model.canAddMedia {
                         Spacer(minLength: 0)
                         Menu {
                             Button(
@@ -560,6 +572,10 @@ private struct UploadDock: View {
                         .buttonBorderShape(.circle)
                         .accessibilityLabel("動画を追加")
                         .accessibilityHint(L10n.string("accessibility.upload_picker_duplicate_hint"))
+                    } else {
+                        ProgressView()
+                            .frame(width: 44, height: 44)
+                            .accessibilityLabel(L10n.string("account.delete.progress"))
                     }
                 }
             }
@@ -575,7 +591,7 @@ private struct UploadDock: View {
             isPresented: $isConfirmingCancel,
             titleVisibility: .visible
         ) {
-            Button("中止する", role: .destructive) { model.cancelUpload() }
+            Button("中止する", role: .destructive) { Task { await model.cancelUpload() } }
             Button(L10n.string("camera.action.cancel"), role: .cancel) {}
         } message: {
             Text("まだ保存されていない動画は失われます。")
@@ -585,7 +601,9 @@ private struct UploadDock: View {
             isPresented: $isConfirmingDiscardStalled,
             titleVisibility: .visible
         ) {
-            Button("破棄する", role: .destructive) { model.discardPendingUpload() }
+            Button("破棄する", role: .destructive) {
+                Task { await model.discardBackgroundUpload() }
+            }
             Button(L10n.string("camera.action.cancel"), role: .cancel) {}
         } message: {
             Text("途中まで送られた動画は保存されません。")

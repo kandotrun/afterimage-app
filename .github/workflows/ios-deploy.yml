@@ -21,16 +21,17 @@ jobs:
       - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
         with:
           node-version: 24
-      - name: Verify iOS source and localization contracts
+      - run: npm ci
+      - name: Verify iOS and App Store contracts
         run: |
-          node scripts/verify-ios-contract.mjs
-          node scripts/verify-ios-localizations.mjs
-      - name: Install XcodeGen
+          npm run check:ios
+          node scripts/verify-app-store.mjs \
+            --mode contracts \
+            --report ios/AppStoreContract.json
+      - name: Verify XcodeGen
         run: |
-          if ! command -v xcodegen >/dev/null; then
-            brew untap aws/tap 2>/dev/null || true
-            brew install xcodegen
-          fi
+          command -v xcodegen
+          xcodegen --version
       - name: Generate Xcode project
         working-directory: ios
         run: xcodegen generate
@@ -48,6 +49,7 @@ jobs:
             -scheme afterimage \
             -destination 'platform=iOS Simulator,id=${{ steps.simulator.outputs.id }}' \
             -derivedDataPath DerivedData \
+            -resultBundlePath TestResults.xcresult \
             -parallel-testing-enabled NO \
             -maximum-concurrent-test-simulator-destinations 1 \
             -jobs 1 \
@@ -55,9 +57,21 @@ jobs:
             CODE_SIGNING_ALLOWED=NO \
             CC="$GITHUB_WORKSPACE/scripts/xcode-clang-probe" \
             | tee xcodebuild.log
+      - name: Upload iOS test evidence
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: afterimage-deploy-test-evidence
+          path: |
+            ios/TestResults.xcresult
+            ios/xcodebuild.log
+            ios/AppStoreContract.json
+          if-no-files-found: ignore
+          retention-days: 7
 
   deploy:
     needs: test
+    if: github.ref == 'refs/heads/main'
     runs-on: [self-hosted, macOS, ARM64, afterimage-ci]
     timeout-minutes: 45
     steps:
@@ -65,15 +79,53 @@ jobs:
       - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
         with:
           node-version: 24
-      - name: Install XcodeGen
+      - run: npm ci
+      - name: Verify App Store contracts
         run: |
-          if ! command -v xcodegen >/dev/null; then
-            brew untap aws/tap 2>/dev/null || true
-            brew install xcodegen
-          fi
+          node scripts/verify-app-store.mjs \
+            --mode contracts \
+            --report ios/AppStoreContract.json
+      - name: Verify XcodeGen
+        run: |
+          command -v xcodegen
+          xcodegen --version
       - name: Generate Xcode project
         working-directory: ios
         run: xcodegen generate
+      - name: Preflight App Store Connect secrets
+        env:
+          AFTERIMAGE_CI_KEYCHAIN_PASSWORD: ${{ secrets.AFTERIMAGE_CI_KEYCHAIN_PASSWORD }}
+          ASC_ISSUER_ID: ${{ secrets.ASC_ISSUER_ID }}
+          ASC_KEY_ID: ${{ secrets.ASC_KEY_ID }}
+          ASC_PRIVATE_KEY: ${{ secrets.ASC_PRIVATE_KEY }}
+        run: |
+          missing=0
+          if [ -z "$AFTERIMAGE_CI_KEYCHAIN_PASSWORD" ]; then
+            echo "::error::AFTERIMAGE_CI_KEYCHAIN_PASSWORD is not configured"
+            missing=1
+          fi
+          if [ -z "$ASC_ISSUER_ID" ]; then
+            echo "::error::ASC_ISSUER_ID is not configured"
+            missing=1
+          fi
+          if [ -z "$ASC_KEY_ID" ]; then
+            echo "::error::ASC_KEY_ID is not configured"
+            missing=1
+          fi
+          if [ -z "$ASC_PRIVATE_KEY" ]; then
+            echo "::error::ASC_PRIVATE_KEY is not configured"
+            missing=1
+          fi
+          if [ "$missing" -ne 0 ]; then
+            exit 1
+          fi
+          case "$ASC_PRIVATE_KEY" in
+            *"BEGIN PRIVATE KEY"*|*"BEGIN EC PRIVATE KEY"*) ;;
+            *)
+              echo "::error::ASC_PRIVATE_KEY is not a supported private key"
+              exit 1
+              ;;
+          esac
       - name: Prepare temporary App Store Connect API key
         id: asc_key
         env:
@@ -81,22 +133,26 @@ jobs:
         run: |
           KEY_DIR=$(mktemp -d "$RUNNER_TEMP/afterimage-asc.XXXXXX")
           KEY_PATH="$KEY_DIR/AuthKey.p8"
-          printf '%s' "$ASC_PRIVATE_KEY" > "$KEY_PATH"
-          chmod 600 "$KEY_PATH"
           echo "dir=$KEY_DIR" >> "$GITHUB_OUTPUT"
           echo "path=$KEY_PATH" >> "$GITHUB_OUTPUT"
-      - name: Configure isolated signing keychain
+          printf '%s' "$ASC_PRIVATE_KEY" > "$KEY_PATH"
+          chmod 600 "$KEY_PATH"
+      - name: Configure temporary signing keychain
         id: signing_keychain
         env:
-          CI_KEYCHAIN_PASSWORD: ${{ secrets.AFTERIMAGE_CI_KEYCHAIN_PASSWORD }}
+          AFTERIMAGE_CI_KEYCHAIN_PASSWORD: ${{ secrets.AFTERIMAGE_CI_KEYCHAIN_PASSWORD }}
         run: |
-          KEYCHAIN="$HOME/actions-runner-afterimage/.ci/afterimage-ci.keychain-db"
-          test -f "$KEYCHAIN"
-          security unlock-keychain -p "$CI_KEYCHAIN_PASSWORD" "$KEYCHAIN"
-          security set-keychain-settings -lut 21600 "$KEYCHAIN"
-          security default-keychain -d user -s "$KEYCHAIN"
-          security list-keychains -d user -s "$KEYCHAIN"
-          echo "path=$KEYCHAIN" >> "$GITHUB_OUTPUT"
+          SOURCE_KEYCHAIN="$HOME/actions-runner-afterimage/.ci/afterimage-ci.keychain-db"
+          test -f "$SOURCE_KEYCHAIN"
+          KEYCHAIN_DIR=$(mktemp -d "$RUNNER_TEMP/afterimage-signing.XXXXXX")
+          KEYCHAIN_PATH="$KEYCHAIN_DIR/afterimage-ci.keychain-db"
+          echo "dir=$KEYCHAIN_DIR" >> "$GITHUB_OUTPUT"
+          echo "path=$KEYCHAIN_PATH" >> "$GITHUB_OUTPUT"
+          cp -p "$SOURCE_KEYCHAIN" "$KEYCHAIN_PATH"
+          security unlock-keychain -p "$AFTERIMAGE_CI_KEYCHAIN_PASSWORD" "$KEYCHAIN_PATH"
+          security set-keychain-settings -lut 3600 "$KEYCHAIN_PATH"
+          security default-keychain -d user -s "$KEYCHAIN_PATH"
+          security list-keychains -d user -s "$KEYCHAIN_PATH"
       - name: Archive
         working-directory: ios
         env:
@@ -115,8 +171,17 @@ jobs:
             -authenticationKeyIssuerID "$ASC_ISSUER_ID" \
             OTHER_CODE_SIGN_FLAGS="--keychain ${{ steps.signing_keychain.outputs.path }}" \
             CURRENT_PROJECT_VERSION=${{ github.run_number }} \
+            AFTERIMAGE_BUILD_COMMIT="$GITHUB_SHA" \
             CC="$GITHUB_WORKSPACE/scripts/xcode-clang-probe" \
             | tee archive.log
+      - name: Verify archived app before export
+        run: |
+          python3 scripts/verify-ios-archive.py \
+            --archive ios/build/afterimage.xcarchive \
+            --expected-commit "$GITHUB_SHA" \
+            --expected-build "$GITHUB_RUN_NUMBER" \
+            --expected-privacy-manifest ios/Resources/PrivacyInfo.xcprivacy \
+            --report ios/ArchiveEvidence.json
       - name: Export and upload to TestFlight
         working-directory: ios
         env:
@@ -141,22 +206,55 @@ jobs:
             grep -qi 'upload' export.log || { echo "ERROR: no upload evidence in export.log"; exit 1; }
           fi
           echo "TestFlight upload completed (build ${{ github.run_number }})"
+      - name: Upload release evidence
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: afterimage-release-evidence-${{ github.run_number }}
+          path: |
+            ios/AppStoreContract.json
+            ios/ArchiveEvidence.json
+            ios/archive.log
+            ios/export.log
+          if-no-files-found: ignore
+          retention-days: 14
       - name: Remove temporary App Store Connect API key
         if: always()
         env:
           KEY_DIR: ${{ steps.asc_key.outputs.dir }}
         run: |
-          if [ -n "$KEY_DIR" ]; then
-            rm -rf "$KEY_DIR"
-          fi
-      - name: Restore login keychain
+          case "$KEY_DIR" in
+            "$RUNNER_TEMP"/afterimage-asc.*)
+              find "$KEY_DIR" -type f -delete
+              rmdir "$KEY_DIR"
+              ;;
+            "") ;;
+            *)
+              echo "::error::refusing unexpected ASC key path"
+              exit 1
+              ;;
+          esac
+      - name: Remove temporary signing keychain
         if: always()
         env:
+          CI_KEYCHAIN_DIR: ${{ steps.signing_keychain.outputs.dir }}
           CI_KEYCHAIN: ${{ steps.signing_keychain.outputs.path }}
         run: |
           LOGIN_KEYCHAIN="$HOME/Library/Keychains/login.keychain-db"
           security default-keychain -d user -s "$LOGIN_KEYCHAIN"
           security list-keychains -d user -s "$LOGIN_KEYCHAIN"
-          if [ -n "$CI_KEYCHAIN" ]; then
-            security lock-keychain "$CI_KEYCHAIN" 2>/dev/null || true
-          fi
+          case "$CI_KEYCHAIN_DIR" in
+            "$RUNNER_TEMP"/afterimage-signing.*)
+              if [ -n "$CI_KEYCHAIN" ]; then
+                security lock-keychain "$CI_KEYCHAIN" 2>/dev/null || true
+                security delete-keychain "$CI_KEYCHAIN" 2>/dev/null || true
+              fi
+              find "$CI_KEYCHAIN_DIR" -type f -delete
+              rmdir "$CI_KEYCHAIN_DIR"
+              ;;
+            "") ;;
+            *)
+              echo "::error::refusing unexpected signing keychain path"
+              exit 1
+              ;;
+          esac

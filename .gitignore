@@ -3,6 +3,11 @@ node_modules/
 .npm/
 *.log
 
+# Python
+__pycache__/
+*.py[cod]
+.pytest_cache/
+
 # Cloudflare local/deployment state
 .wrangler/
 .dev.vars*
@@ -17,6 +22,7 @@ xcuserdata/
 ios/*.xcodeproj/
 *.xcresult/
 .wrangler-dry-run/
+artifacts/
 
 # Secrets and local overrides
 .env

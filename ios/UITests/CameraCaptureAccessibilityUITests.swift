@@ -21,6 +21,7 @@ final class CameraCaptureAccessibilityUITests: XCTestCase {
             "UICTContentSizeCategoryAccessibilityExtraExtraExtraLarge",
             "-afterimageApiBase", "http://127.0.0.1:9",
             "-afterimageDevSession", "qa-session",
+            "-afterimageDevAccountID", "qa-user",
         ]
         app.launch()
 

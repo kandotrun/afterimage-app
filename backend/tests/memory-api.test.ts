@@ -1,6 +1,7 @@
 import { env } from "cloudflare:workers";
 import { beforeEach, describe, expect, it } from "vitest";
 import { createApp, type AppleIdentity } from "../src/app";
+import { AI_CONSENT_VERSION } from "../src/privacy";
 
 const NOW = new Date("2026-07-29T00:00:00.000Z");
 
@@ -17,17 +18,32 @@ async function signIn(subject: string) {
     email: `${subject}@example.com`,
     displayName: subject,
   });
+  const challengeResponse = await app.request("/v1/auth/apple/challenge", {
+    headers: { "cf-connecting-ip": "203.0.113.201" },
+  }, env);
+  expect(challengeResponse.status).toBe(200);
+  const challenge = await challengeResponse.json<{ challengeId: string }>();
   const response = await app.request("/v1/auth/apple", {
     method: "POST",
     headers: { "content-type": "application/json" },
-    body: JSON.stringify({ identityToken: `token-for-${subject}` }),
+    body: JSON.stringify({
+      challengeId: challenge.challengeId,
+      identityToken: `token-for-${subject}`,
+    }),
   }, env);
   expect(response.status).toBe(200);
   const body = await response.json<{ token: string }>();
   const user = await env.DB.prepare("SELECT id FROM users WHERE apple_subject = ?")
     .bind(subject).first<{ id: string }>();
   expect(user).not.toBeNull();
-  return { app, authorization: `Bearer ${body.token}`, userId: user!.id };
+  const authorization = `Bearer ${body.token}`;
+  const consent = await app.request("/v1/privacy/ai", {
+    method: "PUT",
+    headers: { authorization, "content-type": "application/json" },
+    body: JSON.stringify({ version: AI_CONSENT_VERSION, consented: true }),
+  }, env);
+  expect(consent.status).toBe(200);
+  return { app, authorization, userId: user!.id };
 }
 
 async function insertVideo(options: {
@@ -60,6 +76,9 @@ async function insertVideo(options: {
     NOW.toISOString(),
     options.agentAccessEnabled ?? 1,
   ).run();
+  await env.DB.prepare("UPDATE assets SET agent_access_enabled = ? WHERE id = ?")
+    .bind(options.agentAccessEnabled ?? 1, options.id)
+    .run();
 }
 
 async function insertPhoto(id: string, userId: string) {
@@ -142,6 +161,12 @@ async function insertAnalysis(options: {
 
 beforeEach(async () => {
   await env.DB.batch([
+    env.DB.prepare("DELETE FROM account_deletion_receipts"),
+    env.DB.prepare("DELETE FROM account_deletion_assets"),
+    env.DB.prepare("DELETE FROM account_deletion_jobs"),
+    env.DB.prepare("DELETE FROM asset_creation_ledger"),
+    env.DB.prepare("DELETE FROM ai_consents"),
+    env.DB.prepare("DELETE FROM apple_auth_challenges"),
     env.DB.prepare("DELETE FROM upload_parts"),
     env.DB.prepare("DELETE FROM mcp_tokens"),
     env.DB.prepare("DELETE FROM assets"),

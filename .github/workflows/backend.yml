@@ -2,13 +2,7 @@ name: backend
 
 on:
   push:
-    branches: [main]
-    paths:
-      - "backend/**"
-      - "package.json"
-      - "package-lock.json"
-      - ".github/workflows/backend.yml"
-  pull_request:
+    branches: ["**"]
     paths:
       - "backend/**"
       - "package.json"
@@ -29,4 +23,3 @@ jobs:
           node-version: 24
       - run: npm ci
       - run: npm run check
-      - run: node scripts/verify-ios-contract.mjs

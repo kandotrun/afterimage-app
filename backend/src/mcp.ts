@@ -1,6 +1,7 @@
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { WebStandardStreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/webStandardStreamableHttp.js";
 import { z } from "zod";
+import { AI_CONSENT_VERSION } from "./privacy";
 
 interface McpAuthRow {
   id: string;
@@ -167,8 +168,13 @@ async function findMediaAsset(bindings: Env, userId: string, assetId: string): P
     `SELECT id, filename, content_type, byte_size, duration_ms
        FROM assets
       WHERE id = ? AND user_id = ? AND kind = 'video' AND status = 'ready'
-        AND agent_access_enabled = 1`,
-  ).bind(assetId, userId).first<MediaAssetRow>();
+        AND agent_access_enabled = 1
+        AND EXISTS (
+          SELECT 1 FROM ai_consents consent
+           WHERE consent.user_id = assets.user_id AND consent.version = ?
+             AND consent.consented_at IS NOT NULL AND consent.withdrawn_at IS NULL
+        )`,
+  ).bind(assetId, userId, AI_CONSENT_VERSION).first<MediaAssetRow>();
 }
 
 async function createAgentGrant(
@@ -192,6 +198,11 @@ async function createAgentGrant(
         FROM assets a
        WHERE a.id = ? AND a.user_id = ? AND a.kind = 'video'
          AND a.status = 'ready' AND a.agent_access_enabled = 1
+         AND EXISTS (
+           SELECT 1 FROM ai_consents consent
+            WHERE consent.user_id = a.user_id AND consent.version = ?
+              AND consent.consented_at IS NOT NULL AND consent.withdrawn_at IS NULL
+         )
          AND (
            ? IS NULL
            OR EXISTS (
@@ -208,6 +219,7 @@ async function createAgentGrant(
       derivativeId,
       assetId,
       userId,
+      AI_CONSENT_VERSION,
       derivativeId,
       derivativeId,
       nowIso,
@@ -252,8 +264,13 @@ async function findDerivative(
        FROM media_derivatives d
        JOIN assets a ON a.id = d.asset_id
       WHERE d.id = ? AND a.user_id = ? AND a.kind = 'video' AND a.status = 'ready'
-        AND a.agent_access_enabled = 1`,
-  ).bind(derivativeId, userId).first<DerivativeRow>();
+        AND a.agent_access_enabled = 1
+        AND EXISTS (
+          SELECT 1 FROM ai_consents consent
+           WHERE consent.user_id = a.user_id AND consent.version = ?
+             AND consent.consented_at IS NOT NULL AND consent.withdrawn_at IS NULL
+        )`,
+  ).bind(derivativeId, userId, AI_CONSENT_VERSION).first<DerivativeRow>();
 }
 
 async function derivativeResult(
@@ -317,8 +334,20 @@ async function createOrFindDerivative(
        FROM media_derivatives d
        JOIN assets a ON a.id = d.asset_id
       WHERE d.asset_id = ? AND d.kind = ? AND d.start_ms = ? AND d.end_ms = ?
-        AND a.user_id = ? AND a.agent_access_enabled = 1`,
-  ).bind(asset.id, kind, startMs, endMs, userId).first<DerivativeRow>();
+        AND a.user_id = ? AND a.agent_access_enabled = 1
+        AND EXISTS (
+          SELECT 1 FROM ai_consents consent
+           WHERE consent.user_id = a.user_id AND consent.version = ?
+             AND consent.consented_at IS NOT NULL AND consent.withdrawn_at IS NULL
+        )`,
+  ).bind(
+    asset.id,
+    kind,
+    startMs,
+    endMs,
+    userId,
+    AI_CONSENT_VERSION,
+  ).first<DerivativeRow>();
   const existing = await findExisting();
   if (existing && existing.expires_at > now.toISOString()) {
     return derivativeResult(bindings, userId, existing, requestUrl, now);
@@ -349,7 +378,12 @@ async function createOrFindDerivative(
         SELECT ?, a.id, ?, ?, ?, ?, 'queued', ?, ?, ?
           FROM assets a
          WHERE a.id = ? AND a.user_id = ? AND a.kind = 'video'
-           AND a.status = 'ready' AND a.agent_access_enabled = 1`,
+           AND a.status = 'ready' AND a.agent_access_enabled = 1
+           AND EXISTS (
+             SELECT 1 FROM ai_consents consent
+              WHERE consent.user_id = a.user_id AND consent.version = ?
+                AND consent.consented_at IS NOT NULL AND consent.withdrawn_at IS NULL
+           )`,
       ).bind(
         derivativeId,
         jobId,
@@ -361,6 +395,7 @@ async function createOrFindDerivative(
         nowIso,
         asset.id,
         userId,
+        AI_CONSENT_VERSION,
       ),
       bindings.DB.prepare(
         `INSERT INTO gpu_jobs (
@@ -371,7 +406,41 @@ async function createOrFindDerivative(
           FROM media_derivatives d JOIN assets a ON a.id = d.asset_id
          WHERE d.id = ? AND d.job_id = ? AND a.user_id = ?
            AND a.kind = 'video' AND a.status = 'ready'
-           AND a.agent_access_enabled = 1`,
+           AND a.agent_access_enabled = 1
+           AND EXISTS (
+             SELECT 1 FROM ai_consents consent
+              WHERE consent.user_id = a.user_id AND consent.version = ?
+                AND consent.consented_at IS NOT NULL AND consent.withdrawn_at IS NULL
+           )
+           AND (
+             SELECT COUNT(*)
+               FROM gpu_jobs active_job
+               JOIN assets active_asset ON active_asset.id = active_job.asset_id
+              WHERE active_asset.user_id = a.user_id
+                AND active_job.status IN ('queued', 'leased')
+           ) < 4
+           AND (
+             (
+               SELECT COUNT(*)
+                 FROM gpu_jobs active_job
+                 JOIN assets active_asset ON active_asset.id = active_job.asset_id
+                WHERE active_asset.user_id = a.user_id
+                  AND active_job.status IN ('queued', 'leased')
+             )
+             +
+             (
+               SELECT COUNT(*)
+                 FROM assets active_transcription
+                WHERE active_transcription.user_id = a.user_id
+                  AND active_transcription.transcription_status IN ('pending', 'processing')
+             )
+             +
+             (
+               SELECT COUNT(*)
+                 FROM external_ai_work_leases lease
+                WHERE lease.user_id = a.user_id AND lease.expires_at > ?
+             )
+           ) < 4`,
       ).bind(
         jobId,
         kind,
@@ -382,9 +451,48 @@ async function createOrFindDerivative(
         derivativeId,
         jobId,
         userId,
+        AI_CONSENT_VERSION,
+        nowIso,
       ),
     ]);
     if ((derivativeInsert?.meta.changes ?? 0) !== 1 || (jobInsert?.meta.changes ?? 0) !== 1) {
+      if ((derivativeInsert?.meta.changes ?? 0) === 1) {
+        await bindings.DB.prepare("DELETE FROM media_derivatives WHERE id = ?")
+          .bind(derivativeId)
+          .run();
+      }
+      const active = await bindings.DB.prepare(
+        `SELECT
+          (
+            SELECT COUNT(*)
+              FROM gpu_jobs j JOIN assets a ON a.id = j.asset_id
+             WHERE a.user_id = ? AND j.status IN ('queued', 'leased')
+          ) AS gpu_count,
+          (
+            SELECT COUNT(*)
+              FROM assets a
+             WHERE a.user_id = ? AND a.transcription_status IN ('pending', 'processing')
+          ) AS transcription_count,
+          (
+            SELECT COUNT(*)
+              FROM external_ai_work_leases lease
+             WHERE lease.user_id = ? AND lease.expires_at > ?
+          ) AS lease_count`,
+      ).bind(userId, userId, userId, nowIso).first<{
+        gpu_count: number;
+        transcription_count: number;
+        lease_count: number;
+      }>();
+      const gpuCount = Number(active?.gpu_count ?? 0);
+      if (gpuCount >= 4) return errorResult("analysis_queue_limit");
+      if (
+        gpuCount
+        + Number(active?.transcription_count ?? 0)
+        + Number(active?.lease_count ?? 0)
+        >= 4
+      ) {
+        return errorResult("external_ai_work_limit");
+      }
       return errorResult("Video not found.");
     }
   } catch {
@@ -846,9 +954,17 @@ export async function handleMcpRequest(request: Request, bindings: Env, now: Dat
   if (!match?.[1]) return unauthorized();
 
   const auth = await bindings.DB.prepare(
-    `SELECT id, user_id FROM mcp_tokens
-      WHERE token_hash = ? AND revoked_at IS NULL AND expires_at > ?`,
-  ).bind(await sha256Hex(match[1]), now.toISOString()).first<McpAuthRow>();
+    `SELECT token.id, token.user_id
+       FROM mcp_tokens token
+       JOIN ai_consents consent ON consent.user_id = token.user_id
+      WHERE token.token_hash = ? AND token.revoked_at IS NULL AND token.expires_at > ?
+        AND consent.version = ?
+        AND consent.consented_at IS NOT NULL AND consent.withdrawn_at IS NULL`,
+  ).bind(
+    await sha256Hex(match[1]),
+    now.toISOString(),
+    AI_CONSENT_VERSION,
+  ).first<McpAuthRow>();
   if (!auth) return unauthorized();
 
   const lastUsedCutoff = new Date(now.getTime() - 60 * 60 * 1000).toISOString();

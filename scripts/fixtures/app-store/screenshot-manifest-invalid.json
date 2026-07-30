@@ -1,0 +1,23 @@
+{
+  "version": 1,
+  "locale": "ja-JP",
+  "display": "6.9-inch",
+  "acceptedPortraitDimensions": [
+    {
+      "width": 1320,
+      "height": 2868
+    }
+  ],
+  "screenshots": [
+    {
+      "file": "01-timeline.png",
+      "scene": "timeline",
+      "syntheticData": true,
+      "privateData": false,
+      "debugOverlay": false,
+      "content": {
+        "video": "公園の散歩"
+      }
+    }
+  ]
+}
