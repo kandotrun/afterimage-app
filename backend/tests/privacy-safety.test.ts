@@ -202,6 +202,47 @@ function envWithDeletionMediaHooks(hooks: {
   return { ...env, MEDIA: media };
 }
 
+function envWithBeforeDailySummaryWrite(hook: () => Promise<void>): Env {
+  let invoked = false;
+  const wrapStatement = (statement: D1PreparedStatement): D1PreparedStatement => (
+    new Proxy(statement, {
+      get(target, property) {
+        if (property === "bind") {
+          return (...values: Parameters<D1PreparedStatement["bind"]>) => (
+            wrapStatement(target.bind(...values))
+          );
+        }
+        if (property === "run") {
+          return async () => {
+            if (!invoked) {
+              invoked = true;
+              await hook();
+            }
+            return target.run();
+          };
+        }
+        const value = Reflect.get(target, property, target) as unknown;
+        return typeof value === "function" ? value.bind(target) : value;
+      },
+    })
+  );
+  const db = new Proxy(env.DB, {
+    get(target, property) {
+      if (property === "prepare") {
+        return (query: string) => {
+          const statement = target.prepare(query);
+          return /INSERT INTO daily_summaries/.test(query)
+            ? wrapStatement(statement)
+            : statement;
+        };
+      }
+      const value = Reflect.get(target, property, target) as unknown;
+      return typeof value === "function" ? value.bind(target) : value;
+    },
+  });
+  return { ...env, DB: db };
+}
+
 beforeEach(async () => {
   const statements = [
     "DELETE FROM account_deletion_receipts",
@@ -726,6 +767,68 @@ describe("explicit AI consent", () => {
     });
     expect(await env.DB.prepare(
       "SELECT COUNT(*) AS count FROM daily_summaries WHERE user_id = ?",
+    ).bind(owner.userId).first<{ count: number }>()).toEqual({ count: 0 });
+  });
+
+  it("atomically rejects a Qwen result when account deletion starts before the summary write", async () => {
+    const subject = "consent-qwen-deletion-race";
+    let owner: Awaited<ReturnType<typeof signIn>>;
+    let bindings: Env;
+    bindings = envWithBeforeDailySummaryWrite(async () => {
+      await createAccountDeletionIntent(
+        bindings,
+        { userId: owner.userId, appleSubject: subject },
+        { token: "qwen-race-refresh-token", tokenType: "refresh_token" },
+        NOW,
+      );
+    });
+    const app = createApp({
+      verifyAppleIdentityToken: async (identityToken) => ({
+        subject: identityToken.replace("token-for-", ""),
+      }),
+      generateDailySummary: async () => ({
+        summary: "削除開始後には保存しない。",
+        model: "qwen3.8-max-preview",
+      }),
+      now: () => NOW,
+    });
+    owner = await signIn(subject, app, bindings);
+    const assetId = crypto.randomUUID();
+    await bindings.DB.prepare(
+      `INSERT INTO assets (
+        id, user_id, kind, filename, content_type, byte_size, captured_at,
+        status, object_key, upload_mode, created_at, updated_at,
+        transcription_status, transcript
+      ) VALUES (?, ?, 'video', 'qwen-race.mp4', 'video/mp4', 5, ?,
+        'ready', ?, 'single', ?, ?, 'completed', '削除と競合する一日の記録')`,
+    ).bind(
+      assetId,
+      owner.userId,
+      "2026-07-29T12:00:00.000Z",
+      `users/${owner.userId}/assets/${assetId}/media`,
+      NOW.toISOString(),
+      NOW.toISOString(),
+    ).run();
+    expect((await setConsent(owner, true, bindings)).status).toBe(200);
+
+    const response = await app.request(
+      "/v1/days/summary?startAt=2026-07-29T00%3A00%3A00.000Z&endAt=2026-07-30T00%3A00%3A00.000Z",
+      { headers: { authorization: owner.authorization } },
+      bindings,
+    );
+
+    expect(response.status).toBe(403);
+    await expect(response.json()).resolves.toMatchObject({
+      error: { code: "ai_consent_required" },
+    });
+    expect(await env.DB.prepare(
+      "SELECT COUNT(*) AS count FROM daily_summaries WHERE user_id = ?",
+    ).bind(owner.userId).first<{ count: number }>()).toEqual({ count: 0 });
+    expect(await env.DB.prepare(
+      "SELECT status FROM account_deletion_jobs WHERE user_id = ?",
+    ).bind(owner.userId).first()).toEqual({ status: "pending" });
+    expect(await env.DB.prepare(
+      "SELECT COUNT(*) AS count FROM external_ai_work_leases WHERE user_id = ?",
     ).bind(owner.userId).first<{ count: number }>()).toEqual({ count: 0 });
   });
 });
@@ -1442,6 +1545,16 @@ describe("durable account deletion", () => {
     providers.revokeAppleToken.mockRejectedValue(new Error("keep deletion pending"));
     const app = makeDeletionApp(clock, providers);
     const fixtures = await createDeletionFixtures(app, env, "deletion-insert-guard");
+    await env.DB.prepare(
+      `INSERT INTO soniox_work_leases (
+        asset_id, user_id, owner_token, created_at, expires_at
+      ) VALUES (?, ?, 'expired-soniox-owner', ?, ?)`,
+    ).bind(
+      fixtures.readyAssetId,
+      fixtures.owner.userId,
+      new Date(clock.value.getTime() - 120_000).toISOString(),
+      new Date(clock.value.getTime() - 60_000).toISOString(),
+    ).run();
     const first = await app.request("/v1/account", {
       method: "DELETE",
       headers: {
@@ -1505,7 +1618,13 @@ describe("durable account deletion", () => {
     await expect(env.DB.prepare(
       `INSERT INTO soniox_work_leases (
         asset_id, user_id, owner_token, created_at, expires_at
-      ) VALUES (?, ?, 'late-soniox-owner', ?, ?)`,
+      ) VALUES (?, ?, 'late-soniox-owner', ?, ?)
+      ON CONFLICT(asset_id) DO UPDATE SET
+        user_id = excluded.user_id,
+        owner_token = excluded.owner_token,
+        created_at = excluded.created_at,
+        expires_at = excluded.expires_at
+      WHERE soniox_work_leases.expires_at <= excluded.created_at`,
     ).bind(
       fixtures.readyAssetId,
       fixtures.owner.userId,

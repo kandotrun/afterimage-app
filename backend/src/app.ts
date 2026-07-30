@@ -2700,12 +2700,88 @@ export function createApp(overrides: Partial<AppDependencies> = {}) {
         "Too many external AI operations are active.",
       );
     }
-    let generated: GeneratedDailySummary;
     try {
-      generated = await dependencies.generateDailySummary(context.env, sources);
-    } catch {
-      console.error(JSON.stringify({ event: "daily_summary_generation_failed", model }));
-      return errorResponse(context, 503, "summary_unavailable", "The daily summary is temporarily unavailable.");
+      let generated: GeneratedDailySummary;
+      try {
+        generated = await dependencies.generateDailySummary(context.env, sources);
+      } catch {
+        console.error(JSON.stringify({ event: "daily_summary_generation_failed", model }));
+        return errorResponse(context, 503, "summary_unavailable", "The daily summary is temporarily unavailable.");
+      }
+      if (!await hasActiveAiConsent(context.env, auth.userId)) {
+        return errorResponse(
+          context,
+          403,
+          "ai_consent_required",
+          "Active AI consent is required for daily summaries.",
+        );
+      }
+      const summary = generated.summary.trim();
+      if (
+        generated.model !== model
+        || !summary
+        || /[\r\n]/.test(summary)
+        || Array.from(summary).length > DAILY_SUMMARY_MAX_CHARACTERS
+      ) {
+        console.error(JSON.stringify({ event: "daily_summary_validation_failed", model }));
+        return errorResponse(context, 503, "summary_unavailable", "The daily summary is temporarily unavailable.");
+      }
+
+      const generatedAt = dependencies.now().toISOString();
+      const persisted = await context.env.DB.prepare(
+        `INSERT INTO daily_summaries (
+          user_id, start_at, end_at, source_digest, source_transcript_count,
+          source_visual_analysis_count, summary, model, generated_at
+        )
+        SELECT ?, ?, ?, ?, ?, ?, ?, ?, ?
+         WHERE EXISTS (
+           SELECT 1 FROM ai_consents consent
+            WHERE consent.user_id = ? AND consent.version = ?
+              AND consent.consented_at IS NOT NULL AND consent.withdrawn_at IS NULL
+         )
+           AND NOT EXISTS (
+             SELECT 1 FROM account_deletion_jobs job
+              WHERE job.user_id = ? AND job.status IN ('pending', 'processing')
+           )
+        ON CONFLICT(user_id, start_at, end_at) DO UPDATE SET
+          source_digest = excluded.source_digest,
+          source_transcript_count = excluded.source_transcript_count,
+          source_visual_analysis_count = excluded.source_visual_analysis_count,
+          summary = excluded.summary,
+          model = excluded.model,
+          generated_at = excluded.generated_at`,
+      ).bind(
+        auth.userId,
+        startIso,
+        endIso,
+        sourceDigest,
+        sourceTranscriptCount,
+        sourceVisualAnalysisCount,
+        summary,
+        model,
+        generatedAt,
+        auth.userId,
+        AI_CONSENT_VERSION,
+        auth.userId,
+      ).run();
+      if ((persisted.meta.changes ?? 0) !== 1) {
+        return errorResponse(
+          context,
+          403,
+          "ai_consent_required",
+          "Active AI consent is required for daily summaries.",
+        );
+      }
+
+      return context.json({
+        startAt: startIso,
+        endAt: endIso,
+        summary,
+        model,
+        sourceTranscriptCount,
+        sourceVisualAnalysisCount,
+        generatedAt,
+      });
     } finally {
       try {
         await context.env.DB.prepare("DELETE FROM external_ai_work_leases WHERE id = ?")
@@ -2714,59 +2790,6 @@ export function createApp(overrides: Partial<AppDependencies> = {}) {
       } catch {
       }
     }
-    if (!await hasActiveAiConsent(context.env, auth.userId)) {
-      return errorResponse(
-        context,
-        403,
-        "ai_consent_required",
-        "Active AI consent is required for daily summaries.",
-      );
-    }
-    const summary = generated.summary.trim();
-    if (
-      generated.model !== model
-      || !summary
-      || /[\r\n]/.test(summary)
-      || Array.from(summary).length > DAILY_SUMMARY_MAX_CHARACTERS
-    ) {
-      console.error(JSON.stringify({ event: "daily_summary_validation_failed", model }));
-      return errorResponse(context, 503, "summary_unavailable", "The daily summary is temporarily unavailable.");
-    }
-
-    const generatedAt = dependencies.now().toISOString();
-    await context.env.DB.prepare(
-      `INSERT INTO daily_summaries (
-        user_id, start_at, end_at, source_digest, source_transcript_count,
-        source_visual_analysis_count, summary, model, generated_at
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
-      ON CONFLICT(user_id, start_at, end_at) DO UPDATE SET
-        source_digest = excluded.source_digest,
-        source_transcript_count = excluded.source_transcript_count,
-        source_visual_analysis_count = excluded.source_visual_analysis_count,
-        summary = excluded.summary,
-        model = excluded.model,
-        generated_at = excluded.generated_at`,
-    ).bind(
-      auth.userId,
-      startIso,
-      endIso,
-      sourceDigest,
-      sourceTranscriptCount,
-      sourceVisualAnalysisCount,
-      summary,
-      model,
-      generatedAt,
-    ).run();
-
-    return context.json({
-      startAt: startIso,
-      endAt: endIso,
-      summary,
-      model,
-      sourceTranscriptCount,
-      sourceVisualAnalysisCount,
-      generatedAt,
-    });
   });
 
   api.get("/days/playback", async (context) => {
