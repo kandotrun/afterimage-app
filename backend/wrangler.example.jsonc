@@ -14,7 +14,7 @@
     "MULTIPART_PART_SIZE_BYTES": "8388608",
     "QWENCLOUD_SUMMARY_BASE_URL": "https://token-plan.ap-southeast-1.maas.aliyuncs.com/compatible-mode/v1",
     "QWENCLOUD_SUMMARY_MODEL": "qwen3.8-max-preview",
-    "TRANSCRIPTION_MEDIA_BASE_URL": "https://afterimage.example.com",
+    "TRANSCRIPTION_MEDIA_BASE_URL": "https://afterimage.2-38.com",
     "SONIOX_DIRECT_UPLOAD_MAX_BYTES": "104857600"
   },
   "d1_databases": [
