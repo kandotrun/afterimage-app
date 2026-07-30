@@ -1,6 +1,9 @@
 {
   "sourceLanguage": "ja",
   "strings": {
+    "accessibility.upload_preview": {"localizations":{"ja":{"stringUnit":{"state":"translated","value":"アップロード中の動画プレビュー（音声なし）"}},"en":{"stringUnit":{"state":"translated","value":"Silent preview of the video being uploaded"}},"zh-Hans":{"stringUnit":{"state":"translated","value":"正在上传的视频静音预览"}},"ko":{"stringUnit":{"state":"translated","value":"업로드 중인 동영상 무음 미리보기"}}}},
+    "upload.action.cancel": {"localizations":{"ja":{"stringUnit":{"state":"translated","value":"アップロードをキャンセル"}},"en":{"stringUnit":{"state":"translated","value":"Cancel upload"}},"zh-Hans":{"stringUnit":{"state":"translated","value":"取消上传"}},"ko":{"stringUnit":{"state":"translated","value":"업로드 취소"}}}},
+    "upload.status.saving": {"localizations":{"ja":{"stringUnit":{"state":"translated","value":"あなたの afterimageへ保存しています"}},"en":{"stringUnit":{"state":"translated","value":"Saving to your afterimage"}},"zh-Hans":{"stringUnit":{"state":"translated","value":"正在保存到你的 afterimage"}},"ko":{"stringUnit":{"state":"translated","value":"내 afterimage에 저장하는 중"}}}},
     "camera.action.cancel": {"localizations":{"ja":{"stringUnit":{"state":"translated","value":"キャンセル"}},"en":{"stringUnit":{"state":"translated","value":"Cancel"}},"zh-Hans":{"stringUnit":{"state":"translated","value":"取消"}},"ko":{"stringUnit":{"state":"translated","value":"취소"}}}},
     "camera.action.close": {"localizations":{"ja":{"stringUnit":{"state":"translated","value":"閉じる"}},"en":{"stringUnit":{"state":"translated","value":"Close"}},"zh-Hans":{"stringUnit":{"state":"translated","value":"关闭"}},"ko":{"stringUnit":{"state":"translated","value":"닫기"}}}},
     "camera.action.open_settings": {"localizations":{"ja":{"stringUnit":{"state":"translated","value":"設定を開く"}},"en":{"stringUnit":{"state":"translated","value":"Open Settings"}},"zh-Hans":{"stringUnit":{"state":"translated","value":"打开设置"}},"ko":{"stringUnit":{"state":"translated","value":"설정 열기"}}}},

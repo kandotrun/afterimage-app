@@ -144,6 +144,9 @@ struct TimelineView: View {
             .safeAreaInset(edge: .bottom) {
                 UploadDock(
                     selection: $selection,
+                    previewPlaybackAllowed: cameraRoute == nil
+                        && !isShowingMemorySearch
+                        && !isShowingAIConnection,
                     recordVideo: { cameraRoute = .capture }
                 )
                     .padding(.horizontal, 14)
@@ -234,6 +237,7 @@ private struct EmptyTimelineView: View {
 private struct UploadDock: View {
     @EnvironmentObject private var model: AppModel
     @Binding var selection: [PhotosPickerItem]
+    let previewPlaybackAllowed: Bool
     let recordVideo: () -> Void
     @State private var isShowingLibrary = false
 
@@ -244,18 +248,24 @@ private struct UploadDock: View {
                     .transition(.move(edge: .bottom).combined(with: .opacity))
             }
 
-            GlassEffectContainer(spacing: 14) {
-                HStack(spacing: 10) {
+            GlassEffectContainer(spacing: 8) {
+                HStack(spacing: 12) {
                     if let upload = model.upload {
-                        GlassProgressPill(upload: upload)
+                        UploadStatusBar(
+                            upload: upload,
+                            isPreviewPlaybackAllowed: previewPlaybackAllowed && !isShowingLibrary
+                        )
 
                         Button(role: .cancel) { model.cancelUpload() } label: {
                             Image(systemName: "xmark")
-                                .frame(width: 32, height: 32)
+                                .frame(width: 44, height: 44)
                         }
                         .buttonStyle(.glass)
-                        .accessibilityLabel("キャンセル")
+                        .buttonBorderShape(.circle)
+                        .tint(.accentColor)
+                        .accessibilityLabel(L10n.string("upload.action.cancel"))
                     } else {
+                        Spacer(minLength: 0)
                         Menu {
                             Button(
                                 L10n.string("camera.source.record"),

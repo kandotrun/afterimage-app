@@ -21,14 +21,16 @@ final class BackgroundUploadStateTests: XCTestCase {
     private func makeItem(
         plan: UploadPlan? = nil,
         completedParts: Set<Int> = [],
-        transferComplete: Bool = false
+        transferComplete: Bool = false,
+        mediaURL: URL = URL(fileURLWithPath: "/tmp/test.mov"),
+        contentType: String = "video/quicktime"
     ) -> BackgroundUploadState.Item {
         BackgroundUploadState.Item(
             assetID: "asset-1",
             filename: "test.mov",
-            mediaURL: URL(fileURLWithPath: "/tmp/test.mov"),
+            mediaURL: mediaURL,
             thumbnailURL: URL(fileURLWithPath: "/tmp/test.jpg"),
-            contentType: "video/quicktime",
+            contentType: contentType,
             byteSize: 15_000_000,
             plan: plan ?? makePlan(),
             completedParts: completedParts,
@@ -109,6 +111,52 @@ final class BackgroundUploadStateTests: XCTestCase {
             currentIndex: 1
         )
         XCTAssertTrue(state.allComplete)
+    }
+
+    func testCurrentPreviewDescriptorKeepsUploadGenerationAndStagedVideoIdentity() throws {
+        let state = BackgroundUploadState(
+            generationID: generationID,
+            baseURL: URL(string: "https://afterimage.2-38.com")!,
+            activityID: nil,
+            items: [makeItem()],
+            currentIndex: 0
+        )
+
+        let preview = try XCTUnwrap(state.currentPreviewDescriptor)
+
+        XCTAssertEqual(preview.generationID, generationID)
+        XCTAssertEqual(preview.assetID, "asset-1")
+        XCTAssertEqual(preview.mediaURL, URL(fileURLWithPath: "/tmp/test.mov"))
+        XCTAssertEqual(preview.contentType, "video/quicktime")
+    }
+
+    func testCurrentPreviewDescriptorRejectsCancelledNonVideoAndRemoteMedia() {
+        let cancelled = BackgroundUploadState(
+            generationID: generationID,
+            baseURL: URL(string: "https://afterimage.2-38.com")!,
+            activityID: nil,
+            items: [makeItem()],
+            currentIndex: 0,
+            cancellationRequested: true
+        )
+        let image = BackgroundUploadState(
+            generationID: generationID,
+            baseURL: URL(string: "https://afterimage.2-38.com")!,
+            activityID: nil,
+            items: [makeItem(contentType: "image/heic")],
+            currentIndex: 0
+        )
+        let remote = BackgroundUploadState(
+            generationID: generationID,
+            baseURL: URL(string: "https://afterimage.2-38.com")!,
+            activityID: nil,
+            items: [makeItem(mediaURL: URL(string: "https://uploads.example.com/video.mov")!)],
+            currentIndex: 0
+        )
+
+        XCTAssertNil(cancelled.currentPreviewDescriptor)
+        XCTAssertNil(image.currentPreviewDescriptor)
+        XCTAssertNil(remote.currentPreviewDescriptor)
     }
 
     func testMultipartProgressTrackingRoundTrip() throws {

@@ -31,6 +31,13 @@ const apiModels = read("ios/Sources/Models/APIModels.swift");
 const mediaImporter = read("ios/Sources/Import/MediaImporter.swift");
 const backgroundUploadManager = read("ios/Sources/Upload/BackgroundUploadManager.swift");
 const appRoot = read("ios/Sources/App/afterimageApp.swift");
+const uploadPreviewPlayer = (() => {
+  try {
+    return read("ios/Sources/Features/Timeline/UploadPreviewPlayer.swift");
+  } catch {
+    return "";
+  }
+})();
 const privacy = read("ios/Resources/PrivacyInfo.xcprivacy");
 const login = read("ios/Sources/Features/Auth/LoginView.swift");
 const appIconContents = read("ios/Resources/Assets.xcassets/AppIcon.appiconset/Contents.json");
@@ -189,6 +196,61 @@ assert.match(
   timeline,
   /\.photosPicker\([\s\S]*?isPresented:\s*\$isShowingLibrary[\s\S]*?photoLibrary:\s*\.shared\(\)[\s\S]*?\)/,
   "media picker must be presented outside the menu and provide stable photo library item identifiers",
+);
+assert.match(
+  timeline,
+  /if\s+let\s+upload\s*=\s*model\.upload[\s\S]*UploadStatusBar\([\s\S]*?upload:\s*upload,[\s\S]*?isPreviewPlaybackAllowed:/,
+  "active imports and uploads must use the bottom upload status bar",
+);
+assert.match(
+  uploadPreviewPlayer,
+  /AVQueuePlayer[\s\S]*AVPlayerLooper/,
+  "the upload preview must loop the staged local video without controls",
+);
+assert.match(
+  uploadPreviewPlayer,
+  /player\.isMuted\s*=\s*true[\s\S]*player\.preventsDisplaySleepDuringVideoPlayback\s*=\s*false/,
+  "the upload preview must stay silent without preventing display sleep",
+);
+assert.match(
+  uploadPreviewPlayer,
+  /videoGravity\s*=\s*\.resizeAspectFill/,
+  "the 16:9 upload preview must crop aspect-fill",
+);
+assert.match(
+  uploadPreviewPlayer,
+  /FileManager\.default\.fileExists\(atPath:\s*preview\.mediaURL\.path\)[\s\S]*isPrepared\s*=\s*true/,
+  "a missing staged file must keep the preview placeholder visible",
+);
+assert.match(
+  uploadPreviewPlayer,
+  /func\s+stop\(\)[\s\S]*looper\?\.disableLooping\(\)[\s\S]*looper\s*=\s*nil[\s\S]*player\.removeAllItems\(\)/,
+  "the upload preview must detach stale player items and loop observers",
+);
+assert.match(
+  backgroundUploadManager,
+  /struct\s+UploadPreviewDescriptor[\s\S]*generationID:\s*UUID[\s\S]*assetID:\s*String[\s\S]*mediaURL:\s*URL[\s\S]*contentType:\s*String/,
+  "the preview descriptor must bind staged media to its upload generation and asset",
+);
+assert.match(
+  backgroundUploadManager,
+  /var\s+currentPreviewDescriptor:\s*UploadPreviewDescriptor\?[\s\S]*!cancellationRequested[\s\S]*contentType\.hasPrefix\("video\/"\)[\s\S]*mediaURL\.isFileURL/,
+  "cancelled, non-video, and remote media must never become an upload preview",
+);
+assert.match(
+  uploadPreviewPlayer,
+  /@Environment\(\\\.scenePhase\)[\s\S]*@Environment\(\\\.accessibilityReduceMotion\)[\s\S]*scenePhase\s*==\s*\.active/,
+  "the upload preview must stop decoding while inactive and honor Reduce Motion",
+);
+assert.match(
+  timeline,
+  /UploadDock\([\s\S]*previewPlaybackAllowed:[\s\S]*cameraRoute\s*==\s*nil[\s\S]*!isShowingMemorySearch[\s\S]*!isShowingAIConnection/,
+  "covered timeline surfaces must pause the upload preview",
+);
+assert.match(
+  appModel,
+  /preview:\s*manager\.currentPreviewDescriptor/,
+  "a relaunched background upload must restore its generation-scoped preview descriptor",
 );
 assert.match(
   timeline,

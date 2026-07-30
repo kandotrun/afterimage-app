@@ -5,6 +5,13 @@ struct BackgroundUploadContext: Sendable {
     let bearerToken: String
 }
 
+struct UploadPreviewDescriptor: Equatable, Sendable {
+    let generationID: UUID
+    let assetID: String
+    let mediaURL: URL
+    let contentType: String
+}
+
 /// Persistent, secret-free state for an in-flight background upload.
 /// The bearer session remains in Keychain and is never written here.
 struct BackgroundUploadState: Codable, Sendable {
@@ -33,6 +40,19 @@ struct BackgroundUploadState: Codable, Sendable {
     var currentItem: Item? {
         guard items.indices.contains(currentIndex) else { return nil }
         return items[currentIndex]
+    }
+
+    var currentPreviewDescriptor: UploadPreviewDescriptor? {
+        guard !cancellationRequested,
+              let item = currentItem,
+              item.contentType.hasPrefix("video/"),
+              item.mediaURL.isFileURL else { return nil }
+        return UploadPreviewDescriptor(
+            generationID: generationID,
+            assetID: item.assetID,
+            mediaURL: item.mediaURL,
+            contentType: item.contentType
+        )
     }
 
     var allComplete: Bool {
@@ -304,6 +324,10 @@ final class BackgroundUploadManager: NSObject, @unchecked Sendable {
 
     var hasPendingUpload: Bool {
         lock.withLock { state != nil }
+    }
+
+    var currentPreviewDescriptor: UploadPreviewDescriptor? {
+        lock.withLock { state?.currentPreviewDescriptor }
     }
 
     var requiresExplicitRetry: Bool {
