@@ -766,6 +766,13 @@ export function verifyBackendWorkflow(source) {
   const jobs = workflow.jobs && typeof workflow.jobs === "object"
     ? workflow.jobs
     : {};
+  const check = jobs.check;
+  if (!check || typeof check !== "object" || Array.isArray(check)) {
+    failures.push(failure(
+      "ci.backend.check-job",
+      "backend workflowにproduction deployの前提となるcheck jobが必要です。",
+    ));
+  }
   const deploy = jobs.deploy;
   if (!deploy || typeof deploy !== "object" || Array.isArray(deploy)) {
     failures.push(failure(
@@ -775,53 +782,102 @@ export function verifyBackendWorkflow(source) {
     return failures;
   }
 
-  const needs = Array.isArray(deploy.needs) ? deploy.needs : [deploy.needs];
+  const needs = Array.isArray(deploy.needs)
+    ? deploy.needs
+    : deploy.needs ? [deploy.needs] : [];
   if (!needs.includes("check")) {
     failures.push(failure(
       "ci.backend.needs",
       "production deploy jobはcheck jobの成功後に実行してください。",
     ));
   }
+  if (deploy["continue-on-error"] === true) {
+    failures.push(failure(
+      "ci.backend.continue-on-error",
+      "production deploy jobでcontinue-on-errorを有効にしないでください。",
+    ));
+  }
 
-  const condition = String(deploy.if ?? "");
-  if (!condition.includes("github.ref == 'refs/heads/main'")
-      || !condition.includes("github.event_name == 'push'")
-      || !condition.includes("github.event_name == 'workflow_dispatch'")) {
+  const condition = String(deploy.if ?? "")
+    .replace(/\$\{\{|\}\}/g, "")
+    .replace(/\s+/g, " ")
+    .trim();
+  const expectedCondition = "github.ref == 'refs/heads/main' && (github.event_name == 'push' || github.event_name == 'workflow_dispatch')";
+  if (condition !== expectedCondition
+      || /\b(?:always|failure|cancelled)\s*\(/.test(condition)) {
     failures.push(failure(
       "ci.backend.main-gate",
-      "production deployはmainのtrusted pushまたはworkflow_dispatchだけに制限してください。",
+      "production deployはcheck成功後、mainのtrusted pushまたはworkflow_dispatchだけに制限してください。",
     ));
   }
 
   const steps = Array.isArray(deploy.steps) ? deploy.steps : [];
-  const shell = steps
-    .map((step) => step && typeof step.run === "string" ? step.run : "")
-    .join("\n");
-  if (!source.includes("${{ secrets.CLOUDFLARE_API_TOKEN }}")) {
-    failures.push(failure(
-      "ci.backend.cloudflare-auth",
-      "production deployにはCLOUDFLARE_API_TOKEN secretを明示的に渡してください。",
-    ));
-  }
-  if (!source.includes("${{ secrets.AFTERIMAGE_PRODUCTION_WRANGLER_CONFIG }}")) {
-    failures.push(failure(
-      "ci.backend.wrangler-config",
-      "production deployにはAFTERIMAGE_PRODUCTION_WRANGLER_CONFIG secretが必要です。",
-    ));
-  }
-  const deployIndex = shell.indexOf("scripts/deploy-backend-production.sh");
-  if (deployIndex < 0) {
+  const deployStepIndexes = steps
+    .map((step, index) => step && typeof step.run === "string"
+      && step.run.includes("scripts/deploy-backend-production.sh") ? index : -1)
+    .filter((index) => index >= 0);
+  if (deployStepIndexes.length !== 1) {
     failures.push(failure(
       "ci.backend.script",
-      "repo管理のscripts/deploy-backend-production.shをproduction deployで使ってください。",
+      "production deploy jobではrepo管理のscripts/deploy-backend-production.shを1回だけ使ってください。",
     ));
   }
-  if (!shell.includes("backend/wrangler.jsonc")
-      || !shell.includes("trap")
-      || !shell.includes("rm -f backend/wrangler.jsonc")) {
+  const deployStepIndex = deployStepIndexes[0] ?? -1;
+  const deployStep = deployStepIndex >= 0 ? steps[deployStepIndex] : undefined;
+  const deployRun = typeof deployStep?.run === "string" ? deployStep.run : "";
+  const deployEnv = deployStep?.env && typeof deployStep.env === "object"
+    ? deployStep.env
+    : {};
+  const cloudflareSecret = "${{ secrets.CLOUDFLARE_API_TOKEN }}";
+  const configSecret = "${{ secrets.AFTERIMAGE_PRODUCTION_WRANGLER_CONFIG }}";
+  if (deployEnv.CLOUDFLARE_API_TOKEN !== cloudflareSecret) {
+    failures.push(failure(
+      "ci.backend.cloudflare-auth",
+      "production deploy step自身にCLOUDFLARE_API_TOKEN secretを渡してください。",
+    ));
+  }
+  if (deployEnv.AFTERIMAGE_PRODUCTION_WRANGLER_CONFIG !== configSecret) {
+    failures.push(failure(
+      "ci.backend.wrangler-config",
+      "production deploy step自身にAFTERIMAGE_PRODUCTION_WRANGLER_CONFIG secretを渡してください。",
+    ));
+  }
+
+  const configWrite = "printf '%s' \"$AFTERIMAGE_PRODUCTION_WRANGLER_CONFIG\" > \"$CONFIG_PATH\"";
+  const cleanupTrap = "trap cleanup EXIT";
+  const configIndex = deployRun.indexOf(configWrite);
+  const cleanupIndex = deployRun.indexOf(cleanupTrap);
+  const scriptIndex = deployRun.indexOf("scripts/deploy-backend-production.sh");
+  const configSafetyMarkers = [
+    "mktemp -d",
+    "${RUNNER_TEMP%/}/afterimage-wrangler.XXXXXX",
+    "rm -rf -- \"$CONFIG_DIR\"",
+    configWrite,
+    "export WRANGLER_CONFIG=\"$CONFIG_PATH\"",
+    "path.join(backendRoot, \"src\", \"index.ts\")",
+    "path.join(backendRoot, \"migrations\")",
+  ];
+  if (configIndex < 0
+      || cleanupIndex < 0
+      || cleanupIndex > configIndex
+      || scriptIndex < 0
+      || configIndex > scriptIndex
+      || configSafetyMarkers.some((marker) => !deployRun.includes(marker))
+      || deployRun.includes("> backend/wrangler.jsonc")) {
     failures.push(failure(
       "ci.backend.config-cleanup",
-      "一時的なproduction Wrangler configはdeploy後に必ず削除してください。",
+      "production Wrangler configはRUNNER_TEMPに作成し、path検証付きcleanupをwrite前に登録してからrollout scriptへ渡してください。",
+    ));
+  }
+
+  const otherShell = steps
+    .filter((step, index) => index !== deployStepIndex && typeof step?.run === "string")
+    .map((step) => step.run)
+    .join("\n");
+  if (/\bwrangler\s+(?:deploy|d1\s+migrations)\b/.test(otherShell)) {
+    failures.push(failure(
+      "ci.backend.direct-rollout",
+      "production Wrangler rolloutはdeploy jobへ直書きせず、repo管理scriptへ集約してください。",
     ));
   }
   return failures;

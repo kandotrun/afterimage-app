@@ -250,18 +250,51 @@ test("backend workflow はcheck成功後のmain pushだけでproduction deploy�
     "          AFTERIMAGE_PRODUCTION_WRANGLER_CONFIG: ${{ secrets.AFTERIMAGE_PRODUCTION_WRANGLER_CONFIG }}",
     "        run: |",
     "          set -euo pipefail",
-    "          printf '%s' \"$AFTERIMAGE_PRODUCTION_WRANGLER_CONFIG\" > backend/wrangler.jsonc",
-    "          trap 'rm -f backend/wrangler.jsonc' EXIT",
+    "          CONFIG_DIR=\"$(mktemp -d \"${RUNNER_TEMP%/}/afterimage-wrangler.XXXXXX\")\"",
+    "          CONFIG_PATH=\"$CONFIG_DIR/wrangler.jsonc\"",
+    "          cleanup() {",
+    "            if [[ \"$CONFIG_DIR\" == \"${RUNNER_TEMP%/}\"/afterimage-wrangler.* ]]; then",
+    "              rm -rf -- \"$CONFIG_DIR\"",
+    "            fi",
+    "          }",
+    "          trap cleanup EXIT",
+    "          printf '%s' \"$AFTERIMAGE_PRODUCTION_WRANGLER_CONFIG\" > \"$CONFIG_PATH\"",
+    "          node --input-type=module - \"$CONFIG_PATH\" \"$GITHUB_WORKSPACE/backend\" <<'NODE'",
+    "          const mainPath = path.join(backendRoot, \"src\", \"index.ts\");",
+    "          const migrationsPath = path.join(backendRoot, \"migrations\");",
+    "          NODE",
+    "          export WRANGLER_CONFIG=\"$CONFIG_PATH\"",
     "          ./scripts/deploy-backend-production.sh",
   ].join("\n");
   const unsafe = safe.replace(
     "github.event_name == 'push' || github.event_name == 'workflow_dispatch'",
     "github.event_name == 'pull_request'",
   );
+  const always = safe.replace(
+    "if: github.ref == 'refs/heads/main' && (github.event_name == 'push' || github.event_name == 'workflow_dispatch')",
+    "if: always() && github.ref == 'refs/heads/main' && (github.event_name == 'push' || github.event_name == 'workflow_dispatch')",
+  );
+  const missingCheck = safe.replace("  check:\n", "  verify:\n");
+  const configWriteLine = "          printf '%s' \"$AFTERIMAGE_PRODUCTION_WRANGLER_CONFIG\" > \"$CONFIG_PATH\"";
+  const configAfterDeploy = safe
+    .replace(`${configWriteLine}\n`, "")
+    .replace(
+      "          ./scripts/deploy-backend-production.sh",
+      `          ./scripts/deploy-backend-production.sh\n${configWriteLine}`,
+    );
 
   assert.deepEqual(verifyBackendWorkflow(safe), []);
   assert.ok(
     verifyBackendWorkflow(unsafe).some((failure) => failure.id === "ci.backend.main-gate"),
+  );
+  assert.ok(
+    verifyBackendWorkflow(always).some((failure) => failure.id === "ci.backend.main-gate"),
+  );
+  assert.ok(
+    verifyBackendWorkflow(missingCheck).some((failure) => failure.id === "ci.backend.check-job"),
+  );
+  assert.ok(
+    verifyBackendWorkflow(configAfterDeploy).some((failure) => failure.id === "ci.backend.config-cleanup"),
   );
 });
 
