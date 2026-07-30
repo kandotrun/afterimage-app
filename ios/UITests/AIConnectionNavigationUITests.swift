@@ -19,6 +19,7 @@ final class AIConnectionNavigationUITests: XCTestCase {
             "-AppleLocale", "ja_JP",
             "-afterimageApiBase", "http://127.0.0.1:9",
             "-afterimageDevSession", "qa-session",
+            "-afterimageDevAccountID", "qa-user",
         ]
         app.launch()
 
@@ -29,7 +30,12 @@ final class AIConnectionNavigationUITests: XCTestCase {
             sessionAlert.buttons["閉じる"].tap()
         }
 
-        app.buttons["アカウント"].tap()
+        let accountMenu = app.buttons["アカウント"]
+        XCTAssertTrue(accountMenu.waitForExistence(timeout: 3))
+        accountMenu.tap()
+        let settings = app.buttons["設定"]
+        XCTAssertTrue(settings.waitForExistence(timeout: 3))
+        settings.tap()
 
         XCTAssertTrue(app.navigationBars["設定"].waitForExistence(timeout: 3))
         XCTAssertTrue(app.staticTexts["外部AI処理への同意"].exists)

@@ -298,7 +298,7 @@ final class AppModel: ObservableObject {
     #if DEBUG
     /// Debug-only: enter the timeline with an externally issued session token
     /// (e.g. the local seed script) so screenshots can be taken without Apple sign-in.
-    func applyDevSessionToken(_ token: String) async {
+    func applyDevSessionToken(_ token: String, accountID injectedAccountID: String? = nil) async {
         guard !didBootstrap else { return }
         didBootstrap = true
         isBootstrapping = false
@@ -311,12 +311,18 @@ final class AppModel: ObservableObject {
         currentSession = session
         await api.setSession(session)
         do {
-            let user = try await api.currentUser()
+            let accountID: String
+            if let injectedAccountID,
+               !injectedAccountID.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                accountID = injectedAccountID
+            } else {
+                accountID = try await api.currentUser().id
+            }
             let resolvedSession = StoredSession(
                 token: token,
                 context: AuthSessionContext(
                     generationID: session.context.generationID,
-                    accountID: user.id
+                    accountID: accountID
                 )
             )
             await authGeneration.unbind(ifCurrent: session.context)
@@ -324,7 +330,7 @@ final class AppModel: ObservableObject {
             currentSession = resolvedSession
             await api.setSession(resolvedSession)
             guard await beginAuthGeneration(
-                ownerID: user.id,
+                ownerID: accountID,
                 cleanupContext: nil,
                 cleanupPendingUpload: false
             ) else { return }

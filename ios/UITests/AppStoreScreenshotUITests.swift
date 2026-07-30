@@ -7,8 +7,7 @@ final class AppStoreScreenshotUITests: XCTestCase {
         let environment = ProcessInfo.processInfo.environment
         guard let outputPath = environment["AFTERIMAGE_SCREENSHOT_OUTPUT_DIR"],
               !outputPath.isEmpty else {
-            XCTFail("AFTERIMAGE_SCREENSHOT_OUTPUT_DIR is required")
-            return
+            throw XCTSkip("Screenshot capture runs only with AFTERIMAGE_SCREENSHOT_OUTPUT_DIR")
         }
         let outputDirectory = URL(fileURLWithPath: outputPath, isDirectory: true)
         try FileManager.default.createDirectory(

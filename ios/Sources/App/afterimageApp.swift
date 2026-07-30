@@ -96,7 +96,17 @@ struct RootView: View {
         #if DEBUG
         if let index = arguments.firstIndex(of: "-afterimageDevSession"),
            arguments.indices.contains(index + 1) {
-            await model.applyDevSessionToken(arguments[index + 1])
+            let accountID: String?
+            if let accountIndex = arguments.firstIndex(of: "-afterimageDevAccountID"),
+               arguments.indices.contains(accountIndex + 1) {
+                accountID = arguments[accountIndex + 1]
+            } else {
+                accountID = nil
+            }
+            await model.applyDevSessionToken(
+                arguments[index + 1],
+                accountID: accountID
+            )
             return
         }
         #endif
