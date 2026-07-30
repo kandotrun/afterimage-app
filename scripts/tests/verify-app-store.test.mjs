@@ -294,6 +294,12 @@ test("backend workflow はcheck成功後のmain pushだけでproduction deploy�
       "          ./scripts/deploy-backend-production.sh",
       `          ./scripts/deploy-backend-production.sh\n${configWriteLine}`,
     );
+  const commentConfigSpoof = safe
+    .replace(`${configWriteLine}\n`, `          # ${configWriteLine}\n`)
+    .replace(
+      "          ./scripts/deploy-backend-production.sh",
+      `          ./scripts/deploy-backend-production.sh\n${configWriteLine}`,
+    );
   const noWorkflowDispatch = safe.replace("  workflow_dispatch:\n", "");
   const missingBackendPath = safe.replace("      - backend/**\n", "");
   const weakCheck = safe.replace("      - run: npm run check", "      - run: true");
@@ -305,9 +311,33 @@ test("backend workflow はcheck成功後のmain pushだけでproduction deploy�
     "          ./scripts/deploy-backend-production.sh",
     "          npx wrangler deploy --config \"$WRANGLER_CONFIG\"\n          ./scripts/deploy-backend-production.sh",
   );
+  const splitDirectDeploy = safe.replace(
+    "          ./scripts/deploy-backend-production.sh",
+    [
+      "          npx wrangler \\",
+      "          deploy --config \"$WRANGLER_CONFIG\"",
+      "          ./scripts/deploy-backend-production.sh",
+    ].join("\n"),
+  );
   const alwaysDeployStep = safe.replace(
     "      - name: Deploy backend to production\n",
     "      - name: Deploy backend to production\n        if: always()\n",
+  );
+  const deployStepContinueOnError = safe.replace(
+    "      - name: Deploy backend to production\n",
+    "      - name: Deploy backend to production\n        continue-on-error: ${{ inputs.ignore }}\n",
+  );
+  const checkStepContinueOnError = safe.replace(
+    "      - run: npm run check\n",
+    "      - run: npm run check\n        continue-on-error: ${{ inputs.ignore }}\n",
+  );
+  const bracketJobSecret = safe.replace(
+    "  deploy:\n",
+    "  deploy:\n    env:\n      CLOUDFLARE_API_TOKEN: ${{ secrets['CLOUDFLARE_API_TOKEN'] }}\n",
+  );
+  const bracketCheckSecret = safe.replace(
+    "      - run: npm run check\n",
+    "      - run: npm run check\n        env:\n          CLOUDFLARE_API_TOKEN: ${{ secrets['CLOUDFLARE_API_TOKEN'] }}\n",
   );
 
   assert.deepEqual(verifyBackendWorkflow(safe), []);
@@ -322,6 +352,9 @@ test("backend workflow はcheck成功後のmain pushだけでproduction deploy�
   );
   assert.ok(
     verifyBackendWorkflow(configAfterDeploy).some((failure) => failure.id === "ci.backend.config-cleanup"),
+  );
+  assert.ok(
+    verifyBackendWorkflow(commentConfigSpoof).some((failure) => failure.id === "ci.backend.config-cleanup"),
   );
   assert.ok(verifyBackendWorkflow(noWorkflowDispatch).some((failure) =>
     failure.id === "ci.backend.workflow-dispatch"
@@ -338,8 +371,23 @@ test("backend workflow はcheck成功後のmain pushだけでproduction deploy�
   assert.ok(verifyBackendWorkflow(directDeploy).some((failure) =>
     failure.id === "ci.backend.direct-rollout"
   ));
+  assert.ok(verifyBackendWorkflow(splitDirectDeploy).some((failure) =>
+    failure.id === "ci.backend.direct-rollout"
+  ));
   assert.ok(verifyBackendWorkflow(alwaysDeployStep).some((failure) =>
     failure.id === "ci.backend.step-gate"
+  ));
+  assert.ok(verifyBackendWorkflow(deployStepContinueOnError).some((failure) =>
+    failure.id === "ci.backend.step-gate"
+  ));
+  assert.ok(verifyBackendWorkflow(checkStepContinueOnError).some((failure) =>
+    failure.id === "ci.backend.check-gate"
+  ));
+  assert.ok(verifyBackendWorkflow(bracketJobSecret).some((failure) =>
+    failure.id === "ci.backend.secret-scope"
+  ));
+  assert.ok(verifyBackendWorkflow(bracketCheckSecret).some((failure) =>
+    failure.id === "ci.backend.secret-scope"
   ));
 });
 
@@ -411,9 +459,24 @@ wrangler deploy --config "$WRANGLER_CONFIG" --keep-vars --message "production"
     "wrangler d1 migrations apply \"$D1_DATABASE\" --remote --config \"$WRANGLER_CONFIG\"",
     "wrangler d1 migrations list \"$D1_DATABASE\" --config \"$WRANGLER_CONFIG\"\nwrangler d1 migrations apply \"$D1_DATABASE\" --remote --config \"$WRANGLER_CONFIG\"",
   );
+  const splitMigration = safe.replace(
+    "wrangler d1 migrations apply \"$D1_DATABASE\" --remote --config \"$WRANGLER_CONFIG\"",
+    [
+      "wrangler d1 \\",
+      "migrations apply \"$D1_DATABASE\" --remote --config \"$WRANGLER_CONFIG\"",
+    ].join("\n"),
+  );
   const finalDryRun = safe.replace(
     "--keep-vars --message \"production\"",
     "--dry-run --keep-vars --message \"production\"",
+  );
+  const swallowedMigration = safe.replace(
+    "wrangler d1 migrations apply \"$D1_DATABASE\" --remote --config \"$WRANGLER_CONFIG\"",
+    "wrangler d1 migrations apply \"$D1_DATABASE\" --remote --config \"$WRANGLER_CONFIG\" || true",
+  );
+  const swallowedFinal = safe.replace(
+    "wrangler deploy --config \"$WRANGLER_CONFIG\" --keep-vars --message \"production\"",
+    "wrangler deploy --config \"$WRANGLER_CONFIG\" --keep-vars --message \"production\" || true",
   );
 
   assert.deepEqual(verifyBackendRolloutScript(safe), []);
@@ -429,8 +492,15 @@ wrangler deploy --config "$WRANGLER_CONFIG" --keep-vars --message "production"
   assert.ok(verifyBackendRolloutScript(missingListRemote).some((failure) =>
     failure.id === "backend.rollout.remote"
   ));
+  assert.deepEqual(verifyBackendRolloutScript(splitMigration), []);
   assert.ok(verifyBackendRolloutScript(finalDryRun).some((failure) =>
     failure.id === "backend.rollout.final-deploy"
+  ));
+  assert.ok(verifyBackendRolloutScript(swallowedMigration).some((failure) =>
+    failure.id === "backend.rollout.error-handling"
+  ));
+  assert.ok(verifyBackendRolloutScript(swallowedFinal).some((failure) =>
+    failure.id === "backend.rollout.error-handling"
   ));
 });
 

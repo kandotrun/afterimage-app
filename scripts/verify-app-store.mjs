@@ -811,9 +811,10 @@ export function verifyBackendWorkflow(source) {
       ));
     }
     if (Object.hasOwn(check, "if")
-        || check["continue-on-error"] === true
-        || Object.hasOwn(checkCommand ?? {}, "if")
-        || checkCommand?.["continue-on-error"] === true) {
+        || Object.hasOwn(check, "continue-on-error")
+        || checkSteps.some((step) =>
+          step && typeof step === "object"
+            && (Object.hasOwn(step, "if") || Object.hasOwn(step, "continue-on-error")))) {
       failures.push(failure(
         "ci.backend.check-gate",
         "check jobとnpm run check stepをconditionalまたはcontinue-on-errorで無効化しないでください。",
@@ -838,7 +839,7 @@ export function verifyBackendWorkflow(source) {
       "production deploy jobはcheck jobの成功後に実行してください。",
     ));
   }
-  if (deploy["continue-on-error"] === true) {
+  if (Object.hasOwn(deploy, "continue-on-error")) {
     failures.push(failure(
       "ci.backend.continue-on-error",
       "production deploy jobでcontinue-on-errorを有効にしないでください。",
@@ -874,8 +875,13 @@ export function verifyBackendWorkflow(source) {
   const deployRun = typeof deployStep?.run === "string" ? deployStep.run : "";
   const secretReferences = (value) => {
     const serialized = JSON.stringify(value ?? "");
-    return [...serialized.matchAll(/\$\{\{\s*secrets\.([A-Za-z0-9_]+)\s*\}\}/g)]
-      .map((match) => match[1]);
+    const expressions = [...serialized.matchAll(/\$\{\{([^}]*)\}\}/g)];
+    return expressions.flatMap(([, expression]) => {
+      if (!/\bsecrets\b/.test(expression)) return [];
+      const dotReference = expression.match(/\bsecrets\.([A-Za-z0-9_]+)/);
+      const bracketReference = expression.match(/\bsecrets\s*\[\s*[\"']([A-Za-z0-9_]+)[\"']\s*\]/);
+      return [dotReference?.[1] ?? bracketReference?.[1] ?? "__unrecognized_secret_reference__"];
+    });
   };
   const expectedSecretReferences = [
     "AFTERIMAGE_PRODUCTION_WRANGLER_CONFIG",
@@ -900,11 +906,10 @@ export function verifyBackendWorkflow(source) {
     ));
   }
   const weakeningStep = steps.find((step) =>
-    typeof step?.if === "string"
-      && /\b(?:always|failure|cancelled)\s*\(/.test(step.if)
+    step && typeof step === "object"
+      && (Object.hasOwn(step, "if") || Object.hasOwn(step, "continue-on-error"))
   );
-  if (Object.hasOwn(deployStep ?? {}, "if")
-      || weakeningStep) {
+  if (weakeningStep) {
     failures.push(failure(
       "ci.backend.step-gate",
       "production deploy job/secret-bearing stepにconditional gateを追加しないでください。",
@@ -982,8 +987,12 @@ export function verifyBackendWorkflow(source) {
 
   const directRollout = steps
     .filter((step) => typeof step?.run === "string")
-    .map((step) => step.run)
-    .find((run) => /\b(?:npx\s+)?wrangler\s+(?:deploy|d1\s+migrations)\b/.test(run));
+    .map((step) => normalizedLines(step.run)
+      .map((line) => line.replace(/^\s*#.*$/, "").replace(/\s+#.*$/, "").trim())
+      .filter(Boolean)
+      .join("\n")
+      .replace(/\\\n/g, " "))
+    .find((run) => /\bwrangler\s+(?:deploy|d1\s+migrations)\b/.test(run));
   if (directRollout) {
     failures.push(failure(
       "ci.backend.direct-rollout",
@@ -999,9 +1008,15 @@ export function verifyBackendRolloutScript(source) {
     .map((line) => line.replace(/^\s*#.*$/, "").replace(/\s+#.*$/, "").trim())
     .filter(Boolean);
   const executable = shellLines.join("\n").replace(/\\\n/g, " ");
-  const wranglerCommands = executable
-    .split("\n")
-    .filter((line) => /\b(?:npx\s+)?wrangler\s+(?:deploy|d1\s+migrations)\b/.test(line));
+  const commandPattern = /(?:^|[\n;(|])\s*(?:(?:[A-Za-z_][A-Za-z0-9_]*=\S+)\s+)*(?:npx\s+)?wrangler\s+(?:deploy|d1\s+migrations)\b[^;\n)]*/g;
+  const wranglerCommands = [...executable.matchAll(commandPattern)]
+    .map(([command]) => command.replace(/^[\s\n;(|]+/, "").trim());
+  if (wranglerCommands.some((command) => /\|\|\s*(?:true|:|exit\s+0)\b/.test(command))) {
+    failures.push(failure(
+      "backend.rollout.error-handling",
+      "maintenance、migration、final deployの失敗を|| true等で握りつぶさないでください。",
+    ));
+  }
   const migrationCommands = wranglerCommands
     .filter((line) => /\b(?:npx\s+)?wrangler\s+d1\s+migrations\s+(?:list|apply)\b/.test(line));
   const migrationApplyCommand = migrationCommands.find((line) =>
