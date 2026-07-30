@@ -99,7 +99,15 @@ struct MemoryDetailView: View {
                                     )
                                 }
                             }
-                            .disabled(isUpdatingAgentAccess)
+                            .disabled(
+                                isUpdatingAgentAccess
+                                    || (
+                                        !currentAsset.agentAccessEnabled
+                                            && !AIConsentPolicy.canEnableAgentAccess(
+                                                consent: model.aiConsent
+                                            )
+                                    )
+                            )
                             .accessibilityLabel("AIエージェントに共有")
                             .accessibilityValue(currentAsset.agentAccessEnabled ? "オン" : "オフ")
                         }

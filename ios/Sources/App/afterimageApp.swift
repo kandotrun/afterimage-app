@@ -37,22 +37,30 @@ struct RootView: View {
             Task { await model.resumeBackgroundUploadIfNeeded(retryAfterFailure: false) }
         }
         .alert(item: $model.notice) { notice in
-            if model.backgroundUploadNeedsRetry {
+            if model.backgroundUploadNeedsRetry || model.localCleanupNeedsRetry {
                 return Alert(
                     title: Text(notice.title),
                     message: Text(notice.message),
                     primaryButton: .default(Text(L10n.string("action.retry"))) {
-                        Task { await model.retryBackgroundUpload() }
+                        Task {
+                            if model.localCleanupNeedsRetry {
+                                await model.retryLocalCleanup()
+                            } else {
+                                await model.retryBackgroundUpload()
+                            }
+                        }
                     },
                     secondaryButton: .cancel(Text(L10n.string("action.cancel"))) {
-                        model.cancelUpload()
+                        if !model.localCleanupNeedsRetry {
+                            model.cancelUpload()
+                        }
                     }
                 )
             }
             return Alert(
                 title: Text(notice.title),
                 message: Text(notice.message),
-                dismissButton: .default(Text("閉じる"))
+                dismissButton: .default(Text(L10n.string("action.close")))
             )
         }
     }

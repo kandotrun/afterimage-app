@@ -6,6 +6,69 @@ import { fileURLToPath } from "node:url";
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const read = (relative) => readFileSync(path.join(root, relative), "utf8");
+const optionalRead = (relative) => {
+  try {
+    return read(relative);
+  } catch {
+    return "";
+  }
+};
+
+function declaration(source, signature) {
+  const start = source.indexOf(signature);
+  assert.notEqual(start, -1, `missing declaration: ${signature}`);
+  const open = source.indexOf("{", start + signature.length);
+  assert.notEqual(open, -1, `missing declaration body: ${signature}`);
+  let depth = 0;
+  let mode = "code";
+  let escaped = false;
+  for (let index = open; index < source.length; index += 1) {
+    const character = source[index];
+    const next = source[index + 1];
+    if (mode === "line-comment") {
+      if (character === "\n") mode = "code";
+      continue;
+    }
+    if (mode === "block-comment") {
+      if (character === "*" && next === "/") {
+        mode = "code";
+        index += 1;
+      }
+      continue;
+    }
+    if (mode === "string") {
+      if (escaped) {
+        escaped = false;
+      } else if (character === "\\") {
+        escaped = true;
+      } else if (character === "\"") {
+        mode = "code";
+      }
+      continue;
+    }
+    if (character === "/" && next === "/") {
+      mode = "line-comment";
+      index += 1;
+      continue;
+    }
+    if (character === "/" && next === "*") {
+      mode = "block-comment";
+      index += 1;
+      continue;
+    }
+    if (character === "\"") {
+      mode = "string";
+      continue;
+    }
+    if (character === "{") depth += 1;
+    if (character === "}") {
+      depth -= 1;
+      if (depth === 0) return source.slice(start, index + 1);
+    }
+  }
+  assert.fail(`unterminated declaration: ${signature}`);
+}
+
 const project = read("ios/project.yml");
 const info = read("ios/Resources/Info.plist");
 const entitlements = read("ios/Resources/afterimage.entitlements");
@@ -40,6 +103,23 @@ const uploadPreviewPlayer = (() => {
 })();
 const privacy = read("ios/Resources/PrivacyInfo.xcprivacy");
 const login = read("ios/Sources/Features/Auth/LoginView.swift");
+const appleAuthorizationButton = optionalRead(
+  "ios/Sources/Features/Auth/ChallengeBoundAppleSignInButton.swift",
+);
+const appleAuthPolicy = optionalRead("ios/Sources/Security/AppleAuthRequestPolicy.swift");
+const authLifecycle = optionalRead("ios/Sources/Security/AuthGenerationGate.swift");
+const keychainSessionStore = read("ios/Sources/Security/KeychainSessionStore.swift");
+const aiConsentPolicy = optionalRead("ios/Sources/Privacy/AIConsentPolicy.swift");
+const accountDeletionCleanupStore = optionalRead(
+  "ios/Sources/Privacy/AccountDeletionCleanupStore.swift",
+);
+const postReminderScheduler = read(
+  "ios/Sources/Notifications/DailyPostReminderScheduler.swift",
+);
+const accountDeletionPolicy = optionalRead(
+  "ios/Sources/Features/Settings/AccountDeletionPolicy.swift",
+);
+const settings = optionalRead("ios/Sources/Features/Settings/SettingsView.swift");
 const appIconContents = read("ios/Resources/Assets.xcassets/AppIcon.appiconset/Contents.json");
 const brandMarkContents = read("ios/Resources/Assets.xcassets/BrandMark.imageset/Contents.json");
 const appIcon = readFileSync(
@@ -76,9 +156,17 @@ for (const category of [
   "NSPrivacyCollectedDataTypeEmailAddress",
   "NSPrivacyCollectedDataTypeUserID",
   "NSPrivacyCollectedDataTypePhotosorVideos",
+  "NSPrivacyCollectedDataTypePreciseLocation",
+  "NSPrivacyCollectedDataTypeAudioData",
+  "NSPrivacyCollectedDataTypeOtherUserContent",
 ]) {
   assert.ok(privacy.includes(category), `missing privacy declaration: ${category}`);
 }
+const userDefaultsAccess = privacy.match(
+  /<dict>\s*<key>NSPrivacyAccessedAPIType<\/key>\s*<string>NSPrivacyAccessedAPICategoryUserDefaults<\/string>\s*<key>NSPrivacyAccessedAPITypeReasons<\/key>\s*<array>([\s\S]*?)<\/array>\s*<\/dict>/,
+)?.[1];
+assert.ok(userDefaultsAccess, "missing UserDefaults required-reason declaration");
+assert.match(userDefaultsAccess, /<string>CA92\.1<\/string>/);
 assert.ok(!swift.includes("#available"), "iOS 26-only app must not carry legacy availability branches");
 assert.ok(!swift.includes("ultraThinMaterial"), "iOS 26-only app must not carry a Material fallback");
 assert.match(
@@ -366,14 +454,15 @@ assert.match(
   /func\s+retryBackgroundUpload\(\)\s+async[\s\S]*resumeBackgroundUploadIfNeeded\(retryAfterFailure:\s*true\)/,
   "only the explicit retry action may rearm a terminal upload",
 );
+const signOut = declaration(appModel, "func signOut() async");
 assert.match(
-  appModel,
-  /func\s+signOut\(\)\s+async[\s\S]*await\s+BackgroundUploadManager\.shared\.cancelAllAndWaitForCleanup\(\)[\s\S]*guard\s+cleanupSucceeded[\s\S]*revokeSession\(\)[\s\S]*clearLocalSession\(\)/,
+  signOut,
+  /await\s+BackgroundUploadManager\.shared\.cancelAllAndWaitForCleanup\(\)[\s\S]*guard\s+cleanupSucceeded[\s\S]*revokeSession\(\)[\s\S]*clearLocalSession/,
   "sign-out must not revoke or clear credentials before remote upload cleanup succeeds",
 );
 assert.match(
-  appModel,
-  /func\s+signOut\(\)\s+async[\s\S]*let\s+activeUploadTask\s*=\s*uploadTask[\s\S]*activeUploadTask\?\.cancel\(\)[\s\S]*await\s+activeUploadTask\.value[\s\S]*revokeSession\(\)/,
+  signOut,
+  /let\s+activeUploadTask\s*=\s*uploadTask[\s\S]*activeUploadTask\?\.cancel\(\)[\s\S]*await\s+activeUploadTask\.value[\s\S]*revokeSession\(\)/,
   "sign-out must await pre-handoff upload cancellation before revoking credentials",
 );
 assert.doesNotMatch(
@@ -386,10 +475,19 @@ assert.match(
   /if\s+didHandOff,\s*!wasCancelled,\s*BackgroundUploadManager\.shared\.requiresExplicitRetry\s*\{[\s\S]{0,160}?backgroundUploadNeedsRetry\s*=\s*true/,
   "an exhausted initial background upload must expose the explicit retry action",
 );
-assert.match(
+const scheduleAfterInspecting = declaration(
   backgroundUploadManager,
-  /scheduleAfterInspecting[\s\S]*guard\s+let\s+token\s*=\s*bearerToken\s*\?\?\s*\(try\?\s*KeychainSessionStore\(\)\.load\(\)\)\s+else\s*\{\s*return\s*\}/,
-  "replacement transfers must wait for Keychain bootstrap instead of failing without a bearer token",
+  "private func scheduleAfterInspecting(",
+);
+assert.match(
+  scheduleAfterInspecting,
+  /guard\s+let\s+session\s*=\s*storedSession\s*\?\?\s*\(try\?\s*KeychainSessionStore\(\)\.load\(\)\)/,
+  "replacement transfers must wait for Keychain bootstrap instead of failing without a session",
+);
+assert.match(
+  scheduleAfterInspecting,
+  /BackgroundUploadAuthorizationPolicy\.canUse\([\s\S]*owner:\s*state\.authContext,[\s\S]*current:\s*session\.context/,
+  "replacement transfers must reject credentials from another account context",
 );
 assert.match(
   backgroundUploadManager,
@@ -550,6 +648,153 @@ for (const symbol of [
 }
 
 assert.ok(!swift.includes("AVEncoderBitRateKey"), "audio must never be re-encoded");
+
+const appleBinding = declaration(appleAuthPolicy, "enum AppleAuthRequestPolicy");
+assert.match(appleBinding, /SHA256\.hash/);
+assert.match(appleBinding, /request\.nonce\s*=\s*binding\.hashedNonce/);
+assert.doesNotMatch(appleBinding, /UserDefaults|print\(|NSLog|Logger/);
+const appleChallengeModel = declaration(apiModels, "struct AppleAuthChallenge");
+assert.match(appleChallengeModel, /Decodable/);
+assert.doesNotMatch(appleChallengeModel, /\bCodable\b/);
+const appleAttemptState = declaration(appleAuthPolicy, "struct AppleAuthAttemptState");
+assert.match(appleAttemptState, /mutating\s+func\s+consume/);
+assert.match(appleAttemptState, /mutating\s+func\s+finish/);
+assert.doesNotMatch(appleAttemptState, /nonce:\s*String/);
+
+const appleButton = declaration(
+  appleAuthorizationButton,
+  "struct ChallengeBoundAppleSignInButton: View",
+);
+assert.match(appleButton, /SignInWithAppleButton/);
+assert.match(appleButton, /AppleAuthRequestPolicy\.configure/);
+assert.match(appleButton, /attemptState\.finish\(\)/);
+assert.match(login, /ChallengeBoundAppleSignInButton/);
+
+const apiChallenge = declaration(apiClient, "func appleAuthChallenge() async throws");
+assert.match(apiChallenge, /"\/v1\/auth\/apple\/challenge"/);
+const apiSignIn = declaration(apiClient, "func signIn(");
+assert.match(apiSignIn, /challengeId/);
+assert.match(apiSignIn, /"\/v1\/auth\/apple"/);
+const apiConsent = declaration(apiClient, "func aiConsent() async throws");
+assert.match(apiConsent, /"\/v1\/privacy\/ai"/);
+const apiUpdateConsent = declaration(apiClient, "func updateAIConsent(");
+assert.match(apiUpdateConsent, /"\/v1\/privacy\/ai"/);
+const apiDeleteAccount = declaration(apiClient, "func deleteAccount(");
+assert.match(apiDeleteAccount, /"\/v1\/account"/);
+assert.match(apiDeleteAccount, /authorizationCode/);
+
+const authGate = declaration(authLifecycle, "actor AuthGenerationGate");
+assert.match(authGate, /invalidatedGenerations/);
+assert.match(authGate, /terminationTasks/);
+assert.match(authGate, /terminatedGenerations/);
+assert.match(authGate, /guard\s+!invalidatedGenerations\.contains/);
+assert.match(authGate, /func\s+invalidate/);
+const sessionStore = declaration(keychainSessionStore, "final class KeychainSessionStore");
+const compareAndSwapClear = declaration(sessionStore, "func clear(ifCurrent");
+assert.match(compareAndSwapClear, /SessionCASPolicy\.canClear/);
+
+const retryPolicy = declaration(backgroundUploadManager, "enum BackgroundUploadRetryPolicy");
+assert.match(retryPolicy, /httpStatus\s*==\s*401[\s\S]*\.expireSession/);
+const transferFailure = declaration(
+  backgroundUploadManager,
+  "private func handleTransferFailure(",
+);
+assert.match(transferFailure, /case\s+\.expireSession/);
+assert.match(transferFailure, /AuthGenerationGate\.shared\.invalidate/);
+
+const consentPolicy = declaration(aiConsentPolicy, "enum AIConsentPolicy");
+assert.match(consentPolicy, /currentVersion/);
+assert.match(consentPolicy, /canTransferExternally/);
+assert.match(consentPolicy, /canEnableAgentAccess/);
+const settingsView = declaration(settings, "struct SettingsView: View");
+const updateAIConsent = declaration(appModel, "func updateAIConsent(");
+const setAgentAccess = declaration(appModel, "func setAgentAccess(");
+for (const consentBoundary of [
+  consentPolicy,
+  settingsView,
+  updateAIConsent,
+  setAgentAccess,
+]) {
+  assert.doesNotMatch(
+    consentBoundary,
+    /UserDefaults/,
+    "AI consent authority must remain server-backed",
+  );
+}
+const assetDecoding = declaration(apiModels, "extension Asset");
+assert.match(
+  assetDecoding,
+  /agentAccessEnabled\s*=\s*try[\s\S]*\?\?\s*false/,
+);
+
+const deletionPolicy = declaration(accountDeletionPolicy, "enum AccountDeletionPolicy");
+assert.match(deletionPolicy, /backendAccepted/);
+assert.match(deletionPolicy, /localCleanupFailed/);
+const deleteAccount = declaration(appModel, "func deleteAccount() async");
+assert.match(deleteAccount, /api\.deleteAccount\(authorizationCode:\s*authorizationCode\)/);
+assert.match(deleteAccount, /finishAcceptedAccountDeletionCleanup/);
+assert.match(deleteAccount, /clearLocalSession/);
+const reauthenticateAndDelete = declaration(
+  appModel,
+  "func reauthenticateAndDeleteAccount(",
+);
+assert.match(
+  reauthenticateAndDelete,
+  /api\.signIn\([\s\S]*identityToken:\s*identityToken,[\s\S]*challengeID:\s*challengeID/,
+);
+assert.match(
+  reauthenticateAndDelete,
+  /expectedAccountID[\s\S]*establishSession\([\s\S]*expectedAccountID:\s*expectedAccountID/,
+);
+assert.match(
+  reauthenticateAndDelete,
+  /pendingAccountDeletionAuthorizationCode\s*=\s*authorizationCode[\s\S]*deleteAccount\(\)/,
+);
+const acceptedDeletionCleanup = declaration(
+  appModel,
+  "private func finishAcceptedAccountDeletionCleanup(",
+);
+assert.match(acceptedDeletionCleanup, /discardAfterAccountDeletionAndWait/);
+assert.match(acceptedDeletionCleanup, /LocalMediaFileCleanup\.purge/);
+assert.match(acceptedDeletionCleanup, /clearPersistedSessionForAcceptedDeletion/);
+const bootstrap = declaration(appModel, "func bootstrap() async");
+assert.match(
+  bootstrap,
+  /accountDeletionCleanupStore\.pendingGenerationID[\s\S]*finishAcceptedAccountDeletionCleanup\(\)[\s\S]*sessionStore\.load\(\)/,
+);
+const deletionCleanupStore = declaration(
+  accountDeletionCleanupStore,
+  "final class AccountDeletionCleanupStore",
+);
+assert.doesNotMatch(deletionCleanupStore, /token|accountID|consent/i);
+const removeReminderNotifications = declaration(
+  postReminderScheduler,
+  "private func removePendingReminders() async",
+);
+assert.match(removeReminderNotifications, /removePendingNotificationRequests/);
+assert.match(removeReminderNotifications, /removeDeliveredNotifications/);
+assert.match(settingsView, /account\.delete\.scope/);
+assert.match(settingsView, /ChallengeBoundAppleSignInButton/);
+
+const legalPolicy = declaration(apiClient, "enum LegalURLPolicy");
+assert.match(legalPolicy, /scheme\?\.lowercased\(\)\s*==\s*"https"/);
+const legalPage = declaration(apiClient, "enum LegalPage");
+for (const pathName of ["privacy", "support", "terms"]) {
+  assert.ok(
+    legalPage.includes(`case ${pathName}`),
+    `missing legal page case: ${pathName}`,
+  );
+  assert.ok(
+    legalPage.includes(`case .${pathName}: "/${pathName}"`),
+    `missing legal page path: /${pathName}`,
+  );
+}
+assert.match(login, /legalURL\(\.privacy\)/);
+assert.match(login, /legalURL\(\.support\)/);
+assert.match(login, /legalURL\(\.terms\)/);
+assert.match(settingsView, /legalURL\(\.privacy\)/);
+assert.match(settingsView, /legalURL\(\.support\)/);
+assert.match(settingsView, /legalURL\(\.terms\)/);
 
 
 function paeth(left, up, upLeft) {

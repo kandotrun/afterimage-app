@@ -8,7 +8,7 @@ struct TimelineView: View {
     @State private var pendingOpen: Asset?
     @State private var pendingDay: DailyPlaybackRoute?
     @State private var isShowingMemorySearch = false
-    @State private var isShowingAIConnection = false
+    @State private var isShowingSettings = false
     @State private var cameraRoute: CameraRoute?
     @Namespace private var zoomTransition
 
@@ -114,8 +114,11 @@ struct TimelineView: View {
                 }
                 ToolbarItem(placement: .topBarTrailing) {
                     Menu {
-                        Button("AI連携", systemImage: "brain.head.profile") {
-                            isShowingAIConnection = true
+                        Button(
+                            L10n.string("account.settings.title"),
+                            systemImage: "gearshape"
+                        ) {
+                            isShowingSettings = true
                         }
                         Button("再読み込み", systemImage: "arrow.clockwise") {
                             Task {
@@ -132,8 +135,8 @@ struct TimelineView: View {
                     .accessibilityLabel("アカウント")
                 }
             }
-            .sheet(isPresented: $isShowingAIConnection) {
-                AIConnectionView()
+            .sheet(isPresented: $isShowingSettings) {
+                SettingsView()
             }
             .sheet(isPresented: $isShowingMemorySearch) {
                 MemorySearchView()
@@ -264,8 +267,7 @@ private struct UploadDock: View {
                         .buttonBorderShape(.circle)
                         .tint(.accentColor)
                         .accessibilityLabel(L10n.string("upload.action.cancel"))
-                    } else {
-                        Spacer(minLength: 0)
+                    } else if model.canAddMedia {
                         Menu {
                             Button(
                                 L10n.string("camera.source.record"),
@@ -288,6 +290,10 @@ private struct UploadDock: View {
                         .buttonBorderShape(.circle)
                         .accessibilityLabel("動画を追加")
                         .accessibilityHint(L10n.string("accessibility.upload_picker_duplicate_hint"))
+                    } else {
+                        ProgressView()
+                            .frame(width: 44, height: 44)
+                            .accessibilityLabel(L10n.string("account.delete.progress"))
                     }
                 }
             }

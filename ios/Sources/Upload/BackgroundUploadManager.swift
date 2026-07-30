@@ -2,7 +2,7 @@ import Foundation
 
 struct BackgroundUploadContext: Sendable {
     let baseURL: URL
-    let bearerToken: String
+    let session: StoredSession
 }
 
 struct UploadPreviewDescriptor: Equatable, Sendable {
@@ -28,6 +28,7 @@ struct BackgroundUploadState: Codable, Sendable {
     }
 
     let generationID: UUID
+    var authContext: AuthSessionContext
     let baseURL: URL
     let activityID: String?
     var items: [Item]
@@ -61,6 +62,10 @@ struct BackgroundUploadState: Codable, Sendable {
 
     init(
         generationID: UUID = UUID(),
+        authContext: AuthSessionContext = AuthSessionContext(
+            generationID: UUID(),
+            accountID: nil
+        ),
         baseURL: URL,
         activityID: String?,
         items: [Item],
@@ -71,6 +76,7 @@ struct BackgroundUploadState: Codable, Sendable {
         retryNotBeforeByTransfer: [String: Date] = [:]
     ) {
         self.generationID = generationID
+        self.authContext = authContext
         self.baseURL = baseURL
         self.activityID = activityID
         self.items = items
@@ -83,6 +89,7 @@ struct BackgroundUploadState: Codable, Sendable {
 
     private enum CodingKeys: String, CodingKey {
         case generationID
+        case authContext
         case baseURL
         case activityID
         case items
@@ -96,6 +103,10 @@ struct BackgroundUploadState: Codable, Sendable {
     init(from decoder: Decoder) throws {
         let container = try decoder.container(keyedBy: CodingKeys.self)
         generationID = try container.decodeIfPresent(UUID.self, forKey: .generationID) ?? UUID()
+        authContext = try container.decodeIfPresent(
+            AuthSessionContext.self,
+            forKey: .authContext
+        ) ?? AuthSessionContext(generationID: UUID(), accountID: nil)
         baseURL = try container.decode(URL.self, forKey: .baseURL)
         activityID = try container.decodeIfPresent(String.self, forKey: .activityID)
         items = try container.decode([Item].self, forKey: .items)
@@ -171,6 +182,7 @@ enum BackgroundUploadRequestFactory {
 enum BackgroundUploadRetryDisposition: Equatable, Sendable {
     case retry(after: TimeInterval)
     case reconcile
+    case expireSession
     case fail
 }
 
@@ -183,6 +195,9 @@ enum BackgroundUploadRetryPolicy {
         attempt: Int
     ) -> BackgroundUploadRetryDisposition {
         if let httpStatus {
+            if httpStatus == 401 {
+                return .expireSession
+            }
             if httpStatus == 404 {
                 return .reconcile
             }
@@ -240,6 +255,19 @@ enum BackgroundUploadRetryPolicy {
     }
 }
 
+enum BackgroundUploadAuthorizationPolicy {
+    static func canUse(
+        owner: AuthSessionContext,
+        current: AuthSessionContext
+    ) -> Bool {
+        if let ownerAccount = owner.accountID,
+           let currentAccount = current.accountID {
+            return ownerAccount == currentAccount
+        }
+        return owner == current
+    }
+}
+
 /// Transfers optimized media with a background URLSession, then finalizes the
 /// asset through the authenticated API. State and staged files survive process
 /// termination; URLSession reconnects the delegate on relaunch.
@@ -288,7 +316,7 @@ final class BackgroundUploadManager: NSObject, @unchecked Sendable {
         return URLSession(configuration: configuration, delegate: self, delegateQueue: delegateQueue)
     }()
     private var state: BackgroundUploadState?
-    private var bearerToken: String?
+    private var storedSession: StoredSession?
     private var progressHandler: (@MainActor (String, Double, Int, Int) -> Void)?
     private var finishHandler: (@Sendable (Result<Void, Error>) -> Void)?
     private var systemCompletionHandler: SystemCompletionBox?
@@ -336,6 +364,12 @@ final class BackgroundUploadManager: NSObject, @unchecked Sendable {
         }
     }
 
+    var requiresCancellationCleanupRetry: Bool {
+        lock.withLock {
+            state != nil && cancellationRequested
+        }
+    }
+
     // MARK: - Public API
 
     func startUpload(
@@ -352,12 +386,13 @@ final class BackgroundUploadManager: NSObject, @unchecked Sendable {
         lock.withLock {
             state = BackgroundUploadState(
                 generationID: UUID(),
+                authContext: context.session.context,
                 baseURL: context.baseURL,
                 activityID: activityID,
                 items: stagedItems,
                 currentIndex: 0
             )
-            bearerToken = context.bearerToken
+            storedSession = context.session
             progressHandler = progress
             finishHandler = completion
             retryAttemptsByTransfer.removeAll()
@@ -389,7 +424,18 @@ final class BackgroundUploadManager: NSObject, @unchecked Sendable {
         let pending = lock.withLock { () -> Bool in
             guard state != nil else { return false }
             if let context {
-                bearerToken = context.bearerToken
+                guard let state,
+                      BackgroundUploadAuthorizationPolicy.canUse(
+                          owner: state.authContext,
+                          current: context.session.context
+                      ) else {
+                    return false
+                }
+                storedSession = context.session
+                var rebound = state
+                rebound.authContext = context.session.context
+                self.state = rebound
+                saveStateLocked()
             }
             if let progress { progressHandler = progress }
             if let completion { finishHandler = completion }
@@ -434,6 +480,85 @@ final class BackgroundUploadManager: NSObject, @unchecked Sendable {
             cancelAll(cleanupCompletion: { succeeded in
                 continuation.resume(returning: succeeded)
             })
+        }
+    }
+
+    func discardAfterAccountDeletionAndWait() async -> Bool {
+        await withCheckedContinuation { continuation in
+            let expectedGenerationID = lock.withLock { () -> UUID? in
+                let generationID = state?.generationID
+                cancellationRequested = true
+                isPausedAfterFailure = true
+                state?.cancellationRequested = true
+                finalizationTask?.cancel()
+                finalizationTask = nil
+                finalizationTaskID = nil
+                finalizationRetryTask?.cancel()
+                finalizationRetryTask = nil
+                finalizationRetryID = nil
+                cancellationCleanupTask?.cancel()
+                cancellationCleanupTask = nil
+                cancellationCleanupID = nil
+                saveStateLocked()
+                return generationID
+            }
+            backgroundSession.getAllTasks { [weak self] tasks in
+                guard let self else {
+                    continuation.resume(returning: false)
+                    return
+                }
+                tasks.forEach { $0.cancel() }
+                let result = self.lock.withLock { () -> (
+                    succeeded: Bool,
+                    waiters: [@Sendable (Bool) -> Void],
+                    activityID: String?,
+                    completion: (@Sendable (Result<Void, Error>) -> Void)?
+                ) in
+                    guard self.state?.generationID == expectedGenerationID else {
+                        return (false, [], nil, nil)
+                    }
+                    let waiters = cancellationCleanupWaiters.values.flatMap { $0 }
+                    cancellationCleanupWaiters.removeAll()
+                    let activityID = state?.activityID
+                    let completion = finishHandler
+                    finishHandler = nil
+                    progressHandler = nil
+                    do {
+                        if FileManager.default.fileExists(
+                            atPath: Self.storageDirectory.path
+                        ) {
+                            let stagedURLs = try FileManager.default
+                                .contentsOfDirectory(
+                                    at: Self.storageDirectory,
+                                    includingPropertiesForKeys: nil
+                                )
+                                .filter { $0 != Self.stateFileURL }
+                            for stagedURL in stagedURLs {
+                                try FileManager.default.removeItem(at: stagedURL)
+                            }
+                        }
+                        if FileManager.default.fileExists(atPath: Self.stateFileURL.path) {
+                            try FileManager.default.removeItem(at: Self.stateFileURL)
+                        }
+                        clearStateLocked()
+                        return (true, waiters, activityID, completion)
+                    } catch {
+                        cancellationRequested = true
+                        isPausedAfterFailure = true
+                        state?.cancellationRequested = true
+                        saveStateLocked()
+                        return (false, waiters, activityID, completion)
+                    }
+                }
+                result.waiters.forEach { $0(result.succeeded) }
+                result.completion?(.failure(AfterimageError.cancelled))
+                Task { @MainActor in
+                    UploadLiveActivityManager.shared.cancel(
+                        activityID: result.activityID
+                    )
+                }
+                continuation.resume(returning: result.succeeded)
+            }
         }
     }
 
@@ -532,6 +657,7 @@ final class BackgroundUploadManager: NSObject, @unchecked Sendable {
         isFinalizing = false
         cancellationRequested = false
         lastDeliveredProgress = 0
+        storedSession = nil
         state = nil
         try? FileManager.default.removeItem(at: Self.stateFileURL)
     }
@@ -659,8 +785,12 @@ final class BackgroundUploadManager: NSObject, @unchecked Sendable {
               !item.transferComplete else { return }
         let scope = UploadScope(generationID: state.generationID, assetID: item.assetID)
         guard scope == expectedScope else { return }
-        guard let token = bearerToken ?? (try? KeychainSessionStore().load()) else { return }
-        bearerToken = token
+        guard let session = storedSession ?? (try? KeychainSessionStore().load()),
+              BackgroundUploadAuthorizationPolicy.canUse(
+                  owner: state.authContext,
+                  current: session.context
+              ) else { return }
+        storedSession = session
 
         let activeDescriptions = Set(tasks.compactMap { task -> String? in
             guard let description = task.taskDescription,
@@ -688,7 +818,7 @@ final class BackgroundUploadManager: NSObject, @unchecked Sendable {
                 let request = try BackgroundUploadRequestFactory.make(
                     path: path,
                     baseURL: state.baseURL,
-                    bearerToken: token,
+                    bearerToken: session.token,
                     contentType: item.contentType,
                     contentLength: item.byteSize,
                     additionalHeaders: item.plan.headers
@@ -724,7 +854,7 @@ final class BackgroundUploadManager: NSObject, @unchecked Sendable {
                     let request = try BackgroundUploadRequestFactory.make(
                         path: path,
                         baseURL: state.baseURL,
-                        bearerToken: token,
+                        bearerToken: session.token,
                         contentType: "application/octet-stream",
                         contentLength: Int64(chunk.length),
                         additionalHeaders: item.plan.headers
@@ -772,7 +902,7 @@ final class BackgroundUploadManager: NSObject, @unchecked Sendable {
     private func finalizeCurrentItem(ifCurrent expectedScope: UploadScope? = nil) {
         var deferredForCredentials = false
         var deferredForBackoff = false
-        let payload = lock.withLock { () -> (BackgroundUploadState.Item, URL, String, UploadScope)? in
+        let payload = lock.withLock { () -> (BackgroundUploadState.Item, URL, StoredSession, UploadScope)? in
             guard !isPausedAfterFailure,
                   !cancellationRequested,
                   !isFinalizing,
@@ -805,15 +935,19 @@ final class BackgroundUploadManager: NSObject, @unchecked Sendable {
             if retryNotBeforeByTransfer.removeValue(forKey: retryDescription) != nil {
                 saveStateLocked()
             }
-            guard let token = bearerToken ?? (try? KeychainSessionStore().load()) else {
+            guard let session = storedSession ?? (try? KeychainSessionStore().load()),
+                  BackgroundUploadAuthorizationPolicy.canUse(
+                      owner: state.authContext,
+                      current: session.context
+                  ) else {
                 deferredForCredentials = true
                 return nil
             }
-            bearerToken = token
+            storedSession = session
             isFinalizing = true
-            return (item, state.baseURL, token, scope)
+            return (item, state.baseURL, session, scope)
         }
-        guard let (item, baseURL, token, scope) = payload else {
+        guard let (item, baseURL, session, scope) = payload else {
             if deferredForCredentials || deferredForBackoff {
                 completeSystemEventsIfPossible()
             }
@@ -830,7 +964,7 @@ final class BackgroundUploadManager: NSObject, @unchecked Sendable {
                 guard let self, !Task.isCancelled else { return }
                 do {
                     let api = APIClient(baseURL: baseURL)
-                    await api.setBearerToken(token)
+                    await api.setSession(session)
                     _ = try await api.completeUpload(assetID: item.assetID)
                     if let thumbnailURL = item.thumbnailURL {
                         try? await api.uploadThumbnail(thumbnailURL, assetID: item.assetID)
@@ -1025,11 +1159,15 @@ final class BackgroundUploadManager: NSObject, @unchecked Sendable {
                   cancellationCleanupTask == nil else {
                 return
             }
-            guard let token = bearerToken ?? (try? KeychainSessionStore().load()) else {
+            guard let session = storedSession ?? (try? KeychainSessionStore().load()),
+                  BackgroundUploadAuthorizationPolicy.canUse(
+                      owner: state.authContext,
+                      current: session.context
+                  ) else {
                 unavailableWaiters = cancellationCleanupWaiters.removeValue(forKey: generationID) ?? []
                 return
             }
-            bearerToken = token
+            storedSession = session
             let baseURL = state.baseURL
             let assetIDs = Array(Set(state.items.map(\.assetID)))
             let cleanupID = UUID()
@@ -1037,7 +1175,7 @@ final class BackgroundUploadManager: NSObject, @unchecked Sendable {
             cancellationCleanupTask = Task { [weak self] in
                 guard let self, !Task.isCancelled else { return }
                 let api = APIClient(baseURL: baseURL)
-                await api.setBearerToken(token)
+                await api.setSession(session)
                 do {
                     for assetID in assetIDs {
                         do {
@@ -1174,13 +1312,26 @@ final class BackgroundUploadManager: NSObject, @unchecked Sendable {
                 ifCurrent: scope
             )
             finalizeCurrentItem(ifCurrent: scope)
+        case .expireSession:
+            let session = lock.withLock { storedSession }
+            let error = AfterimageError.api(
+                status: 401,
+                code: .unauthorized,
+                message: "expired"
+            )
+            fail(error, ifCurrent: scope)
+            if let session {
+                Task {
+                    await AuthGenerationGate.shared.invalidate(session.context)
+                }
+            }
         case .fail:
             if let error {
                 fail(error, ifCurrent: scope)
             } else if let httpStatus {
                 fail(AfterimageError.api(
                     status: httpStatus,
-                    code: "background_upload_failed",
+                    code: .backgroundUploadFailed,
                     message: HTTPURLResponse.localizedString(forStatusCode: httpStatus)
                 ), ifCurrent: scope)
             } else {

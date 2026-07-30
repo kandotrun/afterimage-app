@@ -101,7 +101,13 @@ struct AIConnectionView: View {
                         Label("AIエージェントを接続", systemImage: "link.badge.plus")
                             .frame(maxWidth: .infinity)
                     }
-                    .disabled(isCreating || endpoint == nil)
+                    .disabled(
+                        isCreating
+                            || endpoint == nil
+                            || !AIConsentPolicy.canTransferExternally(
+                                consent: model.aiConsent
+                            )
+                    )
                 } footer: {
                     Text("tokenは作成直後に一度だけ表示され、サーバーにはhashだけを保存します。いつでもここから失効できます。")
                 }
@@ -158,6 +164,10 @@ struct AIConnectionView: View {
     private func load() async {
         isLoading = true
         defer { isLoading = false }
+        guard AIConsentPolicy.canTransferExternally(consent: model.aiConsent) else {
+            errorMessage = L10n.string("api.ai_consent_required")
+            return
+        }
         do {
             endpoint = try await model.mcpEndpoint()
             tokens = try await model.mcpTokens()

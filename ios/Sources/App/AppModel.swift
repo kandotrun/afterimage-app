@@ -92,30 +92,44 @@ final class AppModel: ObservableObject {
     @Published var upload: UploadPresentation?
     @Published private(set) var importSelectionSummary: ImportSelectionSummary?
     @Published private(set) var backgroundUploadNeedsRetry = false
+    @Published private(set) var localCleanupNeedsRetry = false
+    @Published private(set) var aiConsent: AIConsent?
+    @Published private(set) var isUpdatingAIConsent = false
+    @Published private(set) var accountDeletionState: AccountDeletionState = .idle
     @Published var notice: AppNotice?
 
     private let api: APIClient
+    private let authGeneration: AuthGenerationGate
     private let compressor: MediaCompressor
     private let sessionStore: SessionStoring
+    private let accountDeletionCleanupStore: AccountDeletionCleanupStoring
     private let haptics: HapticEngine
     private let weatherRecorder: WeatherKitDailyWeatherRecorder
     private let postReminderScheduler: DailyPostReminderScheduler
     private var nextCursor: String?
     private var didBootstrap = false
+    private var currentSession: StoredSession?
     private var uploadTask: Task<Void, Never>?
+    private var discardsPendingUploadOnRetry = false
+    private var pendingAccountDeletionAuthorizationCode: String?
     private var isRecordingDailyWeather = false
     private var shouldRepeatDailyWeatherRecording = false
 
     init(
         api: APIClient,
+        authGeneration: AuthGenerationGate = .shared,
         sessionStore: SessionStoring = KeychainSessionStore(),
+        accountDeletionCleanupStore: AccountDeletionCleanupStoring =
+            AccountDeletionCleanupStore(),
         compressor: MediaCompressor = MediaCompressor(),
         haptics: HapticEngine = HapticEngine(),
         weatherRecorder: WeatherKitDailyWeatherRecorder = WeatherKitDailyWeatherRecorder(),
         postReminderScheduler: DailyPostReminderScheduler = DailyPostReminderScheduler()
     ) {
         self.api = api
+        self.authGeneration = authGeneration
         self.sessionStore = sessionStore
+        self.accountDeletionCleanupStore = accountDeletionCleanupStore
         self.compressor = compressor
         self.haptics = haptics
         self.weatherRecorder = weatherRecorder
@@ -144,18 +158,44 @@ final class AppModel: ObservableObject {
         guard !didBootstrap else { return }
         didBootstrap = true
         defer { isBootstrapping = false }
+        await installSessionTerminationHandler()
+        if accountDeletionCleanupStore.pendingGenerationID != nil {
+            accountDeletionState = .cleaningLocalData
+            discardsPendingUploadOnRetry = true
+            let cleanupSucceeded = await finishAcceptedAccountDeletionCleanup()
+            if cleanupSucceeded {
+                accountDeletionState = .completed
+                localCleanupNeedsRetry = false
+                discardsPendingUploadOnRetry = false
+            } else {
+                accountDeletionState = .localCleanupFailed
+                localCleanupNeedsRetry = true
+                return
+            }
+        }
         do {
-            guard let token = try sessionStore.load() else { return }
-            await api.setBearerToken(token)
+            guard let session = try sessionStore.load() else {
+                if BackgroundUploadManager.shared.requiresCancellationCleanupRetry {
+                    localCleanupNeedsRetry = true
+                    accountDeletionState = .localCleanupFailed
+                }
+                return
+            }
+            try sessionStore.save(session)
+            guard await authGeneration.bind(session.context) else {
+                _ = try? sessionStore.clear(ifCurrent: session.context)
+                return
+            }
+            currentSession = session
+            await api.setSession(session)
+            accountDeletionState = .idle
             isAuthenticated = true
             await resumeBackgroundUploadIfNeeded(retryAfterFailure: false)
             do {
                 try await refreshTimeline()
+                await refreshAIConsent(showFailure: false)
             } catch {
-                if (error as? AfterimageError)?.invalidatesSession == true {
-                    await clearLocalSession()
-                    await api.setBearerToken(nil)
-                } else {
+                if (error as? AfterimageError)?.invalidatesSession != true {
                     show(error: error)
                 }
             }
@@ -172,17 +212,48 @@ final class AppModel: ObservableObject {
         guard !didBootstrap else { return }
         didBootstrap = true
         isBootstrapping = false
-        await api.setBearerToken(token)
+        await installSessionTerminationHandler()
+        let session = StoredSession(
+            token: token,
+            context: AuthSessionContext(generationID: UUID(), accountID: nil)
+        )
+        guard await authGeneration.bind(session.context) else { return }
+        currentSession = session
+        await api.setSession(session)
+        accountDeletionState = .idle
         isAuthenticated = true
         do {
             try await refreshTimeline()
+            await refreshAIConsent(showFailure: false)
         } catch {
             show(error: error)
         }
     }
     #endif
 
-    func signIn(credential: ASAuthorizationAppleIDCredential) async {
+    func prepareAppleAuthorization() async -> AppleAuthRequestBinding? {
+        do {
+            return try AppleAuthRequestPolicy.binding(
+                challenge: try await api.appleAuthChallenge()
+            )
+        } catch {
+            show(error: error)
+            return nil
+        }
+    }
+
+    func presentAppleAuthorizationError(_ error: Error) {
+        if let authorizationError = error as? ASAuthorizationError,
+           authorizationError.code == .canceled {
+            return
+        }
+        show(error: error)
+    }
+
+    func signIn(
+        credential: ASAuthorizationAppleIDCredential,
+        challengeID: String
+    ) async {
         guard let tokenData = credential.identityToken,
               let identityToken = String(data: tokenData, encoding: .utf8) else {
             show(error: AfterimageError.missingCredential)
@@ -198,12 +269,15 @@ final class AppModel: ObservableObject {
         }
 
         do {
-            let response = try await api.signIn(identityToken: identityToken, displayName: displayName)
-            try sessionStore.save(response.token)
-            await api.setBearerToken(response.token)
-            isAuthenticated = true
+            let response = try await api.signIn(
+                identityToken: identityToken,
+                challengeID: challengeID,
+                displayName: displayName
+            )
+            try await establishSession(response)
             haptics.play(.success)
             try await refreshTimeline()
+            await refreshAIConsent(showFailure: false)
         } catch {
             haptics.play(.failure)
             show(error: error)
@@ -211,12 +285,12 @@ final class AppModel: ObservableObject {
     }
 
     func signOut() async {
+        guard let session = currentSession else { return }
         let activeUploadTask = uploadTask
         activeUploadTask?.cancel()
-        uploadTask = nil
-        upload = nil
         importSelectionSummary = nil
         backgroundUploadNeedsRetry = false
+        localCleanupNeedsRetry = false
         notice = nil
 
         let cleanupSucceeded = await BackgroundUploadManager.shared.cancelAllAndWaitForCleanup()
@@ -224,14 +298,25 @@ final class AppModel: ObservableObject {
             await activeUploadTask.value
         }
         guard cleanupSucceeded else {
+            localCleanupNeedsRetry = true
+            upload = nil
             haptics.play(.failure)
-            show(error: AfterimageError.invalidResponse)
+            show(error: LocalCleanupError.failed)
             return
         }
 
-        try? await api.revokeSession()
-        await clearLocalSession()
-        haptics.play(.selection)
+        do {
+            try await api.revokeSession()
+            await clearLocalSession(ifCurrent: session.context)
+            haptics.play(.selection)
+        } catch {
+            guard currentSession?.context == session.context,
+                  await authGeneration.currentContext() == session.context else {
+                return
+            }
+            haptics.play(.failure)
+            show(error: error)
+        }
     }
 
     func refreshTimeline() async throws {
@@ -330,10 +415,17 @@ final class AppModel: ObservableObject {
         }
     }
 
+    var canAddMedia: Bool {
+        isAuthenticated
+            && accountDeletionState == .idle
+            && uploadTask == nil
+            && !localCleanupNeedsRetry
+            && !BackgroundUploadManager.shared.hasPendingUpload
+    }
+
     func importItems(_ items: [PhotosPickerItem]) {
         guard !items.isEmpty,
-              uploadTask == nil,
-              !BackgroundUploadManager.shared.hasPendingUpload else { return }
+              canAddMedia else { return }
         haptics.play(.lift)
         importSelectionSummary = nil
         upload = UploadPresentation(stage: .checking, progress: 0.01, current: 0, total: items.count)
@@ -402,7 +494,7 @@ final class AppModel: ObservableObject {
     func importCapturedMedia(_ media: ImportedMedia) -> Bool {
         guard CameraIngestPolicy.canAccept(
             hasUploadTask: uploadTask != nil,
-            hasPendingBackgroundUpload: BackgroundUploadManager.shared.hasPendingUpload
+            hasPendingBackgroundUpload: !canAddMedia
         ) else {
             return false
         }
@@ -431,15 +523,46 @@ final class AppModel: ObservableObject {
     }
 
     func cancelUpload() {
-        upload = nil
-        BackgroundUploadManager.shared.cancelAll()
+        guard !localCleanupNeedsRetry else { return }
+        let activeUploadTask = uploadTask
         uploadTask?.cancel()
         backgroundUploadNeedsRetry = false
         notice = nil
-        haptics.play(.delete)
+        upload = UploadPresentation(
+            stage: .finishing,
+            progress: upload?.progress ?? 0,
+            current: upload?.current ?? 1,
+            total: upload?.total ?? 1
+        )
+        Task { [weak self] in
+            guard let self else { return }
+            let succeeded = await BackgroundUploadManager.shared
+                .cancelAllAndWaitForCleanup()
+            if let activeUploadTask {
+                await activeUploadTask.value
+            }
+            self.uploadTask = nil
+            self.upload = nil
+            if succeeded {
+                self.localCleanupNeedsRetry = false
+                self.haptics.play(.delete)
+            } else {
+                self.localCleanupNeedsRetry = true
+                self.haptics.play(.failure)
+                self.show(error: LocalCleanupError.failed)
+            }
+        }
     }
 
     func setAgentAccess(_ asset: Asset, enabled: Bool) async -> Bool {
+        guard !enabled || AIConsentPolicy.canEnableAgentAccess(consent: aiConsent) else {
+            show(error: AfterimageError.api(
+                status: 403,
+                code: .aiConsentRequired,
+                message: "consent required"
+            ))
+            return false
+        }
         do {
             let updated = try await api.setAgentAccess(assetID: asset.id, enabled: enabled)
             guard let index = assets.firstIndex(where: { $0.id == asset.id }) else { return false }
@@ -514,12 +637,186 @@ final class AppModel: ObservableObject {
     }
 
     func createMCPToken(name: String) async throws -> MCPTokenCreationResponse {
+        guard AIConsentPolicy.canTransferExternally(consent: aiConsent) else {
+            throw AfterimageError.api(
+                status: 403,
+                code: .aiConsentRequired,
+                message: "consent required"
+            )
+        }
         try await api.createMCPToken(name: name)
     }
 
     func revokeMCPToken(id: String) async throws {
         try await api.revokeMCPToken(id: id)
         haptics.play(.delete)
+    }
+
+    func legalURL(_ page: LegalPage) async throws -> URL {
+        try await api.legalURL(page)
+    }
+
+    func refreshAIConsent(showFailure: Bool = true) async {
+        do {
+            aiConsent = try await api.aiConsent()
+        } catch {
+            aiConsent = nil
+            if showFailure {
+                show(error: error)
+            }
+        }
+    }
+
+    @discardableResult
+    func updateAIConsent(granted: Bool) async -> Bool {
+        guard !isUpdatingAIConsent else { return false }
+        isUpdatingAIConsent = true
+        defer { isUpdatingAIConsent = false }
+        do {
+            aiConsent = try await api.updateAIConsent(granted: granted)
+            if !granted {
+                for index in assets.indices {
+                    assets[index].agentAccessEnabled = false
+                }
+            }
+            haptics.play(.selection)
+            return true
+        } catch {
+            haptics.play(.failure)
+            show(error: error)
+            return false
+        }
+    }
+
+    func deleteAccount() async {
+        guard accountDeletionState != .deleting,
+              accountDeletionState != .cleaningLocalData,
+              let session = currentSession else {
+            return
+        }
+        accountDeletionState = .deleting
+        let authorizationCode = pendingAccountDeletionAuthorizationCode
+        pendingAccountDeletionAuthorizationCode = nil
+        do {
+            try await api.deleteAccount(authorizationCode: authorizationCode)
+        } catch {
+            if let error = error as? AfterimageError,
+               error.requiresAccountDeletionReauthentication {
+                accountDeletionState = AccountDeletionPolicy.reduce(
+                    .deleting,
+                    event: .reauthenticationRequired
+                )
+                return
+            }
+            if (error as? AfterimageError)?.invalidatesSession == true {
+                accountDeletionState = .idle
+                return
+            }
+            accountDeletionState = AccountDeletionPolicy.reduce(
+                .deleting,
+                event: .backendFailed(error.localizedDescription)
+            )
+            haptics.play(.failure)
+            return
+        }
+
+        accountDeletionState = AccountDeletionPolicy.reduce(
+            .deleting,
+            event: .backendAccepted
+        )
+        accountDeletionCleanupStore.markPending(
+            generationID: session.context.generationID
+        )
+        let activeUploadTask = uploadTask
+        activeUploadTask?.cancel()
+        await clearLocalSession(ifCurrent: session.context)
+        let cleanupSucceeded = await finishAcceptedAccountDeletionCleanup(
+            activeUploadTask: activeUploadTask
+        )
+        if cleanupSucceeded {
+            accountDeletionState = AccountDeletionPolicy.reduce(
+                .cleaningLocalData,
+                event: .localCleanupSucceeded
+            )
+            localCleanupNeedsRetry = false
+            discardsPendingUploadOnRetry = false
+            haptics.play(.delete)
+        } else {
+            accountDeletionState = AccountDeletionPolicy.reduce(
+                .cleaningLocalData,
+                event: .localCleanupFailed
+            )
+            localCleanupNeedsRetry = true
+            haptics.play(.failure)
+            show(error: LocalCleanupError.failed)
+        }
+    }
+
+    func reauthenticateAndDeleteAccount(
+        credential: ASAuthorizationAppleIDCredential,
+        challengeID: String
+    ) async {
+        guard accountDeletionState == .reauthenticationRequired,
+              let session = currentSession,
+              let tokenData = credential.identityToken,
+              let identityToken = String(data: tokenData, encoding: .utf8),
+              let codeData = credential.authorizationCode,
+              let authorizationCode = String(data: codeData, encoding: .utf8),
+              !authorizationCode.isEmpty else {
+            show(error: AfterimageError.missingCredential)
+            return
+        }
+        do {
+            let response = try await api.signIn(
+                identityToken: identityToken,
+                challengeID: challengeID,
+                displayName: nil
+            )
+            if let expectedAccountID = session.context.accountID {
+                try await establishSession(
+                    response,
+                    expectedAccountID: expectedAccountID
+                )
+            } else if currentSession?.context != session.context {
+                throw AfterimageError.invalidResponse
+            }
+            pendingAccountDeletionAuthorizationCode = authorizationCode
+            accountDeletionState = .idle
+            await deleteAccount()
+        } catch {
+            pendingAccountDeletionAuthorizationCode = nil
+            accountDeletionState = .reauthenticationRequired
+            haptics.play(.failure)
+            show(error: error)
+        }
+    }
+
+    func retryLocalCleanup() async {
+        guard localCleanupNeedsRetry else { return }
+        let succeeded: Bool
+        if accountDeletionState == .localCleanupFailed
+            || discardsPendingUploadOnRetry {
+            succeeded = await finishAcceptedAccountDeletionCleanup()
+            if succeeded {
+                discardsPendingUploadOnRetry = false
+                if accountDeletionState == .localCleanupFailed {
+                    accountDeletionState = AccountDeletionPolicy.reduce(
+                        .localCleanupFailed,
+                        event: .localCleanupSucceeded
+                    )
+                }
+            }
+        } else {
+            succeeded = await BackgroundUploadManager.shared
+                .cancelAllAndWaitForCleanup()
+        }
+        localCleanupNeedsRetry = !succeeded
+        if succeeded {
+            notice = nil
+            upload = nil
+        } else {
+            show(error: LocalCleanupError.failed)
+        }
     }
 
     private func process(
@@ -559,6 +856,7 @@ final class AppModel: ObservableObject {
                 location: optimized.location
             ))
             remoteAssetID = created.asset.id
+            try Task.checkCancellation()
             let context = try await api.backgroundUploadContext()
             try UploadHandoffGate.checkCancellation()
 
@@ -695,6 +993,10 @@ final class AppModel: ObservableObject {
                             self.backgroundUploadNeedsRetry = false
                             return
                         }
+                        if (error as? AfterimageError)?.invalidatesSession == true {
+                            self.backgroundUploadNeedsRetry = false
+                            return
+                        }
                         self.backgroundUploadNeedsRetry = true
                         self.show(error: error)
                     }
@@ -702,6 +1004,12 @@ final class AppModel: ObservableObject {
             },
             retryAfterFailure: retryAfterFailure
         )
+        if !resumed, manager.hasPendingUpload {
+            discardsPendingUploadOnRetry = true
+            localCleanupNeedsRetry = true
+            show(error: LocalCleanupError.failed)
+            return
+        }
         if resumed, upload == nil {
             backgroundUploadNeedsRetry = false
             upload = UploadPresentation(
@@ -731,17 +1039,123 @@ final class AppModel: ObservableObject {
             : nil
     }
 
-    private func clearLocalSession() async {
-        try? sessionStore.clear()
+    private func installSessionTerminationHandler() async {
+        await authGeneration.setTerminationHandler { [weak self] context in
+            await self?.clearLocalSession(ifCurrent: context)
+        }
+    }
+
+    private func establishSession(
+        _ response: AuthResponse,
+        expectedAccountID: String? = nil
+    ) async throws {
+        if let expectedAccountID, response.user.id != expectedAccountID {
+            throw AfterimageError.invalidResponse
+        }
+        let previousSession = currentSession
+        let session = StoredSession(
+            token: response.token,
+            context: AuthSessionContext(
+                generationID: UUID(),
+                accountID: response.user.id
+            )
+        )
+        guard await authGeneration.bind(session.context) else {
+            throw AfterimageError.invalidResponse
+        }
+        do {
+            try sessionStore.save(session)
+        } catch {
+            await authGeneration.unbind(ifCurrent: session.context)
+            if let previousSession {
+                _ = await authGeneration.bind(previousSession.context)
+            }
+            throw error
+        }
+        currentSession = session
+        await api.setSession(session)
+        accountDeletionState = .idle
+        isAuthenticated = true
+    }
+
+    private func clearLocalSession(ifCurrent context: AuthSessionContext) async {
+        _ = await api.clearSession(ifCurrent: context)
+        _ = try? sessionStore.clear(ifCurrent: context)
+        await authGeneration.unbind(ifCurrent: context)
+        guard currentSession?.context == context else { return }
+        currentSession = nil
+        uploadTask?.cancel()
+        uploadTask = nil
+        upload = nil
+        importSelectionSummary = nil
+        backgroundUploadNeedsRetry = false
         assets = []
         dailyWeather = [:]
         nextCursor = nil
+        aiConsent = nil
+        pendingAccountDeletionAuthorizationCode = nil
         isAuthenticated = false
         await postReminderScheduler.clear()
+    }
+
+    private func finishAcceptedAccountDeletionCleanup(
+        activeUploadTask: Task<Void, Never>? = nil
+    ) async -> Bool {
+        let initialUploadCleanupSucceeded = await BackgroundUploadManager.shared
+            .discardAfterAccountDeletionAndWait()
+        let uploadCleanupSucceeded: Bool
+        if let activeUploadTask {
+            await activeUploadTask.value
+            uploadCleanupSucceeded = await BackgroundUploadManager.shared
+                .discardAfterAccountDeletionAndWait()
+        } else {
+            uploadCleanupSucceeded = initialUploadCleanupSucceeded
+        }
+        uploadTask = nil
+        upload = nil
+        do {
+            try LocalMediaFileCleanup.purge()
+            await postReminderScheduler.clear()
+            let sessionCleanupSucceeded =
+                clearPersistedSessionForAcceptedDeletion()
+            if uploadCleanupSucceeded && sessionCleanupSucceeded {
+                accountDeletionCleanupStore.clear()
+                return true
+            }
+            return false
+        } catch {
+            return false
+        }
+    }
+
+    private func clearPersistedSessionForAcceptedDeletion() -> Bool {
+        guard let expectedGenerationID =
+                accountDeletionCleanupStore.pendingGenerationID else {
+            return true
+        }
+        do {
+            guard let storedSession = try sessionStore.load() else {
+                return true
+            }
+            guard storedSession.context.generationID == expectedGenerationID else {
+                return true
+            }
+            return try sessionStore.clear(ifCurrent: storedSession.context)
+        } catch {
+            return false
+        }
     }
 
     private func show(error: Error) {
         let message = (error as? LocalizedError)?.errorDescription ?? error.localizedDescription
         notice = AppNotice(title: L10n.string("error.generic_title"), message: message)
+    }
+}
+
+private enum LocalCleanupError: LocalizedError {
+    case failed
+
+    var errorDescription: String? {
+        L10n.string("error.local_cleanup_failed")
     }
 }

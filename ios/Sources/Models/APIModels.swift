@@ -40,6 +40,35 @@ struct AuthResponse: Codable, Equatable, Sendable {
     let user: UserProfile
 }
 
+struct AppleAuthChallenge: Decodable, Equatable, Sendable {
+    let challengeId: String
+    let nonce: String
+    let expiresAt: Date
+}
+
+struct AIConsent: Codable, Equatable, Sendable {
+    let version: String
+    let granted: Bool
+    let consentedAt: Date?
+    let withdrawnAt: Date?
+
+    private enum CodingKeys: String, CodingKey {
+        case version
+        case granted = "active"
+        case consentedAt
+        case withdrawnAt
+    }
+}
+
+struct AIConsentResponse: Codable, Equatable, Sendable {
+    let consent: AIConsent
+}
+
+struct UpdateAIConsentRequest: Encodable, Equatable, Sendable {
+    let version: String
+    let consented: Bool
+}
+
 struct Asset: Codable, Identifiable, Hashable, Sendable {
     let id: String
     let mediaType: MediaKind
@@ -56,7 +85,7 @@ struct Asset: Codable, Identifiable, Hashable, Sendable {
     let updatedAt: Date
     let thumbnailUrl: String?
     let contentUrl: String?
-    var agentAccessEnabled: Bool = true
+    var agentAccessEnabled: Bool = false
     var videoAnalysisStatus: VideoAnalysisStatus? = nil
     let transcriptionStatus: TranscriptionStatus?
     let transcriptPreview: String?
@@ -92,7 +121,7 @@ extension Asset {
         updatedAt = try values.decode(Date.self, forKey: .updatedAt)
         thumbnailUrl = try values.decodeIfPresent(String.self, forKey: .thumbnailUrl)
         contentUrl = try values.decodeIfPresent(String.self, forKey: .contentUrl)
-        agentAccessEnabled = try values.decodeIfPresent(Bool.self, forKey: .agentAccessEnabled) ?? true
+        agentAccessEnabled = try values.decodeIfPresent(Bool.self, forKey: .agentAccessEnabled) ?? false
         videoAnalysisStatus = try values.decodeIfPresent(VideoAnalysisStatus.self, forKey: .videoAnalysisStatus)
         transcriptionStatus = try values.decodeIfPresent(TranscriptionStatus.self, forKey: .transcriptionStatus)
         transcriptPreview = try values.decodeIfPresent(String.self, forKey: .transcriptPreview)
@@ -318,9 +347,54 @@ struct TranscriptResponse: Decodable, Equatable, Sendable {
     let updatedAt: Date?
 }
 
+struct APIErrorCode: RawRepresentable, Codable, Hashable, Sendable {
+    let rawValue: String
+
+    init(rawValue: String) {
+        self.rawValue = rawValue
+    }
+
+    init(from decoder: Decoder) throws {
+        let container = try decoder.singleValueContainer()
+        rawValue = try container.decode(String.self)
+    }
+
+    func encode(to encoder: Encoder) throws {
+        var container = encoder.singleValueContainer()
+        try container.encode(rawValue)
+    }
+
+    static let unauthorized = Self(rawValue: "unauthorized")
+    static let internalError = Self(rawValue: "internal_error")
+    static let httpError = Self(rawValue: "http_error")
+    static let duplicateAsset = Self(rawValue: "duplicate_asset")
+    static let backgroundUploadFailed = Self(rawValue: "background_upload_failed")
+    static let aiConsentRequired = Self(rawValue: "ai_consent_required")
+    static let analysisQueueLimit = Self(rawValue: "analysis_queue_limit")
+    static let appleChallengeRateLimited = Self(rawValue: "apple_challenge_rate_limited")
+    static let trustedClientIPRequired = Self(rawValue: "trusted_client_ip_required")
+    static let appleReauthorizationRequired = Self(rawValue: "apple_reauthorization_required")
+    static let assetCreationQuotaExceeded = Self(rawValue: "asset_creation_quota_exceeded")
+    static let authChallengeExpired = Self(rawValue: "auth_challenge_expired")
+    static let authChallengeReplayed = Self(rawValue: "auth_challenge_replayed")
+    static let authChallengeInvalid = Self(rawValue: "auth_challenge_invalid")
+    static let appleChallengeExpired = Self(rawValue: "apple_challenge_expired")
+    static let appleChallengeReplayed = Self(rawValue: "apple_challenge_replayed")
+    static let appleChallengeInvalid = Self(rawValue: "apple_challenge_invalid")
+    static let challengeExpired = Self(rawValue: "challenge_expired")
+    static let challengeReplayed = Self(rawValue: "challenge_replayed")
+    static let challengeInvalid = Self(rawValue: "challenge_invalid")
+    static let invalidAppleChallenge = Self(rawValue: "invalid_apple_challenge")
+    static let rateLimited = Self(rawValue: "rate_limited")
+    static let dailyAssetQuotaExceeded = Self(rawValue: "daily_asset_quota_exceeded")
+    static let storageQuotaExceeded = Self(rawValue: "storage_quota_exceeded")
+    static let mageQueueBusy = Self(rawValue: "mage_queue_busy")
+    static let reauthenticationRequired = Self(rawValue: "reauthentication_required")
+}
+
 struct APIErrorEnvelope: Decodable, Sendable {
     struct Detail: Decodable, Sendable {
-        let code: String
+        let code: APIErrorCode
         let message: String
     }
     let error: Detail
@@ -329,7 +403,7 @@ struct APIErrorEnvelope: Decodable, Sendable {
 enum AfterimageError: LocalizedError, Sendable {
     case invalidConfiguration
     case invalidResponse
-    case api(status: Int, code: String, message: String)
+    case api(status: Int, code: APIErrorCode, message: String)
     case missingCredential
     case unsupportedMedia
     case captureDateUnavailable
@@ -338,13 +412,37 @@ enum AfterimageError: LocalizedError, Sendable {
     case cancelled
 
     var invalidatesSession: Bool {
-        guard case let .api(status, _, _) = self else { return false }
+        guard case let .api(status, code, _) = self else { return false }
         return status == 401
+            && !isRetryableAuthentication
+            && code != .reauthenticationRequired
     }
 
     var isDuplicateAsset: Bool {
         guard case let .api(status, code, _) = self else { return false }
-        return status == 409 && code == "duplicate_asset"
+        return status == 409 && code == .duplicateAsset
+    }
+
+    var isRetryableAuthentication: Bool {
+        guard case let .api(_, code, _) = self else { return false }
+        return [
+            .authChallengeExpired,
+            .authChallengeReplayed,
+            .authChallengeInvalid,
+            .appleChallengeExpired,
+            .appleChallengeReplayed,
+            .appleChallengeInvalid,
+            .challengeExpired,
+            .challengeReplayed,
+            .challengeInvalid,
+            .invalidAppleChallenge,
+        ].contains(code)
+    }
+
+    var requiresAccountDeletionReauthentication: Bool {
+        guard case let .api(_, code, _) = self else { return false }
+        return code == .reauthenticationRequired
+            || code == .appleReauthorizationRequired
     }
 
     var errorDescription: String? {
@@ -352,10 +450,10 @@ enum AfterimageError: LocalizedError, Sendable {
         case .invalidConfiguration: L10n.string("error.invalid_configuration")
         case .invalidResponse: L10n.string("error.invalid_response")
         case let .api(status, code, _):
-            if code == "http_error" {
+            if code == .httpError {
                 L10n.format("error.http_status", Int64(status))
             } else {
-                L10n.apiError(code: code)
+                L10n.apiError(code: code.rawValue)
             }
         case .missingCredential: L10n.string("error.missing_credential")
         case .unsupportedMedia: L10n.string("error.unsupported_media")

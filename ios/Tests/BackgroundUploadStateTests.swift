@@ -330,7 +330,69 @@ final class BackgroundUploadRetryPolicyTests: XCTestCase {
         )
         XCTAssertEqual(
             BackgroundUploadRetryPolicy.disposition(error: nil, httpStatus: 401, attempt: 1),
-            .fail
+            .expireSession
+        )
+    }
+}
+
+final class BackgroundUploadAuthorizationPolicyTests: XCTestCase {
+    func testSameAccountCanResumeWithFreshGeneration() {
+        let owner = AuthSessionContext(
+            generationID: UUID(),
+            accountID: "account-a"
+        )
+        let current = AuthSessionContext(
+            generationID: UUID(),
+            accountID: "account-a"
+        )
+
+        XCTAssertTrue(
+            BackgroundUploadAuthorizationPolicy.canUse(
+                owner: owner,
+                current: current
+            )
+        )
+    }
+
+    func testDifferentAccountCannotResumePendingUpload() {
+        let owner = AuthSessionContext(
+            generationID: UUID(),
+            accountID: "account-a"
+        )
+        let current = AuthSessionContext(
+            generationID: UUID(),
+            accountID: "account-b"
+        )
+
+        XCTAssertFalse(
+            BackgroundUploadAuthorizationPolicy.canUse(
+                owner: owner,
+                current: current
+            )
+        )
+    }
+
+    func testLegacyUnknownAccountRequiresExactGeneration() {
+        let owner = AuthSessionContext(
+            generationID: UUID(),
+            accountID: nil
+        )
+        let current = AuthSessionContext(
+            generationID: UUID(),
+            accountID: nil
+        )
+
+        XCTAssertFalse(
+            BackgroundUploadAuthorizationPolicy.canUse(
+                owner: owner,
+                current: current
+            )
+        )
+        XCTAssertTrue(
+            BackgroundUploadAuthorizationPolicy.canUse(
+                owner: owner,
+                current: owner
+            )
         )
     }
 }
