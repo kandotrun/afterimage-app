@@ -51,13 +51,14 @@ async function createTranscriptionMediaUrl(
   asset: TranscriptionPollRow,
   now: Date,
   nowIso: string,
-): Promise<string> {
+): Promise<{ readonly url: string; readonly tokenHash: string }> {
   const baseUrl = bindings.TRANSCRIPTION_MEDIA_BASE_URL;
   if (!baseUrl) throw new Error("TRANSCRIPTION_MEDIA_BASE_URL is not configured");
   const token = transcriptionToken();
   const url = new URL(`/v1/media/${token}`, baseUrl);
   if (url.protocol !== "https:") throw new Error("TRANSCRIPTION_MEDIA_BASE_URL must use HTTPS");
   const expiresAt = new Date(now.getTime() + TRANSCRIPTION_GRANT_TTL_MS).toISOString();
+  const tokenHash = await sha256Hex(token);
   const granted = await bindings.DB.prepare(
     `INSERT INTO media_grants (id, asset_id, user_id, token_hash, expires_at, created_at)
       SELECT ?, a.id, a.user_id, ?, ?, ?
@@ -77,7 +78,7 @@ async function createTranscriptionMediaUrl(
         created_at = excluded.created_at`,
   ).bind(
     transcriptionGrantId(asset.id),
-    await sha256Hex(token),
+    tokenHash,
     expiresAt,
     nowIso,
     asset.id,
@@ -85,14 +86,24 @@ async function createTranscriptionMediaUrl(
     AI_CONSENT_VERSION,
   ).run();
   if ((granted.meta.changes ?? 0) !== 1) throw new Error("AI consent is no longer active");
-  return url.toString();
+  return { url: url.toString(), tokenHash };
 }
 
-async function deleteTranscriptionMediaGrant(bindings: Env, assetId: string): Promise<void> {
+async function deleteTranscriptionMediaGrant(
+  bindings: Env,
+  assetId: string,
+  expectedTokenHash?: string,
+): Promise<void> {
   try {
-    await bindings.DB.prepare("DELETE FROM media_grants WHERE id = ?")
-      .bind(transcriptionGrantId(assetId))
-      .run();
+    if (expectedTokenHash) {
+      await bindings.DB.prepare("DELETE FROM media_grants WHERE id = ? AND token_hash = ?")
+        .bind(transcriptionGrantId(assetId), expectedTokenHash)
+        .run();
+    } else {
+      await bindings.DB.prepare("DELETE FROM media_grants WHERE id = ?")
+        .bind(transcriptionGrantId(assetId))
+        .run();
+    }
   } catch {
   }
 }
@@ -431,7 +442,7 @@ export async function pollTranscriptions(bindings: Env, now = new Date()) {
   for (const asset of pending.results) {
     let provisionalFileId: string | null = null;
     let provisionalTranscriptionId: string | null = null;
-    let mediaGrantCreated = false;
+    let mediaGrantTokenHash: string | null = null;
     let providerIDsCommitted = false;
     let leaseToken: string | null = null;
     try {
@@ -484,9 +495,12 @@ export async function pollTranscriptions(bindings: Env, now = new Date()) {
           continue;
         }
         if (object.size > directUploadMaxBytes(bindings)) {
-          const mediaUrl = await createTranscriptionMediaUrl(bindings, asset, now, nowIso);
-          mediaGrantCreated = true;
-          provisionalTranscriptionId = await createTranscription(bindings, { audioUrl: mediaUrl });
+          const mediaGrant = await createTranscriptionMediaUrl(bindings, asset, now, nowIso);
+          mediaGrantTokenHash = mediaGrant.tokenHash;
+          provisionalTranscriptionId = await createTranscription(
+            bindings,
+            { audioUrl: mediaGrant.url },
+          );
           await recordSonioxCleanupAttempt(
             bindings,
             asset,
@@ -542,7 +556,9 @@ export async function pollTranscriptions(bindings: Env, now = new Date()) {
             provisionalFileId,
             now,
           );
-          if (mediaGrantCreated) await deleteTranscriptionMediaGrant(bindings, asset.id);
+          if (mediaGrantTokenHash) {
+            await deleteTranscriptionMediaGrant(bindings, asset.id, mediaGrantTokenHash);
+          }
           continue;
         }
         providerIDsCommitted = true;
@@ -659,7 +675,9 @@ export async function pollTranscriptions(bindings: Env, now = new Date()) {
           }));
         }
       }
-      if (mediaGrantCreated) await deleteTranscriptionMediaGrant(bindings, asset.id);
+      if (mediaGrantTokenHash) {
+        await deleteTranscriptionMediaGrant(bindings, asset.id, mediaGrantTokenHash);
+      }
       const message = error instanceof Error ? error.message : String(error);
       console.error(JSON.stringify({
         event: "transcription_poll_error",
