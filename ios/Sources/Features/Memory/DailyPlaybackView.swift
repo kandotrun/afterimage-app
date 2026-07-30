@@ -17,6 +17,7 @@ struct DailyPlaybackView: View {
     @State private var isLoading = true
     @State private var loadError: String?
     @State private var confirmDelete = false
+    @State private var dailySummaryText: String?
 
     var body: some View {
         ZStack {
@@ -114,7 +115,13 @@ struct DailyPlaybackView: View {
             if case let .failed(message) = controller.phase {
                 errorState(message, action: controller.retry)
             }
+
+            if controller.phase == .ended {
+                endCard
+                    .transition(.opacity)
+            }
         }
+        .animation(.easeInOut(duration: 0.35), value: controller.phase == .ended)
         .overlay(alignment: .topLeading) {
             if let clip = controller.activeClip, let playback {
                 Text(
@@ -134,6 +141,55 @@ struct DailyPlaybackView: View {
             }
         }
         .clipped()
+    }
+
+    /// The closing moment of a day: date, weather, its words, and a way back in.
+    private var endCard: some View {
+        ZStack {
+            Color.black.opacity(0.62)
+            VStack(spacing: 14) {
+                Text(verbatim: L10n.string("daily.playback.ended_title"))
+                    .font(.system(.title3, design: .serif).weight(.semibold))
+                Text(day.formatted(.dateTime.month(.wide).day().weekday(.wide)))
+                    .font(.caption.weight(.semibold))
+                    .foregroundStyle(.white.opacity(0.72))
+                if let weather = model.weather(for: day) {
+                    DailyWeatherBadge(weather: weather)
+                        .environment(\.colorScheme, .dark)
+                }
+                if let dailySummaryText {
+                    Text(verbatim: dailySummaryText)
+                        .font(.system(.callout, design: .serif))
+                        .lineSpacing(4)
+                        .lineLimit(3)
+                        .multilineTextAlignment(.center)
+                        .foregroundStyle(.white.opacity(0.88))
+                }
+                if let playback {
+                    Text(
+                        verbatim: L10n.format(
+                            "daily.playback.summary",
+                            Int64(playback.clipCount),
+                            PlaybackClock.label(controller.duration) as NSString
+                        )
+                    )
+                    .font(.caption.monospacedDigit())
+                    .foregroundStyle(.white.opacity(0.6))
+                }
+                Button {
+                    controller.togglePlayPause()
+                } label: {
+                    Label(L10n.string("action.retry"), systemImage: "arrow.counterclockwise")
+                        .font(.callout.weight(.semibold))
+                        .padding(.horizontal, 8)
+                        .frame(minHeight: 44)
+                }
+                .buttonStyle(.glass)
+                .padding(.top, 2)
+            }
+            .foregroundStyle(.white)
+            .padding(24)
+        }
     }
 
     private func sidebar(isWide: Bool) -> some View {
@@ -182,6 +238,9 @@ struct DailyPlaybackView: View {
                         .foregroundStyle(.secondary)
                 }
             }
+            // Combining only the header keeps the location Link reachable and
+            // the transcript scrollable for VoiceOver.
+            .accessibilityElement(children: .combine)
             if let location = controller.activeClip?.asset.location {
                 CaptureLocationChip(location: location)
             }
@@ -198,7 +257,6 @@ struct DailyPlaybackView: View {
         }
         .padding(13)
         .background(Color(.tertiarySystemFill), in: .rect(cornerRadius: 16))
-        .accessibilityElement(children: .combine)
     }
 
     private var chapterListVertical: some View {
@@ -278,6 +336,7 @@ struct DailyPlaybackView: View {
 
             Text(PlaybackClock.label(controller.position))
                 .font(.caption2.monospacedDigit())
+                .accessibilityHidden(true)
             Slider(
                 value: Binding(
                     get: { controller.position },
@@ -289,8 +348,17 @@ struct DailyPlaybackView: View {
                 else { controller.scrubEnded() }
             }
             .tint(.accentColor)
+            .accessibilityLabel(L10n.string("playback.scrub"))
+            .accessibilityValue(
+                L10n.format(
+                    "playback.position_accessibility",
+                    PlaybackClock.label(controller.position) as NSString,
+                    PlaybackClock.label(controller.duration) as NSString
+                )
+            )
             Text(PlaybackClock.label(controller.duration))
                 .font(.caption2.monospacedDigit())
+                .accessibilityHidden(true)
         }
     }
 
@@ -357,6 +425,9 @@ struct DailyPlaybackView: View {
         }
         do {
             let response = try await model.dailyPlayback(in: interval)
+            let summary = (try? await model.dailySummary(in: interval))?.summary?
+                .trimmingCharacters(in: .whitespacesAndNewlines)
+            dailySummaryText = summary?.isEmpty == false ? summary : nil
             guard !Task.isCancelled else { return }
             playback = response
             if let first = response.clips.first?.asset,
