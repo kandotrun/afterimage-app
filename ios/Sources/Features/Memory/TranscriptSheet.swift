@@ -21,12 +21,29 @@ struct TranscriptSheet: View {
                             .padding(20)
                             .textSelection(.enabled)
                     }
-                } else if let loadError {
+                } else if transcriptIsInProgress {
                     ContentUnavailableView(
-                        "読み込めませんでした",
-                        systemImage: "exclamationmark.circle",
-                        description: Text(loadError)
+                        L10n.string("transcript.pending_title"),
+                        systemImage: "waveform",
+                        description: Text(L10n.string("transcript.pending_detail"))
                     )
+                } else if asset.transcriptionStatus == .failed && asset.transcriptUrl == nil {
+                    ContentUnavailableView(
+                        L10n.string("transcript.failed_title"),
+                        systemImage: "text.badge.xmark"
+                    )
+                } else if let loadError {
+                    ContentUnavailableView {
+                        Label("読み込めませんでした", systemImage: "exclamationmark.circle")
+                    } description: {
+                        Text(loadError)
+                    } actions: {
+                        Button(L10n.string("action.retry")) {
+                            self.loadError = nil
+                            Task { await load() }
+                        }
+                        .buttonStyle(.glass)
+                    }
                 } else {
                     ProgressView()
                 }
@@ -49,7 +66,13 @@ struct TranscriptSheet: View {
         .task { await load() }
     }
 
+    private var transcriptIsInProgress: Bool {
+        asset.transcriptUrl == nil
+            && (asset.transcriptionStatus == .pending || asset.transcriptionStatus == .processing)
+    }
+
     private func load() async {
+        guard asset.transcriptUrl != nil else { return }
         do {
             transcript = try await model.transcript(for: asset)
         } catch {

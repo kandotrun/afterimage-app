@@ -146,7 +146,7 @@ struct VideoMemoryView: View {
                 .frame(height: 52)
                 .glassEffect(.regular, in: .capsule)
 
-                if asset.transcriptUrl != nil {
+                if showsTranscriptButton {
                     Button {
                         showTranscript = true
                     } label: {
@@ -168,6 +168,15 @@ struct VideoMemoryView: View {
             }
             .tint(.white)
         }
+    }
+
+    /// In-flight and failed transcriptions get a button too, so the sheet can say
+    /// what is happening instead of the video looking like it never had words.
+    private var showsTranscriptButton: Bool {
+        asset.transcriptUrl != nil
+            || asset.transcriptionStatus == .pending
+            || asset.transcriptionStatus == .processing
+            || asset.transcriptionStatus == .failed
     }
 
     private var playPauseIcon: String {

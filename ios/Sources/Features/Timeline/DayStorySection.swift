@@ -189,7 +189,9 @@ private struct DayStoryHero: View {
             .clipShape(.rect(cornerRadius: 24, style: .continuous))
             .contentShape(.rect(cornerRadius: 24, style: .continuous))
             .task(id: previewRequestID) {
-                guard !playbackVideos.isEmpty, !reduceMotion else {
+                guard !playbackVideos.isEmpty,
+                      !reduceMotion,
+                      !ProcessInfo.processInfo.isLowPowerModeEnabled else {
                     preview.deactivate()
                     return
                 }

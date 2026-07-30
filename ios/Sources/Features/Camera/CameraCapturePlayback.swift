@@ -35,10 +35,12 @@ struct ReviewVideoView: View {
     var body: some View {
         VideoPlayer(player: player)
             .onAppear {
+                try? PlaybackAudioSession().activate()
                 player.play()
             }
             .onDisappear {
                 player.pause()
+                PlaybackAudioSession().deactivate()
             }
     }
 }
