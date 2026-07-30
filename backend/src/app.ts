@@ -2,11 +2,25 @@ import { Hono, type Context, type MiddlewareHandler } from "hono";
 import type { ContentfulStatusCode } from "hono/utils/http-status";
 import { z } from "zod";
 import {
+  createAccountDeletionIntent,
+  defaultAccountDeletionDependencies,
+  findAccountDeletionByReceipt,
+  processAccountDeletionJob,
+  type AccountDeletionDependencies,
+} from "./account-deletion";
+import {
   verifyAppleIdentityToken as verifyAppleIdentityTokenAgainstApple,
   type AppleIdentity,
 } from "./apple";
+import { legalPageResponse } from "./legal";
 import { handleMcpRequest } from "./mcp";
 import { createGpuJobRoutes } from "./gpu-jobs";
+import {
+  AI_CONSENT_VERSION,
+  aiConsentJson,
+  findAiConsent,
+  hasActiveAiConsent,
+} from "./privacy";
 import {
   configuredDailySummaryModel,
   DAILY_SUMMARY_MAX_CHARACTERS,
@@ -22,6 +36,7 @@ export { pollTranscriptions } from "./transcription";
 type VerifyAppleIdentityToken = (
   identityToken: string,
   audience: string,
+  expectedNonce: string,
 ) => Promise<AppleIdentity>;
 
 type GenerateDailySummary = (
@@ -32,6 +47,7 @@ type GenerateDailySummary = (
 interface AppDependencies {
   verifyAppleIdentityToken: VerifyAppleIdentityToken;
   generateDailySummary: GenerateDailySummary;
+  accountDeletion: AccountDeletionDependencies;
   now: () => Date;
 }
 
@@ -191,9 +207,19 @@ interface McpTokenRow {
 }
 
 const appleAuthSchema = z.object({
+  challengeId: z.string().uuid(),
   identityToken: z.string().min(10).max(16_384),
   displayName: z.string().trim().min(1).max(100).optional(),
-});
+}).strict();
+
+const aiConsentSchema = z.object({
+  version: z.literal(AI_CONSENT_VERSION),
+  consented: z.boolean(),
+}).strict();
+
+const accountDeletionSchema = z.object({
+  authorizationCode: z.string().min(10).max(2_048),
+}).strict();
 
 const mcpTokenSchema = z.object({
   name: z.string().trim().min(1).max(48),
@@ -234,6 +260,16 @@ const MAX_DAILY_SUMMARY_SOURCE_ROWS = 1_000;
 const MAX_DAILY_SUMMARY_SOURCE_CHARACTERS = 200_000;
 const MIN_DAILY_SUMMARY_RANGE_MS = 22 * 60 * 60 * 1_000;
 const MAX_DAILY_SUMMARY_RANGE_MS = 26 * 60 * 60 * 1_000;
+const APPLE_CHALLENGE_TTL_MS = 5 * 60 * 1_000;
+const APPLE_CHALLENGE_RATE_WINDOW_MS = 60 * 1_000;
+const APPLE_CHALLENGE_RATE_LIMIT = 10;
+const ASSET_CREATION_WINDOW_MS = 24 * 60 * 60 * 1_000;
+const ASSET_CREATION_LIMIT = 10;
+const ACTIVE_STORAGE_QUOTA_BYTES = 30 * 1024 * 1024 * 1024;
+const ACTIVE_GPU_JOB_LIMIT = 4;
+const ACTIVE_EXTERNAL_AI_WORK_LIMIT = 4;
+const EXTERNAL_AI_WORK_LEASE_MS = 2 * 60 * 1_000;
+const COMPLETED_DELETION_RETENTION_MS = 30 * 24 * 60 * 60 * 1_000;
 
 const existingAssetsSchema = z.object({
   items: z.array(z.object({
@@ -311,6 +347,12 @@ function randomToken(): string {
 async function sha256Hex(value: string): Promise<string> {
   const digest = await crypto.subtle.digest("SHA-256", new TextEncoder().encode(value));
   return [...new Uint8Array(digest)].map((byte) => byte.toString(16).padStart(2, "0")).join("");
+}
+
+function trustedClientIp(context: Context<AppEnvironment>): string | null {
+  const value = context.req.header("cf-connecting-ip")?.trim();
+  if (value && /^[0-9a-f:.]{2,64}$/i.test(value)) return value;
+  return String(context.env.ENVIRONMENT) === "production" ? null : "development";
 }
 
 function userJson(user: UserRow) {
@@ -415,21 +457,189 @@ async function findOwnedAsset(bindings: Env, assetId: string, userId: string): P
   ).bind(assetId, userId).first<AssetRow>();
 }
 
-async function queueVideoAnalysis(bindings: Env, assetId: string, now: Date) {
+type VideoAnalysisQueueResult =
+  | "queued"
+  | "already_queued"
+  | "analysis_queue_limit"
+  | "external_ai_work_limit"
+  | "not_eligible";
+
+async function activeAiWorkCounts(bindings: Env, userId: string, now: Date) {
+  const row = await bindings.DB.prepare(
+    `SELECT
+       (
+         SELECT COUNT(*)
+           FROM gpu_jobs j JOIN assets a ON a.id = j.asset_id
+          WHERE a.user_id = ? AND j.status IN ('queued', 'leased')
+       ) AS gpu_count,
+       (
+         SELECT COUNT(*)
+           FROM assets a
+          WHERE a.user_id = ? AND a.transcription_status IN ('pending', 'processing')
+       ) AS transcription_count,
+       (
+         SELECT COUNT(*)
+           FROM external_ai_work_leases lease
+          WHERE lease.user_id = ? AND lease.expires_at > ?
+       ) AS lease_count`,
+  ).bind(userId, userId, userId, now.toISOString()).first<{
+    gpu_count: number;
+    transcription_count: number;
+    lease_count: number;
+  }>();
+  return {
+    gpu: Number(row?.gpu_count ?? 0),
+    external: Number(row?.gpu_count ?? 0)
+      + Number(row?.transcription_count ?? 0)
+      + Number(row?.lease_count ?? 0),
+  };
+}
+
+async function acquireExternalAiWorkLease(
+  bindings: Env,
+  userId: string,
+  now: Date,
+): Promise<string | null> {
+  const id = crypto.randomUUID();
   const nowIso = now.toISOString();
+  const expiresAt = new Date(now.getTime() + EXTERNAL_AI_WORK_LEASE_MS).toISOString();
   await bindings.DB.prepare(
+    `DELETE FROM external_ai_work_leases
+      WHERE id IN (
+        SELECT id FROM external_ai_work_leases
+         WHERE expires_at <= ?
+         ORDER BY expires_at ASC LIMIT 10000
+      )`,
+  ).bind(nowIso).run();
+  const inserted = await bindings.DB.prepare(
+    `INSERT INTO external_ai_work_leases (id, user_id, kind, created_at, expires_at)
+     SELECT ?, ?, 'qwen_summary', ?, ?
+      WHERE EXISTS (
+        SELECT 1 FROM ai_consents consent
+         WHERE consent.user_id = ? AND consent.version = ?
+           AND consent.consented_at IS NOT NULL AND consent.withdrawn_at IS NULL
+      )
+        AND (
+          (
+            SELECT COUNT(*)
+              FROM gpu_jobs j JOIN assets a ON a.id = j.asset_id
+             WHERE a.user_id = ? AND j.status IN ('queued', 'leased')
+          )
+          +
+          (
+            SELECT COUNT(*)
+              FROM assets a
+             WHERE a.user_id = ? AND a.transcription_status IN ('pending', 'processing')
+          )
+          +
+          (
+            SELECT COUNT(*)
+              FROM external_ai_work_leases lease
+             WHERE lease.user_id = ? AND lease.expires_at > ?
+          )
+        ) < ?`,
+  ).bind(
+    id,
+    userId,
+    nowIso,
+    expiresAt,
+    userId,
+    AI_CONSENT_VERSION,
+    userId,
+    userId,
+    userId,
+    nowIso,
+    ACTIVE_EXTERNAL_AI_WORK_LIMIT,
+  ).run();
+  return (inserted.meta.changes ?? 0) === 1 ? id : null;
+}
+
+async function queueVideoAnalysis(
+  bindings: Env,
+  assetId: string,
+  userId: string,
+  now: Date,
+): Promise<VideoAnalysisQueueResult> {
+  const nowIso = now.toISOString();
+  const queued = await bindings.DB.prepare(
     `INSERT INTO gpu_jobs (
       id, asset_id, kind, status, request_json, priority, attempt_count,
       available_at, created_at, updated_at
     )
-    SELECT ?, id, 'analysis', 'queued', '{}', 0, 0, ?, ?, ?
-      FROM assets
-     WHERE id = ? AND kind = 'video' AND status = 'ready' AND agent_access_enabled = 1
+    SELECT ?, a.id, 'analysis', 'queued', '{}', 0, 0, ?, ?, ?
+      FROM assets a
+     WHERE a.id = ? AND a.user_id = ?
+       AND a.kind = 'video' AND a.status = 'ready' AND a.agent_access_enabled = 1
+       AND EXISTS (
+         SELECT 1 FROM ai_consents consent
+          WHERE consent.user_id = a.user_id AND consent.version = ?
+            AND consent.consented_at IS NOT NULL AND consent.withdrawn_at IS NULL
+       )
        AND NOT EXISTS (
          SELECT 1 FROM gpu_jobs
-          WHERE asset_id = ? AND kind = 'analysis' AND status IN ('queued', 'leased')
-       )`,
-  ).bind(crypto.randomUUID(), nowIso, nowIso, nowIso, assetId, assetId).run();
+          WHERE asset_id = a.id AND kind = 'analysis' AND status IN ('queued', 'leased')
+       )
+       AND (
+         SELECT COUNT(*)
+           FROM gpu_jobs active_job
+           JOIN assets active_asset ON active_asset.id = active_job.asset_id
+          WHERE active_asset.user_id = a.user_id
+            AND active_job.status IN ('queued', 'leased')
+       ) < ?
+       AND (
+         (
+           SELECT COUNT(*)
+             FROM gpu_jobs active_job
+             JOIN assets active_asset ON active_asset.id = active_job.asset_id
+            WHERE active_asset.user_id = a.user_id
+              AND active_job.status IN ('queued', 'leased')
+         )
+         +
+         (
+           SELECT COUNT(*)
+             FROM assets active_transcription
+            WHERE active_transcription.user_id = a.user_id
+              AND active_transcription.transcription_status IN ('pending', 'processing')
+         )
+         +
+         (
+           SELECT COUNT(*)
+             FROM external_ai_work_leases lease
+            WHERE lease.user_id = a.user_id AND lease.expires_at > ?
+         )
+       ) < ?`,
+  ).bind(
+    crypto.randomUUID(),
+    nowIso,
+    nowIso,
+    nowIso,
+    assetId,
+    userId,
+    AI_CONSENT_VERSION,
+    ACTIVE_GPU_JOB_LIMIT,
+    nowIso,
+    ACTIVE_EXTERNAL_AI_WORK_LIMIT,
+  ).run();
+  if ((queued.meta.changes ?? 0) === 1) return "queued";
+  const existing = await bindings.DB.prepare(
+    `SELECT 1 AS found
+       FROM assets a
+      WHERE a.id = ? AND a.user_id = ?
+        AND (
+          EXISTS (
+            SELECT 1 FROM gpu_jobs
+             WHERE asset_id = a.id AND kind = 'analysis' AND status IN ('queued', 'leased')
+          )
+          OR EXISTS (
+            SELECT 1 FROM video_analyses WHERE asset_id = a.id
+          )
+        )`,
+  ).bind(assetId, userId).first<{ found: number }>();
+  if (existing) return "already_queued";
+  const counts = await activeAiWorkCounts(bindings, userId, now);
+  if (counts.gpu >= ACTIVE_GPU_JOB_LIMIT) return "analysis_queue_limit";
+  if (counts.external >= ACTIVE_EXTERNAL_AI_WORK_LIMIT) return "external_ai_work_limit";
+  return "not_eligible";
 }
 
 function parseRangeHeader(value: string | undefined, size: number): { offset: number; length: number } | null | "invalid" {
@@ -573,7 +783,11 @@ function authMiddleware(now: () => Date): MiddlewareHandler<AppEnvironment> {
     const row = await context.env.DB.prepare(
       `SELECT s.id AS session_id, u.id, u.apple_subject, u.email, u.display_name
          FROM sessions s JOIN users u ON u.id = s.user_id
-        WHERE s.token_hash = ? AND s.expires_at > ?`,
+        WHERE s.token_hash = ? AND s.expires_at > ?
+          AND NOT EXISTS (
+            SELECT 1 FROM account_deletion_jobs deletion
+             WHERE deletion.user_id = u.id AND deletion.status IN ('pending', 'processing')
+          )`,
     ).bind(tokenHash, now().toISOString()).first<SessionUserRow>();
     if (!row) return errorResponse(context, 401, "unauthorized", "The bearer session is invalid or expired.");
     context.set("auth", {
@@ -590,9 +804,51 @@ function authMiddleware(now: () => Date): MiddlewareHandler<AppEnvironment> {
 export async function cleanupExpiredState(bindings: Env, now = new Date()) {
   const nowIso = now.toISOString();
   const staleBefore = new Date(now.getTime() - 24 * 60 * 60 * 1000).toISOString();
-  const [expiredSessions, expiredGrants] = await bindings.DB.batch([
+  const completedDeletionBefore = new Date(
+    now.getTime() - COMPLETED_DELETION_RETENTION_MS,
+  ).toISOString();
+  const [
+    expiredSessions,
+    expiredGrants,
+    expiredChallenges,
+    expiredAssetLedger,
+    expiredExternalAiLeases,
+    expiredDeletionJobs,
+  ] = await bindings.DB.batch([
     bindings.DB.prepare("DELETE FROM sessions WHERE expires_at <= ?").bind(nowIso),
     bindings.DB.prepare("DELETE FROM media_grants WHERE expires_at <= ?").bind(nowIso),
+    bindings.DB.prepare(
+      `DELETE FROM apple_auth_challenges
+        WHERE id IN (
+          SELECT id FROM apple_auth_challenges
+           WHERE expires_at <= ?
+           ORDER BY expires_at ASC LIMIT 10000
+        )`,
+    ).bind(nowIso),
+    bindings.DB.prepare(
+      `DELETE FROM asset_creation_ledger
+        WHERE id IN (
+          SELECT id FROM asset_creation_ledger
+           WHERE created_at <= ?
+           ORDER BY created_at ASC LIMIT 10000
+        )`,
+    ).bind(staleBefore),
+    bindings.DB.prepare(
+      `DELETE FROM external_ai_work_leases
+        WHERE id IN (
+          SELECT id FROM external_ai_work_leases
+           WHERE expires_at <= ?
+           ORDER BY expires_at ASC LIMIT 10000
+        )`,
+    ).bind(nowIso),
+    bindings.DB.prepare(
+      `DELETE FROM account_deletion_jobs
+        WHERE id IN (
+          SELECT id FROM account_deletion_jobs
+           WHERE status = 'completed' AND completed_at <= ?
+           ORDER BY completed_at ASC LIMIT 10000
+        )`,
+    ).bind(completedDeletionBefore),
   ]);
   const derivatives = await bindings.DB.prepare(
     `SELECT id, job_id, object_key
@@ -649,6 +905,10 @@ export async function cleanupExpiredState(bindings: Env, now = new Date()) {
   return {
     expiredSessions: expiredSessions?.meta.changes ?? 0,
     expiredGrants: expiredGrants?.meta.changes ?? 0,
+    expiredChallenges: expiredChallenges?.meta.changes ?? 0,
+    expiredAssetLedger: expiredAssetLedger?.meta.changes ?? 0,
+    expiredExternalAiLeases: expiredExternalAiLeases?.meta.changes ?? 0,
+    expiredDeletionJobs: expiredDeletionJobs?.meta.changes ?? 0,
     expiredDerivatives,
     quarantinedAssets,
     abandonedAssets,
@@ -659,11 +919,72 @@ export function createApp(overrides: Partial<AppDependencies> = {}) {
   const dependencies: AppDependencies = {
     verifyAppleIdentityToken: overrides.verifyAppleIdentityToken ?? verifyAppleIdentityTokenAgainstApple,
     generateDailySummary: overrides.generateDailySummary ?? generateQwenDailySummary,
+    accountDeletion: overrides.accountDeletion ?? defaultAccountDeletionDependencies,
     now: overrides.now ?? (() => new Date()),
   };
   const app = new Hono<AppEnvironment>();
 
   app.get("/health", (context) => context.json({ ok: true, service: "afterimage-api", version: 1 }));
+  app.get("/privacy", () => legalPageResponse("privacy"));
+  app.get("/support", () => legalPageResponse("support"));
+  app.get("/terms", () => legalPageResponse("terms"));
+
+  app.get("/v1/auth/apple/challenge", async (context) => {
+    const clientIp = trustedClientIp(context);
+    if (!clientIp) {
+      return errorResponse(
+        context,
+        503,
+        "trusted_client_ip_required",
+        "A trusted Cloudflare client address is required.",
+      );
+    }
+    const now = dependencies.now();
+    const nowIso = now.toISOString();
+    const rateWindowStart = new Date(now.getTime() - APPLE_CHALLENGE_RATE_WINDOW_MS).toISOString();
+    const expiresAt = new Date(now.getTime() + APPLE_CHALLENGE_TTL_MS).toISOString();
+    const challengeId = crypto.randomUUID();
+    const nonce = randomToken();
+    const clientIpHash = await sha256Hex(clientIp);
+    await context.env.DB.prepare(
+      `DELETE FROM apple_auth_challenges
+        WHERE id IN (
+          SELECT id FROM apple_auth_challenges
+           WHERE expires_at <= ?
+           ORDER BY expires_at ASC LIMIT 10000
+        )`,
+    ).bind(nowIso).run();
+    const inserted = await context.env.DB.prepare(
+      `INSERT INTO apple_auth_challenges (
+        id, nonce, client_ip_hash, created_at, expires_at
+      )
+      SELECT ?, ?, ?, ?, ?
+       WHERE (
+         SELECT COUNT(*) FROM apple_auth_challenges
+          WHERE client_ip_hash = ? AND created_at > ?
+       ) < ?`,
+    ).bind(
+      challengeId,
+      nonce,
+      clientIpHash,
+      nowIso,
+      expiresAt,
+      clientIpHash,
+      rateWindowStart,
+      APPLE_CHALLENGE_RATE_LIMIT,
+    ).run();
+    context.header("Cache-Control", "no-store, max-age=0");
+    context.header("Pragma", "no-cache");
+    if ((inserted.meta.changes ?? 0) !== 1) {
+      return errorResponse(
+        context,
+        429,
+        "apple_challenge_rate_limited",
+        "Too many Apple authentication challenges were requested.",
+      );
+    }
+    return context.json({ challengeId, nonce, expiresAt });
+  });
 
   app.get("/.well-known/mcp.json", (context) => context.json({
     mcpServers: {
@@ -683,20 +1004,92 @@ export function createApp(overrides: Partial<AppDependencies> = {}) {
 
   app.post("/v1/auth/apple", async (context) => {
     const parsed = appleAuthSchema.safeParse(await parseJson(context));
-    if (!parsed.success) return errorResponse(context, 400, "invalid_request", "A valid Apple identity token is required.");
+    if (!parsed.success) {
+      return errorResponse(
+        context,
+        400,
+        "invalid_request",
+        "A valid Apple challenge and identity token are required.",
+      );
+    }
+
+    const now = dependencies.now();
+    const nowIso = now.toISOString();
+    const challenge = await context.env.DB.prepare(
+      `SELECT nonce
+         FROM apple_auth_challenges
+        WHERE id = ? AND consumed_at IS NULL AND expires_at > ?`,
+    ).bind(parsed.data.challengeId, nowIso).first<{ nonce: string }>();
+    if (!challenge) {
+      return errorResponse(
+        context,
+        401,
+        "invalid_apple_challenge",
+        "The Apple authentication challenge is invalid, expired, or already used.",
+      );
+    }
 
     let identity: AppleIdentity;
     try {
       identity = await dependencies.verifyAppleIdentityToken(
         parsed.data.identityToken,
         context.env.APPLE_BUNDLE_ID,
+        await sha256Hex(challenge.nonce),
       );
     } catch {
       return errorResponse(context, 401, "invalid_apple_token", "Apple identity verification failed.");
     }
 
-    const now = dependencies.now();
-    const nowIso = now.toISOString();
+    const identityTokenHash = await sha256Hex(parsed.data.identityToken);
+    let consumed: D1Result;
+    try {
+      consumed = await context.env.DB.prepare(
+        `UPDATE apple_auth_challenges
+            SET identity_token_hash = ?, consumed_at = ?
+          WHERE id = ? AND consumed_at IS NULL AND expires_at > ?
+            AND NOT EXISTS (
+              SELECT 1 FROM apple_auth_challenges
+               WHERE identity_token_hash = ?
+            )`,
+      ).bind(
+        identityTokenHash,
+        nowIso,
+        parsed.data.challengeId,
+        nowIso,
+        identityTokenHash,
+      ).run();
+    } catch {
+      return errorResponse(
+        context,
+        401,
+        "invalid_apple_challenge",
+        "The Apple authentication challenge or identity token was already used.",
+      );
+    }
+    if ((consumed.meta.changes ?? 0) !== 1) {
+      return errorResponse(
+        context,
+        401,
+        "invalid_apple_challenge",
+        "The Apple authentication challenge or identity token was already used.",
+      );
+    }
+
+    const pendingDeletion = await context.env.DB.prepare(
+      `SELECT 1 AS found
+         FROM account_deletion_jobs
+        WHERE apple_subject = ? AND status IN ('pending', 'processing')
+        LIMIT 1`,
+    ).bind(identity.subject).first<{ found: number }>();
+    if (pendingDeletion) {
+      return errorResponse(
+        context,
+        409,
+        "account_deletion_pending",
+        "Account deletion is still being processed.",
+      );
+    }
+
     const proposedUserId = crypto.randomUUID();
     const displayName = identity.displayName ?? parsed.data.displayName ?? null;
     await context.env.DB.prepare(
@@ -720,11 +1113,100 @@ export function createApp(overrides: Partial<AppDependencies> = {}) {
       31_536_000,
     );
     const expiresAt = new Date(now.getTime() + sessionTtlSeconds * 1000).toISOString();
-    await context.env.DB.prepare(
-      "INSERT INTO sessions (id, user_id, token_hash, expires_at, created_at) VALUES (?, ?, ?, ?, ?)",
-    ).bind(crypto.randomUUID(), user.id, await sha256Hex(sessionToken), expiresAt, nowIso).run();
+    const sessionCreated = await context.env.DB.prepare(
+      `INSERT INTO sessions (id, user_id, token_hash, expires_at, created_at)
+       SELECT ?, u.id, ?, ?, ?
+         FROM users u
+        WHERE u.id = ?
+          AND NOT EXISTS (
+            SELECT 1 FROM account_deletion_jobs deletion
+             WHERE deletion.user_id = u.id AND deletion.status IN ('pending', 'processing')
+          )`,
+    ).bind(
+      crypto.randomUUID(),
+      await sha256Hex(sessionToken),
+      expiresAt,
+      nowIso,
+      user.id,
+    ).run();
+    if ((sessionCreated.meta.changes ?? 0) !== 1) {
+      return errorResponse(
+        context,
+        409,
+        "account_deletion_pending",
+        "Account deletion is still being processed.",
+      );
+    }
 
     return context.json({ token: sessionToken, expiresAt, user: userJson(user) });
+  });
+
+  app.delete("/v1/account", async (context) => {
+    const authorization = context.req.header("authorization");
+    const match = authorization ? /^Bearer ([A-Za-z0-9_-]{32,256})$/.exec(authorization) : null;
+    if (!match?.[1]) {
+      return errorResponse(context, 401, "unauthorized", "A valid bearer session is required.");
+    }
+    const tokenHash = await sha256Hex(match[1]);
+    const receipt = await findAccountDeletionByReceipt(context.env, tokenHash);
+    if (receipt) {
+      const status = receipt.status === "completed"
+        ? "completed"
+        : await processAccountDeletionJob(
+            context.env,
+            receipt.id,
+            dependencies.now(),
+            dependencies.accountDeletion,
+          );
+      context.header("Cache-Control", "no-store");
+      return context.json({
+        deletion: { status },
+        localSessionShouldBeCleared: true,
+      }, 202);
+    }
+
+    const now = dependencies.now();
+    const session = await context.env.DB.prepare(
+      `SELECT s.id AS session_id, u.id, u.apple_subject, u.email, u.display_name
+         FROM sessions s JOIN users u ON u.id = s.user_id
+        WHERE s.token_hash = ? AND s.expires_at > ?
+          AND NOT EXISTS (
+            SELECT 1 FROM account_deletion_jobs deletion
+             WHERE deletion.user_id = u.id AND deletion.status IN ('pending', 'processing')
+          )`,
+    ).bind(tokenHash, now.toISOString()).first<SessionUserRow>();
+    if (!session) {
+      return errorResponse(context, 401, "unauthorized", "The bearer session is invalid or expired.");
+    }
+    const parsed = accountDeletionSchema.safeParse(await parseJson(context));
+    if (!parsed.success) {
+      return errorResponse(
+        context,
+        400,
+        "apple_reauthorization_required",
+        "A fresh Apple authorization code is required to delete the account.",
+      );
+    }
+    const job = await createAccountDeletionIntent(
+      context.env,
+      {
+        userId: session.id,
+        appleSubject: session.apple_subject,
+      },
+      parsed.data.authorizationCode,
+      now,
+    );
+    const status = await processAccountDeletionJob(
+      context.env,
+      job.id,
+      now,
+      dependencies.accountDeletion,
+    );
+    context.header("Cache-Control", "no-store");
+    return context.json({
+      deletion: { status },
+      localSessionShouldBeCleared: true,
+    }, 202);
   });
 
   // Development login: issues a session without Apple verification.
@@ -735,6 +1217,20 @@ export function createApp(overrides: Partial<AppDependencies> = {}) {
     const now = dependencies.now();
     const nowIso = now.toISOString();
     const devSubject = "dev-kan";
+    const pendingDeletion = await context.env.DB.prepare(
+      `SELECT 1 AS found
+         FROM account_deletion_jobs
+        WHERE apple_subject = ? AND status IN ('pending', 'processing')
+        LIMIT 1`,
+    ).bind(devSubject).first<{ found: number }>();
+    if (pendingDeletion) {
+      return errorResponse(
+        context,
+        409,
+        "account_deletion_pending",
+        "Account deletion is still being processed.",
+      );
+    }
     const proposedUserId = crypto.randomUUID();
     await context.env.DB.prepare(
       `INSERT INTO users (id, apple_subject, email, display_name, created_at, updated_at)
@@ -754,9 +1250,30 @@ export function createApp(overrides: Partial<AppDependencies> = {}) {
       31_536_000,
     );
     const expiresAt = new Date(now.getTime() + sessionTtlSeconds * 1000).toISOString();
-    await context.env.DB.prepare(
-      "INSERT INTO sessions (id, user_id, token_hash, expires_at, created_at) VALUES (?, ?, ?, ?, ?)",
-    ).bind(crypto.randomUUID(), user.id, await sha256Hex(sessionToken), expiresAt, nowIso).run();
+    const sessionCreated = await context.env.DB.prepare(
+      `INSERT INTO sessions (id, user_id, token_hash, expires_at, created_at)
+       SELECT ?, u.id, ?, ?, ?
+         FROM users u
+        WHERE u.id = ?
+          AND NOT EXISTS (
+            SELECT 1 FROM account_deletion_jobs deletion
+             WHERE deletion.user_id = u.id AND deletion.status IN ('pending', 'processing')
+          )`,
+    ).bind(
+      crypto.randomUUID(),
+      await sha256Hex(sessionToken),
+      expiresAt,
+      nowIso,
+      user.id,
+    ).run();
+    if ((sessionCreated.meta.changes ?? 0) !== 1) {
+      return errorResponse(
+        context,
+        409,
+        "account_deletion_pending",
+        "Account deletion is still being processed.",
+      );
+    }
 
     return context.json({ token: sessionToken, expiresAt, user: userJson(user) });
   });
@@ -777,14 +1294,29 @@ export function createApp(overrides: Partial<AppDependencies> = {}) {
           COALESCE(d.object_key, a.object_key) AS object_key
          FROM media_grants g
          JOIN assets a ON a.id = g.asset_id AND a.user_id = g.user_id
-         LEFT JOIN media_derivatives d ON d.id = g.derivative_id AND d.asset_id = a.id
+        LEFT JOIN media_derivatives d ON d.id = g.derivative_id AND d.asset_id = a.id
         WHERE g.token_hash = ? AND g.expires_at > ? AND a.status = 'ready'
-          AND (g.purpose = 'app' OR a.agent_access_enabled = 1)
+          AND (
+            (g.purpose = 'app' AND g.id NOT LIKE 'transcription:%')
+            OR (
+              EXISTS (
+                SELECT 1 FROM ai_consents consent
+                 WHERE consent.user_id = a.user_id AND consent.version = ?
+                   AND consent.consented_at IS NOT NULL AND consent.withdrawn_at IS NULL
+              )
+              AND (g.id LIKE 'transcription:%' OR a.agent_access_enabled = 1)
+            )
+          )
           AND (
             g.derivative_id IS NULL
             OR (d.status = 'ready' AND d.expires_at > ?)
           )`,
-    ).bind(await sha256Hex(token), nowIso, nowIso).first<MediaBodyRow>();
+    ).bind(
+      await sha256Hex(token),
+      nowIso,
+      AI_CONSENT_VERSION,
+      nowIso,
+    ).first<MediaBodyRow>();
     if (!asset) return errorResponse(context, 404, "media_grant_not_found", "Playback grant was not found.");
     return serveAssetBody(context, asset);
   });
@@ -805,6 +1337,74 @@ export function createApp(overrides: Partial<AppDependencies> = {}) {
     });
   });
 
+  api.get("/privacy/ai", async (context) => {
+    const row = await findAiConsent(context.env, context.get("auth").userId);
+    return context.json(aiConsentJson(row));
+  });
+
+  api.put("/privacy/ai", async (context) => {
+    const parsed = aiConsentSchema.safeParse(await parseJson(context));
+    if (!parsed.success) {
+      return errorResponse(
+        context,
+        400,
+        "invalid_ai_consent",
+        `AI consent must use version ${AI_CONSENT_VERSION}.`,
+      );
+    }
+    const auth = context.get("auth");
+    const nowIso = dependencies.now().toISOString();
+    if (parsed.data.consented) {
+      await context.env.DB.prepare(
+        `INSERT INTO ai_consents (
+          user_id, version, consented_at, withdrawn_at, updated_at
+        ) VALUES (?, ?, ?, NULL, ?)
+        ON CONFLICT(user_id) DO UPDATE SET
+          version = excluded.version,
+          consented_at = excluded.consented_at,
+          withdrawn_at = NULL,
+          updated_at = excluded.updated_at`,
+      ).bind(auth.userId, AI_CONSENT_VERSION, nowIso, nowIso).run();
+    } else {
+      await context.env.DB.batch([
+        context.env.DB.prepare(
+          `INSERT INTO ai_consents (
+            user_id, version, consented_at, withdrawn_at, updated_at
+          ) VALUES (?, ?, NULL, ?, ?)
+          ON CONFLICT(user_id) DO UPDATE SET
+            version = excluded.version,
+            withdrawn_at = excluded.withdrawn_at,
+            updated_at = excluded.updated_at`,
+        ).bind(auth.userId, AI_CONSENT_VERSION, nowIso, nowIso),
+        context.env.DB.prepare(
+          "UPDATE assets SET agent_access_enabled = 0, updated_at = ? WHERE user_id = ?",
+        ).bind(nowIso, auth.userId),
+        context.env.DB.prepare(
+          `UPDATE assets
+              SET transcription_status = 'skipped',
+                  transcript_error = 'consent_withdrawn',
+                  transcription_updated_at = ?
+            WHERE user_id = ? AND transcription_status = 'pending'`,
+        ).bind(nowIso, auth.userId),
+        context.env.DB.prepare(
+          `DELETE FROM media_grants
+            WHERE user_id = ?
+              AND (purpose IN ('agent', 'worker') OR id LIKE 'transcription:%')`,
+        ).bind(auth.userId),
+        context.env.DB.prepare(
+          `DELETE FROM gpu_jobs
+            WHERE asset_id IN (SELECT id FROM assets WHERE user_id = ?)`,
+        ).bind(auth.userId),
+        context.env.DB.prepare(
+          `UPDATE mcp_tokens SET revoked_at = ?
+            WHERE user_id = ? AND revoked_at IS NULL`,
+        ).bind(nowIso, auth.userId),
+      ]);
+    }
+    const row = await findAiConsent(context.env, auth.userId);
+    return context.json(aiConsentJson(row));
+  });
+
   api.get("/mcp/tokens", async (context) => {
     const auth = context.get("auth");
     const tokens = await context.env.DB.prepare(
@@ -822,6 +1422,14 @@ export function createApp(overrides: Partial<AppDependencies> = {}) {
       return errorResponse(context, 400, "invalid_mcp_token", "A token name between 1 and 48 characters is required.");
     }
     const auth = context.get("auth");
+    if (!await hasActiveAiConsent(context.env, auth.userId)) {
+      return errorResponse(
+        context,
+        403,
+        "ai_consent_required",
+        "Active AI and MCP consent is required.",
+      );
+    }
     const now = dependencies.now();
     const nowIso = now.toISOString();
     const active = await context.env.DB.prepare(
@@ -878,6 +1486,14 @@ export function createApp(overrides: Partial<AppDependencies> = {}) {
     }
     const auth = context.get("auth");
     const assetId = context.req.param("assetId");
+    if (parsed.data.enabled && !await hasActiveAiConsent(context.env, auth.userId)) {
+      return errorResponse(
+        context,
+        403,
+        "ai_consent_required",
+        "Active AI and MCP consent is required.",
+      );
+    }
     const asset = await findOwnedAsset(context.env, assetId, auth.userId);
     if (!asset || asset.kind !== "video" || asset.status !== "ready") {
       return errorResponse(context, 404, "asset_not_found", "Asset was not found.");
@@ -905,7 +1521,33 @@ export function createApp(overrides: Partial<AppDependencies> = {}) {
       return errorResponse(context, 404, "asset_not_found", "Asset was not found.");
     }
     if (parsed.data.enabled) {
-      await queueVideoAnalysis(context.env, assetId, now);
+      const queueResult = await queueVideoAnalysis(context.env, assetId, auth.userId, now);
+      if (queueResult === "analysis_queue_limit" || queueResult === "external_ai_work_limit") {
+        await context.env.DB.prepare(
+          `UPDATE assets SET agent_access_enabled = 0, updated_at = ?
+            WHERE id = ? AND user_id = ?`,
+        ).bind(updatedAt, assetId, auth.userId).run();
+        return errorResponse(
+          context,
+          429,
+          queueResult,
+          queueResult === "analysis_queue_limit"
+            ? "At most four Mage jobs may be active."
+            : "At most four external AI jobs may be active.",
+        );
+      }
+      if (queueResult === "not_eligible") {
+        await context.env.DB.prepare(
+          `UPDATE assets SET agent_access_enabled = 0, updated_at = ?
+            WHERE id = ? AND user_id = ?`,
+        ).bind(updatedAt, assetId, auth.userId).run();
+        return errorResponse(
+          context,
+          409,
+          "agent_access_conflict",
+          "Agent access could not be enabled.",
+        );
+      }
     } else {
       const keep = new Set([asset.object_key, ...(asset.thumbnail_key ? [asset.thumbnail_key] : [])]);
       await deleteAssetPrefixObjects(context.env, auth.userId, assetId, keep);
@@ -952,7 +1594,8 @@ export function createApp(overrides: Partial<AppDependencies> = {}) {
     const parsed = assetSchema.safeParse(await parseJson(context));
     if (!parsed.success) return errorResponse(context, 400, "invalid_asset", "Asset metadata is invalid.");
     const auth = context.get("auth");
-    const nowIso = dependencies.now().toISOString();
+    const now = dependencies.now();
+    const nowIso = now.toISOString();
     if (parsed.data.sourceFingerprint) {
       const duplicate = await context.env.DB.prepare(
         `SELECT id FROM assets
@@ -973,6 +1616,38 @@ export function createApp(overrides: Partial<AppDependencies> = {}) {
       }
     }
     const assetId = crypto.randomUUID();
+    const creationWindowStart = new Date(now.getTime() - ASSET_CREATION_WINDOW_MS).toISOString();
+    await context.env.DB.prepare(
+      `DELETE FROM asset_creation_ledger
+        WHERE id IN (
+          SELECT id FROM asset_creation_ledger
+           WHERE created_at <= ?
+           ORDER BY created_at ASC LIMIT 10000
+        )`,
+    ).bind(creationWindowStart).run();
+    const quotaClaim = await context.env.DB.prepare(
+      `INSERT INTO asset_creation_ledger (id, user_id, created_at)
+      SELECT ?, ?, ?
+       WHERE (
+         SELECT COUNT(*) FROM asset_creation_ledger
+          WHERE user_id = ? AND created_at > ?
+       ) < ?`,
+    ).bind(
+      assetId,
+      auth.userId,
+      nowIso,
+      auth.userId,
+      creationWindowStart,
+      ASSET_CREATION_LIMIT,
+    ).run();
+    if ((quotaClaim.meta.changes ?? 0) !== 1) {
+      return errorResponse(
+        context,
+        429,
+        "asset_creation_quota_exceeded",
+        "At most ten assets may be created in a rolling 24-hour window.",
+      );
+    }
     const objectKey = `users/${auth.userId}/assets/${assetId}/media`;
     const singleLimit = integerBinding(context.env.SINGLE_UPLOAD_MAX_BYTES, 5_242_880, 1, 100 * 1024 * 1024);
     const partSize = integerBinding(
@@ -983,16 +1658,28 @@ export function createApp(overrides: Partial<AppDependencies> = {}) {
     );
     const uploadMode: "single" | "multipart" = parsed.data.byteSize <= singleLimit ? "single" : "multipart";
     const partCount = uploadMode === "multipart" ? Math.ceil(parsed.data.byteSize / partSize) : 1;
-    if (partCount > 10_000) return errorResponse(context, 413, "asset_too_large", "Asset requires too many upload parts.");
+    if (partCount > 10_000) {
+      await context.env.DB.prepare("DELETE FROM asset_creation_ledger WHERE id = ?")
+        .bind(assetId)
+        .run();
+      return errorResponse(context, 413, "asset_too_large", "Asset requires too many upload parts.");
+    }
 
     let uploadId: string | null = null;
     let multipart: R2MultipartUpload | null = null;
-    if (uploadMode === "multipart") {
-      multipart = await context.env.MEDIA.createMultipartUpload(objectKey, {
-        httpMetadata: { contentType: parsed.data.contentType },
-        customMetadata: { assetId, userId: auth.userId },
-      });
-      uploadId = multipart.uploadId;
+    try {
+      if (uploadMode === "multipart") {
+        multipart = await context.env.MEDIA.createMultipartUpload(objectKey, {
+          httpMetadata: { contentType: parsed.data.contentType },
+          customMetadata: { assetId, userId: auth.userId },
+        });
+        uploadId = multipart.uploadId;
+      }
+    } catch (error) {
+      await context.env.DB.prepare("DELETE FROM asset_creation_ledger WHERE id = ?")
+        .bind(assetId)
+        .run();
+      throw error;
     }
 
     let inserted: D1Result;
@@ -1001,8 +1688,19 @@ export function createApp(overrides: Partial<AppDependencies> = {}) {
         `INSERT OR IGNORE INTO assets (
           id, user_id, kind, source_fingerprint, filename, content_type, byte_size, captured_at,
           latitude, longitude, duration_ms, width, height, status, object_key, thumbnail_key,
-          upload_mode, upload_id, part_size, created_at, updated_at
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'uploading', ?, NULL, ?, ?, ?, ?, ?)`,
+          upload_mode, upload_id, part_size, created_at, updated_at, agent_access_enabled
+        )
+        SELECT ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'uploading', ?, NULL, ?, ?, ?, ?, ?, 0
+         WHERE (
+           SELECT COALESCE(SUM(byte_size), 0)
+             FROM assets
+            WHERE user_id = ? AND status IN ('uploading', 'ready')
+         ) + ? <= ?
+           AND NOT EXISTS (
+             SELECT 1 FROM account_deletion_jobs deletion
+              WHERE deletion.user_id = ?
+                AND deletion.status IN ('pending', 'processing')
+           )`,
       ).bind(
         assetId,
         auth.userId,
@@ -1023,18 +1721,63 @@ export function createApp(overrides: Partial<AppDependencies> = {}) {
         uploadMode === "multipart" ? partSize : null,
         nowIso,
         nowIso,
+        auth.userId,
+        parsed.data.byteSize,
+        ACTIVE_STORAGE_QUOTA_BYTES,
+        auth.userId,
       ).run();
     } catch (error) {
       if (multipart) await multipart.abort();
+      await context.env.DB.prepare("DELETE FROM asset_creation_ledger WHERE id = ?")
+        .bind(assetId)
+        .run();
       throw error;
     }
     if ((inserted.meta.changes ?? 0) !== 1) {
       if (multipart) await multipart.abort();
+      await context.env.DB.prepare("DELETE FROM asset_creation_ledger WHERE id = ?")
+        .bind(assetId)
+        .run();
+      const deletionPending = await context.env.DB.prepare(
+        `SELECT 1 AS found FROM account_deletion_jobs
+          WHERE user_id = ? AND status IN ('pending', 'processing')`,
+      ).bind(auth.userId).first<{ found: number }>();
+      if (deletionPending) {
+        return errorResponse(
+          context,
+          409,
+          "account_deletion_pending",
+          "Account deletion is still being processed.",
+        );
+      }
+      const duplicate = parsed.data.sourceFingerprint
+        ? await context.env.DB.prepare(
+            `SELECT 1 AS found FROM assets
+              WHERE user_id = ? AND status IN ('uploading', 'ready')
+                AND (
+                  source_fingerprint = ?
+                  OR (source_fingerprint IS NULL AND filename = ?)
+                )
+              LIMIT 1`,
+          ).bind(
+            auth.userId,
+            parsed.data.sourceFingerprint,
+            parsed.data.filename,
+          ).first<{ found: number }>()
+        : null;
+      if (duplicate) {
+        return errorResponse(
+          context,
+          409,
+          "duplicate_asset",
+          "This photo or video is already in afterimage.",
+        );
+      }
       return errorResponse(
         context,
-        409,
-        "duplicate_asset",
-        "This photo or video is already in afterimage.",
+        429,
+        "storage_quota_exceeded",
+        "Active uploads and stored assets may use at most 30 GiB.",
       );
     }
 
@@ -1320,19 +2063,67 @@ export function createApp(overrides: Partial<AppDependencies> = {}) {
     if (!completed) {
       return errorResponse(context, 409, "upload_conflict", "Asset was deleted during completion.");
     }
-    // Queue video assets for async transcription via Soniox.
     if (completed.kind === "video" && context.env.SONIOX_API_KEY) {
       try {
-        await context.env.DB.prepare(
-          "UPDATE assets SET transcription_status = 'pending', transcription_updated_at = ? WHERE id = ? AND transcription_status IS NULL",
-        ).bind(dependencies.now().toISOString(), completed.id).run();
+        const transcriptionQueued = await context.env.DB.prepare(
+          `UPDATE assets
+              SET transcription_status = 'pending',
+                  transcript_error = NULL,
+                  transcription_updated_at = ?
+            WHERE id = ? AND user_id = ? AND transcription_status IS NULL
+              AND EXISTS (
+                SELECT 1 FROM ai_consents consent
+                 WHERE consent.user_id = assets.user_id AND consent.version = ?
+                   AND consent.consented_at IS NOT NULL AND consent.withdrawn_at IS NULL
+              )
+              AND (
+                (
+                  SELECT COUNT(*)
+                    FROM gpu_jobs active_job
+                    JOIN assets active_asset ON active_asset.id = active_job.asset_id
+                   WHERE active_asset.user_id = assets.user_id
+                     AND active_job.status IN ('queued', 'leased')
+                )
+                +
+                (
+                  SELECT COUNT(*)
+                    FROM assets active_transcription
+                   WHERE active_transcription.user_id = assets.user_id
+                     AND active_transcription.transcription_status IN ('pending', 'processing')
+                )
+                +
+                (
+                  SELECT COUNT(*)
+                    FROM external_ai_work_leases lease
+                   WHERE lease.user_id = assets.user_id AND lease.expires_at > ?
+                )
+              ) < ?`,
+        ).bind(
+          dependencies.now().toISOString(),
+          completed.id,
+          auth.userId,
+          AI_CONSENT_VERSION,
+          dependencies.now().toISOString(),
+          ACTIVE_EXTERNAL_AI_WORK_LIMIT,
+        ).run();
+        if (
+          (transcriptionQueued.meta.changes ?? 0) !== 1
+          && await hasActiveAiConsent(context.env, auth.userId)
+        ) {
+          await context.env.DB.prepare(
+            `UPDATE assets
+                SET transcription_status = 'skipped',
+                    transcript_error = 'external_ai_work_limit',
+                    transcription_updated_at = ?
+              WHERE id = ? AND user_id = ? AND transcription_status IS NULL`,
+          ).bind(dependencies.now().toISOString(), completed.id, auth.userId).run();
+        }
       } catch {
-        // Transcription is best-effort; the asset is already ready.
       }
     }
     if (completed.kind === "video" && completed.agent_access_enabled === 1) {
       try {
-        await queueVideoAnalysis(context.env, completed.id, dependencies.now());
+        await queueVideoAnalysis(context.env, completed.id, auth.userId, dependencies.now());
       } catch (error) {
         console.error(JSON.stringify({
           event: "video_analysis_queue_failed",
@@ -1468,6 +2259,14 @@ export function createApp(overrides: Partial<AppDependencies> = {}) {
   api.get("/days/summary", async (context) => {
     const auth = context.get("auth");
     setPrivateResponseHeaders(context);
+    if (!await hasActiveAiConsent(context.env, auth.userId)) {
+      return errorResponse(
+        context,
+        403,
+        "ai_consent_required",
+        "Active AI consent is required for daily summaries.",
+      );
+    }
     const parsed = dailyPlaybackQuerySchema.safeParse({
       startAt: context.req.query("startAt"),
       endAt: context.req.query("endAt"),
@@ -1644,12 +2443,40 @@ export function createApp(overrides: Partial<AppDependencies> = {}) {
       });
     }
 
+    const leaseId = await acquireExternalAiWorkLease(
+      context.env,
+      auth.userId,
+      dependencies.now(),
+    );
+    if (!leaseId) {
+      return errorResponse(
+        context,
+        429,
+        "external_ai_work_limit",
+        "Too many external AI operations are active.",
+      );
+    }
     let generated: GeneratedDailySummary;
     try {
       generated = await dependencies.generateDailySummary(context.env, sources);
     } catch {
       console.error(JSON.stringify({ event: "daily_summary_generation_failed", model }));
       return errorResponse(context, 503, "summary_unavailable", "The daily summary is temporarily unavailable.");
+    } finally {
+      try {
+        await context.env.DB.prepare("DELETE FROM external_ai_work_leases WHERE id = ?")
+          .bind(leaseId)
+          .run();
+      } catch {
+      }
+    }
+    if (!await hasActiveAiConsent(context.env, auth.userId)) {
+      return errorResponse(
+        context,
+        403,
+        "ai_consent_required",
+        "Active AI consent is required for daily summaries.",
+      );
     }
     const summary = generated.summary.trim();
     if (

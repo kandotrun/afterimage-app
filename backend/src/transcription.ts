@@ -5,6 +5,7 @@ import {
   getTranscriptionStatus,
   uploadToSoniox,
 } from "./soniox";
+import { AI_CONSENT_VERSION, hasActiveAiConsent } from "./privacy";
 
 interface TranscriptionPollRow {
   readonly id: string;
@@ -57,9 +58,16 @@ async function createTranscriptionMediaUrl(
   const url = new URL(`/v1/media/${token}`, baseUrl);
   if (url.protocol !== "https:") throw new Error("TRANSCRIPTION_MEDIA_BASE_URL must use HTTPS");
   const expiresAt = new Date(now.getTime() + TRANSCRIPTION_GRANT_TTL_MS).toISOString();
-  await bindings.DB.prepare(
+  const granted = await bindings.DB.prepare(
     `INSERT INTO media_grants (id, asset_id, user_id, token_hash, expires_at, created_at)
-      VALUES (?, ?, ?, ?, ?, ?)
+      SELECT ?, a.id, a.user_id, ?, ?, ?
+        FROM assets a
+       WHERE a.id = ? AND a.user_id = ?
+         AND EXISTS (
+           SELECT 1 FROM ai_consents consent
+            WHERE consent.user_id = a.user_id AND consent.version = ?
+              AND consent.consented_at IS NOT NULL AND consent.withdrawn_at IS NULL
+         )
       ON CONFLICT(id) DO UPDATE SET
         asset_id = excluded.asset_id,
         user_id = excluded.user_id,
@@ -68,12 +76,14 @@ async function createTranscriptionMediaUrl(
         created_at = excluded.created_at`,
   ).bind(
     transcriptionGrantId(asset.id),
-    asset.id,
-    asset.user_id,
     await sha256Hex(token),
     expiresAt,
     nowIso,
+    asset.id,
+    asset.user_id,
+    AI_CONSENT_VERSION,
   ).run();
+  if ((granted.meta.changes ?? 0) !== 1) throw new Error("AI consent is no longer active");
   return url.toString();
 }
 
@@ -95,6 +105,11 @@ export async function pollTranscriptions(bindings: Env, now = new Date()) {
             transcription_status, soniox_file_id, soniox_transcription_id
       FROM assets
       WHERE kind = 'video' AND status = 'ready'
+        AND EXISTS (
+          SELECT 1 FROM ai_consents consent
+           WHERE consent.user_id = assets.user_id AND consent.version = ?
+             AND consent.consented_at IS NOT NULL AND consent.withdrawn_at IS NULL
+        )
         AND (
           transcription_status = 'pending'
           OR (
@@ -107,7 +122,7 @@ export async function pollTranscriptions(bindings: Env, now = new Date()) {
           )
         )
       ORDER BY transcription_updated_at ASC LIMIT 10`,
-  ).bind(expiredClaimIso).all<TranscriptionPollRow>();
+  ).bind(AI_CONSENT_VERSION, expiredClaimIso).all<TranscriptionPollRow>();
 
   let processed = 0;
   for (const asset of pending.results) {
@@ -116,6 +131,7 @@ export async function pollTranscriptions(bindings: Env, now = new Date()) {
     let mediaGrantCreated = false;
     let finalizationAttempted = false;
     try {
+      if (!await hasActiveAiConsent(bindings, asset.user_id)) continue;
       if (asset.transcription_status === "pending" || !asset.soniox_transcription_id) {
         const claim = await bindings.DB.prepare(
           `UPDATE assets
@@ -130,8 +146,13 @@ export async function pollTranscriptions(bindings: Env, now = new Date()) {
                     OR transcription_updated_at <= ?
                   )
                 )
+              )
+              AND EXISTS (
+                SELECT 1 FROM ai_consents consent
+                 WHERE consent.user_id = assets.user_id AND consent.version = ?
+                   AND consent.consented_at IS NOT NULL AND consent.withdrawn_at IS NULL
               )`,
-        ).bind(nowIso, asset.id, expiredClaimIso).run();
+        ).bind(nowIso, asset.id, expiredClaimIso, AI_CONSENT_VERSION).run();
         if (claim.meta.changes !== 1) continue;
         const object = await bindings.MEDIA.get(asset.object_key);
         if (!object) {
@@ -164,13 +185,19 @@ export async function pollTranscriptions(bindings: Env, now = new Date()) {
         const finalized = await bindings.DB.prepare(
           `UPDATE assets SET transcription_status = 'processing', soniox_file_id = ?, soniox_transcription_id = ?, transcription_updated_at = ?
             WHERE id = ? AND transcription_status = 'processing'
-              AND soniox_transcription_id IS NULL AND transcription_updated_at = ?`,
+              AND soniox_transcription_id IS NULL AND transcription_updated_at = ?
+              AND EXISTS (
+                SELECT 1 FROM ai_consents consent
+                 WHERE consent.user_id = assets.user_id AND consent.version = ?
+                   AND consent.consented_at IS NOT NULL AND consent.withdrawn_at IS NULL
+              )`,
         ).bind(
           provisionalFileId,
           provisionalTranscriptionId,
           nowIso,
           asset.id,
           nowIso,
+          AI_CONSENT_VERSION,
         ).run();
         if (finalized.meta.changes !== 1) {
           await cleanupSoniox(bindings, provisionalTranscriptionId, provisionalFileId);
@@ -179,29 +206,52 @@ export async function pollTranscriptions(bindings: Env, now = new Date()) {
         }
         processed++;
       } else {
+        if (!await hasActiveAiConsent(bindings, asset.user_id)) continue;
         const status = await getTranscriptionStatus(bindings, asset.soniox_transcription_id);
         switch (status.status) {
           case "completed": {
             const transcript = await getTranscript(bindings, asset.soniox_transcription_id);
-            await bindings.DB.prepare(
+            const saved = await bindings.DB.prepare(
               `UPDATE assets SET transcription_status = 'completed', transcript = ?, transcript_language = ?,
                 transcript_error = NULL, transcription_updated_at = ?
-                WHERE id = ? AND transcription_status = 'processing'`,
-            ).bind(transcript.text || "", transcript.language || null, nowIso, asset.id).run();
+                WHERE id = ? AND transcription_status = 'processing'
+                  AND EXISTS (
+                    SELECT 1 FROM ai_consents consent
+                     WHERE consent.user_id = assets.user_id AND consent.version = ?
+                       AND consent.consented_at IS NOT NULL AND consent.withdrawn_at IS NULL
+                  )`,
+            ).bind(
+              transcript.text || "",
+              transcript.language || null,
+              nowIso,
+              asset.id,
+              AI_CONSENT_VERSION,
+            ).run();
             await cleanupSoniox(bindings, asset.soniox_transcription_id, asset.soniox_file_id);
             await deleteTranscriptionMediaGrant(bindings, asset.id);
-            processed++;
+            if ((saved.meta.changes ?? 0) === 1) processed++;
             break;
           }
-          case "error":
-            await bindings.DB.prepare(
+          case "error": {
+            const failed = await bindings.DB.prepare(
               `UPDATE assets SET transcription_status = 'failed', transcript_error = ?, transcription_updated_at = ?
-                WHERE id = ? AND transcription_status = 'processing'`,
-            ).bind(status.error_message || "soniox_error", nowIso, asset.id).run();
+                WHERE id = ? AND transcription_status = 'processing'
+                  AND EXISTS (
+                    SELECT 1 FROM ai_consents consent
+                     WHERE consent.user_id = assets.user_id AND consent.version = ?
+                       AND consent.consented_at IS NOT NULL AND consent.withdrawn_at IS NULL
+                  )`,
+            ).bind(
+              status.error_message || "soniox_error",
+              nowIso,
+              asset.id,
+              AI_CONSENT_VERSION,
+            ).run();
             await cleanupSoniox(bindings, asset.soniox_transcription_id, asset.soniox_file_id);
             await deleteTranscriptionMediaGrant(bindings, asset.id);
-            processed++;
+            if ((failed.meta.changes ?? 0) === 1) processed++;
             break;
+          }
           case "queued":
           case "processing":
             break;

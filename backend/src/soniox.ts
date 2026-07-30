@@ -221,3 +221,25 @@ export async function cleanupSoniox(
   ];
   await Promise.allSettled(requests);
 }
+
+export async function deleteSonioxResources(
+  env: SonioxEnv,
+  transcriptionId: string | null,
+  fileId: string | null,
+): Promise<void> {
+  if (!transcriptionId && !fileId) return;
+  if (!env.SONIOX_API_KEY) throw new Error("SONIOX_API_KEY is not configured");
+  const targets = [
+    ...(transcriptionId ? [`${SONIOX_BASE}/transcriptions/${transcriptionId}`] : []),
+    ...(fileId ? [`${SONIOX_BASE}/files/${fileId}`] : []),
+  ];
+  for (const target of targets) {
+    const response = await fetch(target, {
+      method: "DELETE",
+      headers: sonioxHeaders(env),
+    });
+    if (!response.ok && response.status !== 404) {
+      throw new Error("Soniox resource deletion failed");
+    }
+  }
+}

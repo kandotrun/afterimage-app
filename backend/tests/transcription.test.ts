@@ -1,6 +1,7 @@
 import { env } from "cloudflare:workers";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { pollTranscriptions } from "../src/app";
+import { AI_CONSENT_VERSION } from "../src/privacy";
 import { uploadToSoniox } from "../src/soniox";
 
 const NOW = new Date("2026-07-28T00:00:00.000Z");
@@ -29,6 +30,11 @@ beforeEach(async () => {
     `INSERT INTO users (id, apple_subject, created_at, updated_at)
      VALUES ('transcription-owner', 'transcription-owner', ?, ?)`,
   ).bind(NOW.toISOString(), NOW.toISOString()).run();
+  await env.DB.prepare(
+    `INSERT INTO ai_consents (
+      user_id, version, consented_at, updated_at
+    ) VALUES ('transcription-owner', ?, ?, ?)`,
+  ).bind(AI_CONSENT_VERSION, NOW.toISOString(), NOW.toISOString()).run();
   await env.DB.prepare(
     `INSERT INTO assets (
       id, user_id, kind, filename, content_type, byte_size, captured_at,

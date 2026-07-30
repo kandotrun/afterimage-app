@@ -1,5 +1,6 @@
 import { Hono, type Context } from "hono";
 import { z } from "zod";
+import { AI_CONSENT_VERSION } from "./privacy";
 
 type GpuEnvironment = {
   Bindings: Env;
@@ -32,6 +33,14 @@ const modelId = "microsoft/Mage-VL";
 const modelRevision = "8484f3154beea3b563bee99e2fab2d6c8bb5d3f3";
 const leaseDurationMs = 15 * 60 * 1_000;
 const mediaGrantDurationMs = 10 * 60 * 1_000;
+
+function activeAiConsentSql(assetAlias: string): string {
+  return `EXISTS (
+    SELECT 1 FROM ai_consents consent
+     WHERE consent.user_id = ${assetAlias}.user_id AND consent.version = '${AI_CONSENT_VERSION}'
+       AND consent.consented_at IS NOT NULL AND consent.withdrawn_at IS NULL
+  )`;
+}
 
 const leaseSchema = z.object({
   workerId: z.string().trim().min(1).max(100),
@@ -122,7 +131,7 @@ async function validLease(
        FROM gpu_jobs j JOIN assets a ON a.id = j.asset_id
       WHERE j.id = ? AND j.status = 'leased' AND j.lease_token_hash = ?
         AND j.lease_expires_at > ? AND a.kind = 'video' AND a.status = 'ready'
-        AND a.agent_access_enabled = 1`,
+        AND a.agent_access_enabled = 1 AND ${activeAiConsentSql("a")}`,
   ).bind(jobId, leaseTokenHash, nowIso).first<{
     id: string;
     asset_id: string;
@@ -166,6 +175,7 @@ export function createGpuJobRoutes(dependencies: GpuJobDependencies) {
           SELECT j.id
             FROM gpu_jobs j JOIN assets a ON a.id = j.asset_id
            WHERE a.kind = 'video' AND a.status = 'ready' AND a.agent_access_enabled = 1
+             AND ${activeAiConsentSql("a")}
              AND j.attempt_count < 3
              AND (
                (j.status = 'queued' AND j.available_at <= ?)
@@ -185,9 +195,10 @@ export function createGpuJobRoutes(dependencies: GpuJobDependencies) {
     if (!row) return new Response(null, { status: 204 });
 
     const asset = await context.env.DB.prepare(
-      `SELECT id, user_id, content_type, byte_size, duration_ms, width, height, captured_at
-         FROM assets
-        WHERE id = ? AND kind = 'video' AND status = 'ready' AND agent_access_enabled = 1`,
+      `SELECT a.id, a.user_id, a.content_type, a.byte_size, a.duration_ms, a.width, a.height, a.captured_at
+         FROM assets a
+        WHERE a.id = ? AND a.kind = 'video' AND a.status = 'ready'
+          AND a.agent_access_enabled = 1 AND ${activeAiConsentSql("a")}`,
     ).bind(row.asset_id).first<GpuAssetRow>();
     if (!asset) {
       await context.env.DB.prepare("DELETE FROM gpu_jobs WHERE id = ?").bind(row.id).run();
@@ -204,6 +215,7 @@ export function createGpuJobRoutes(dependencies: GpuJobDependencies) {
         FROM assets a JOIN gpu_jobs j ON j.asset_id = a.id
        WHERE a.id = ? AND a.kind = 'video' AND a.status = 'ready'
          AND a.agent_access_enabled = 1
+         AND ${activeAiConsentSql("a")}
          AND j.id = ? AND j.status = 'leased' AND j.lease_token_hash = ?
          AND j.lease_expires_at > ?`,
     ).bind(
@@ -272,6 +284,7 @@ export function createGpuJobRoutes(dependencies: GpuJobDependencies) {
             SELECT 1 FROM assets a
              WHERE a.id = gpu_jobs.asset_id AND a.kind = 'video'
                AND a.status = 'ready' AND a.agent_access_enabled = 1
+               AND ${activeAiConsentSql("a")}
           )
       RETURNING id`,
     ).bind(leaseExpiresAt, nowIso, lease.id, leaseTokenHash, nowIso).first<{ id: string }>();
@@ -302,6 +315,7 @@ export function createGpuJobRoutes(dependencies: GpuJobDependencies) {
                  AND j.lease_token_hash = ? AND j.lease_expires_at > ?
                  AND a.kind = 'video' AND a.status = 'ready'
                  AND a.agent_access_enabled = 1
+                 AND ${activeAiConsentSql("a")}
             )`,
       ).bind(lease.asset_id, jobId, lease.asset_id, leaseTokenHash, nowIso),
       context.env.DB.prepare(
@@ -316,6 +330,7 @@ export function createGpuJobRoutes(dependencies: GpuJobDependencies) {
               AND j.lease_token_hash = ? AND j.lease_expires_at > ?
               AND a.kind = 'video' AND a.status = 'ready'
               AND a.agent_access_enabled = 1
+              AND ${activeAiConsentSql("a")}
          )`,
       ).bind(
         lease.asset_id,
@@ -345,6 +360,7 @@ export function createGpuJobRoutes(dependencies: GpuJobDependencies) {
             WHERE va.asset_id = ? AND va.job_id = ?
               AND j.status = 'leased' AND j.lease_token_hash = ?
               AND j.lease_expires_at > ? AND a.agent_access_enabled = 1
+              AND ${activeAiConsentSql("a")}
          )`,
       ).bind(
         lease.asset_id,
@@ -369,6 +385,7 @@ export function createGpuJobRoutes(dependencies: GpuJobDependencies) {
             WHERE va.asset_id = ? AND va.job_id = ?
               AND j.status = 'leased' AND j.lease_token_hash = ?
               AND j.lease_expires_at > ? AND a.agent_access_enabled = 1
+              AND ${activeAiConsentSql("a")}
          )`,
       ).bind(
         lease.asset_id,
@@ -389,6 +406,7 @@ export function createGpuJobRoutes(dependencies: GpuJobDependencies) {
               SELECT 1 FROM assets a
                WHERE a.id = gpu_jobs.asset_id AND a.kind = 'video'
                  AND a.status = 'ready' AND a.agent_access_enabled = 1
+                 AND ${activeAiConsentSql("a")}
             )`,
       ).bind(jobId, lease.asset_id, leaseTokenHash, nowIso),
     ]);
@@ -460,6 +478,7 @@ export function createGpuJobRoutes(dependencies: GpuJobDependencies) {
                AND j.status = 'leased' AND j.lease_token_hash = ?
                AND j.lease_expires_at > ? AND a.kind = 'video'
                AND a.status = 'ready' AND a.agent_access_enabled = 1
+               AND ${activeAiConsentSql("a")}
           )`,
       ).bind(
         objectKey,
@@ -480,6 +499,7 @@ export function createGpuJobRoutes(dependencies: GpuJobDependencies) {
               SELECT 1 FROM assets a
                WHERE a.id = gpu_jobs.asset_id AND a.kind = 'video'
                  AND a.status = 'ready' AND a.agent_access_enabled = 1
+                 AND ${activeAiConsentSql("a")}
             )`,
       ).bind(jobId, lease.asset_id, leaseTokenHash, nowIso),
     ]);
@@ -512,6 +532,7 @@ export function createGpuJobRoutes(dependencies: GpuJobDependencies) {
                 SELECT 1 FROM assets a
                  WHERE a.id = gpu_jobs.asset_id AND a.kind = 'video'
                    AND a.status = 'ready' AND a.agent_access_enabled = 1
+                   AND ${activeAiConsentSql("a")}
               )`,
         ).bind(parsed.data.code, nowIso, lease.id, leaseTokenHash, nowIso),
         context.env.DB.prepare(
@@ -541,6 +562,7 @@ export function createGpuJobRoutes(dependencies: GpuJobDependencies) {
             SELECT 1 FROM assets a
              WHERE a.id = gpu_jobs.asset_id AND a.kind = 'video'
                AND a.status = 'ready' AND a.agent_access_enabled = 1
+               AND ${activeAiConsentSql("a")}
           )`,
     ).bind(
       parsed.data.code,
