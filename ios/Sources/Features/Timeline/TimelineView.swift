@@ -514,7 +514,7 @@ private struct UploadDock: View {
                                 if upload.total > 1 {
                                     isConfirmingCancel = true
                                 } else {
-                                    model.cancelUpload()
+                                    Task { await model.cancelUpload() }
                                 }
                             } label: {
                                 Image(systemName: "xmark")
@@ -591,7 +591,7 @@ private struct UploadDock: View {
             isPresented: $isConfirmingCancel,
             titleVisibility: .visible
         ) {
-            Button("中止する", role: .destructive) { model.cancelUpload() }
+            Button("中止する", role: .destructive) { Task { await model.cancelUpload() } }
             Button(L10n.string("camera.action.cancel"), role: .cancel) {}
         } message: {
             Text("まだ保存されていない動画は失われます。")

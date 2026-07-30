@@ -191,6 +191,16 @@ includesAll(signOut, ["beginAuthGeneration", "restoreAuthGeneration", "revokeSes
 const cancelUpload = scope(appModel, /func cancelUpload\(\) async/, "AppModel.cancelUpload");
 assert.ok(cancelUpload.includes("await discardBackgroundUpload()"), "cancel must delegate to durable discard");
 assert.ok(!cancelUpload.includes("cancelAll()"), "AppModel cancel must not treat cancelAll as immediate cleanup");
+const timelineCancelCalls = timeline.match(/model\.cancelUpload\(\)/g) ?? [];
+const awaitedTimelineCancelCalls = timeline.match(
+  /Task\s*\{\s*await\s+model\.cancelUpload\(\)\s*\}/g,
+) ?? [];
+assert.equal(timelineCancelCalls.length, 2, "timeline must expose both cancel actions");
+assert.equal(
+  awaitedTimelineCancelCalls.length,
+  timelineCancelCalls.length,
+  "every async cancelUpload call in TimelineView must be awaited inside a Task",
+);
 const discardUpload = scope(
   appModel,
   /func discardBackgroundUpload\(\) async/,
