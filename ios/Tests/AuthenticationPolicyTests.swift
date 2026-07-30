@@ -43,6 +43,45 @@ final class AuthenticationPolicyTests: XCTestCase {
         )
     }
 
+    func testAssetQuotaErrorDescribesTheRollingLimitAndResetTime() {
+        let resetsAt = Date(timeIntervalSince1970: 1_785_456_000)
+        let error = AfterimageError.assetCreationQuotaExceeded(
+            limit: 200,
+            remaining: 0,
+            resetsAt: resetsAt
+        )
+
+        let description = error.errorDescription ?? ""
+        let formattedResetTime = resetsAt.formatted(date: .numeric, time: .standard)
+        XCTAssertTrue(description.contains("200"))
+        XCTAssertTrue(description.contains("0"))
+        XCTAssertTrue(description.contains(formattedResetTime))
+        XCTAssertFalse(error.invalidatesSession)
+    }
+
+    func testAssetQuotaDetailsDecodeFromTheAPIEnvelope() throws {
+        let payload = Data(
+            """
+            {
+              "error": {
+                "code": "asset_creation_quota_exceeded",
+                "message": "quota reached",
+                "details": {
+                  "limit": 200,
+                  "remaining": 0,
+                  "resetsAt": "2026-07-31T01:00:00.000Z"
+                }
+              }
+            }
+            """.utf8
+        )
+
+        let envelope = try JSONDecoder.afterimage.decode(APIErrorEnvelope.self, from: payload)
+        XCTAssertEqual(envelope.error.details?.limit, 200)
+        XCTAssertEqual(envelope.error.details?.remaining, 0)
+        XCTAssertNotNil(envelope.error.details?.resetsAt)
+    }
+
     func testP0BackendErrorCodesUseTypedWireValues() {
         XCTAssertEqual(
             APIErrorCode.appleChallengeRateLimited.rawValue,

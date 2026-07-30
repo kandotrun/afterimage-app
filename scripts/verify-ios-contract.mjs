@@ -174,6 +174,26 @@ const userDefaultsAccess = privacy.match(
 assert.ok(userDefaultsAccess, "missing UserDefaults required-reason declaration");
 assert.match(userDefaultsAccess, /<string>CA92\.1<\/string>/);
 assert.ok(!swift.includes("#available"), "iOS 26-only app must not carry legacy availability branches");
+assert.match(
+  apiModels,
+  /struct AssetCreationQuotaDetails:[\s\S]*?let limit: Int[\s\S]*?let remaining: Int[\s\S]*?let resetsAt: Date/,
+  "asset quota errors must decode limit, remaining slots, and the rolling-window reset time",
+);
+assert.match(
+  apiModels,
+  /case assetCreationQuotaExceeded\(limit: Int, remaining: Int, resetsAt: Date\)/,
+  "asset quota errors must retain structured details for localized presentation",
+);
+assert.match(
+  apiModels,
+  /resetsAt\.formatted\(date: \.numeric, time: \.standard\)/,
+  "asset quota errors must show the exact reset timestamp, including seconds",
+);
+assert.match(
+  apiClient,
+  /\.assetCreationQuotaExceeded\([\s\S]*?limit:[\s\S]*?remaining:[\s\S]*?resetsAt:/,
+  "APIClient must map structured asset quota details into a user-facing error",
+);
 assert.ok(!swift.includes("ultraThinMaterial"), "iOS 26-only app must not carry a Material fallback");
 assert.match(
   dayStory,
