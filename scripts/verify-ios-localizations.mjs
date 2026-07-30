@@ -141,22 +141,31 @@ const japaneseCharacters = /[ぁ-んァ-ヶ一-龠々ー]/;
 const semanticKey = /"((?:upload|compression|error|api|accessibility|timeline|memory|playback|mcp|common|camera|auth|privacy|account|legal|settings|action)\.[a-z0-9_.]+)"/g;
 for (const file of swiftFiles) {
   const source = readFileSync(file, "utf8");
+  const relativePath = path.relative(root, file);
+  if (relativePath === "ios/Sources/Features/AppStore/AppStoreScreenshotFixtureView.swift") {
+    assert.match(
+      source,
+      /^#if DEBUG[\s\S]*#endif\s*$/,
+      "fixed Japanese App Store screenshot copy must remain Debug-only",
+    );
+    continue;
+  }
   for (const match of source.matchAll(japaneseLiteral)) {
     const value = match[1].replaceAll("\\n", "\n");
     if (!japaneseCharacters.test(value)) continue;
     assert.ok(
       !value.includes("\\("),
-      `interpolated Japanese string must use a semantic L10n.format key: ${path.relative(root, file)}: ${value}`,
+      `interpolated Japanese string must use a semantic L10n.format key: ${relativePath}: ${value}`,
     );
     assert.ok(
       catalog.strings[value],
-      `Japanese source literal is missing from Localizable.xcstrings: ${path.relative(root, file)}: ${value}`,
+      `Japanese source literal is missing from Localizable.xcstrings: ${relativePath}: ${value}`,
     );
   }
   for (const match of source.matchAll(semanticKey)) {
     assert.ok(
       catalog.strings[match[1]],
-      `semantic localization key is missing from Localizable.xcstrings: ${path.relative(root, file)}: ${match[1]}`,
+      `semantic localization key is missing from Localizable.xcstrings: ${relativePath}: ${match[1]}`,
     );
   }
 }

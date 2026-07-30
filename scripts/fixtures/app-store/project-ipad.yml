@@ -1,0 +1,11 @@
+targets:
+  afterimage:
+    type: application
+    settings:
+      base:
+        TARGETED_DEVICE_FAMILY: "1,2"
+  AfterimageUploadWidget:
+    type: app-extension
+    settings:
+      base:
+        TARGETED_DEVICE_FAMILY: "1"

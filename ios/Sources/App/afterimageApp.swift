@@ -7,9 +7,20 @@ struct AfterimageApp: App {
 
     var body: some Scene {
         WindowGroup {
+            #if DEBUG
+            if let scene = AppStoreScreenshotScene.launchScene {
+                AppStoreScreenshotFixtureView(scene: scene)
+                    .tint(Color(red: 1.0, green: 0.40, blue: 0.36))
+            } else {
+                RootView()
+                    .environmentObject(model)
+                    .tint(Color(red: 1.0, green: 0.40, blue: 0.36))
+            }
+            #else
             RootView()
                 .environmentObject(model)
                 .tint(Color(red: 1.0, green: 0.40, blue: 0.36))
+            #endif
         }
     }
 }

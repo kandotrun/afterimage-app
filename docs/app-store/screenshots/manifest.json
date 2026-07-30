@@ -1,0 +1,63 @@
+{
+  "version": 1,
+  "locale": "ja-JP",
+  "display": "6.9-inch",
+  "device": "iPhone 16 Pro Max",
+  "runtime": "iOS 26",
+  "fixture": "synthetic-ja-v1",
+  "acceptedPortraitDimensions": [
+    {
+      "width": 1260,
+      "height": 2736
+    },
+    {
+      "width": 1290,
+      "height": 2796
+    },
+    {
+      "width": 1320,
+      "height": 2868
+    }
+  ],
+  "screenshots": [
+    {
+      "file": "01-private-timeline.png",
+      "scene": "timeline",
+      "accessibilityIdentifier": "app-store-screenshot-ready-timeline",
+      "syntheticData": true,
+      "privateData": false,
+      "debugOverlay": false,
+      "content": {
+        "video": "夕暮れの公園を歩く合成動画",
+        "location": "代々木公園の合成位置",
+        "analysis": "風と木漏れ日の一日要約"
+      }
+    },
+    {
+      "file": "02-memory-detail.png",
+      "scene": "memory",
+      "accessibilityIdentifier": "app-store-screenshot-ready-memory",
+      "syntheticData": true,
+      "privateData": false,
+      "debugOverlay": false,
+      "content": {
+        "video": "木々と遊歩道の合成動画frame",
+        "location": "代々木公園の合成位置",
+        "transcript": "風が気持ちいいね、という合成音声の文字起こし"
+      }
+    },
+    {
+      "file": "03-ai-analysis.png",
+      "scene": "analysis",
+      "accessibilityIdentifier": "app-store-screenshot-ready-analysis",
+      "syntheticData": true,
+      "privateData": false,
+      "debugOverlay": false,
+      "content": {
+        "video": "夕暮れの散歩を示す合成動画",
+        "transcript": "ベンチで少し休もう、という合成音声の文字起こし",
+        "analysis": "木漏れ日、遊歩道、ベンチを時系列で記述した合成映像解析"
+      }
+    }
+  ]
+}

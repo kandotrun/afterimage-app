@@ -1,0 +1,169 @@
+{
+  "version": 1,
+  "locale": "ja-JP",
+  "appName": "afterimage",
+  "subtitle": "撮った日々が、あとから見つかる",
+  "description": "afterimageは、日々の動画を自分だけの記憶として残し、あとから振り返るためのプライベートなライフログです。\n\nアプリ内で撮影するか、写真ライブラリから動画を選ぶと、端末上で容量を抑えたHEVC動画へ最適化してから、本人だけがアクセスできる非公開ストレージへ保存します。撮影日時や場所、その日の天気とともにタイムラインへ整理されるため、過ぎた一日を自然にたどれます。\n\n動画の音声から作られた文字起こしや映像解析を使って、覚えている言葉や場面から記憶を検索できます。AI処理を利用する前には送信先、送信するデータ、目的を説明し、同意しない場合でも撮影、保存、タイムライン、再生、削除を利用できます。許可した動画だけを読み取り専用でAIエージェントへ共有することもできます。\n\n保存した動画は公開されず、短時間だけ有効な再生許可を使って表示します。不要になった動画は個別に削除でき、アカウントと関連データもアプリ内から削除できます。\n\n主な機能\n・アプリ内撮影と写真ライブラリからの動画取り込み\n・端末上でのHEVC最適化とバックグラウンドアップロード\n・日付、撮影場所、天気でまとまる非公開タイムライン\n・動画の連続再生、文字起こし、映像解析、日ごとの要約\n・言葉や場面から探せる記憶検索\n・動画ごとに管理できるAIエージェント共有\n\n初回公開版はiPhone専用です。利用にはSign in with Appleが必要です。",
+  "keywords": [
+    "ライフログ",
+    "動画日記",
+    "思い出",
+    "記録",
+    "文字起こし",
+    "プライベート",
+    "振り返り",
+    "検索"
+  ],
+  "categories": {
+    "primary": "PHOTO_AND_VIDEO",
+    "secondary": "LIFESTYLE",
+    "rationale": "中核機能が動画の撮影、取り込み、最適化、再生であるため写真／ビデオを第一候補とし、個人の日々を振り返る用途からライフスタイルを第二候補とする。"
+  },
+  "legalURLs": {
+    "privacy": "https://afterimage.2-38.com/privacy",
+    "support": "https://afterimage.2-38.com/support",
+    "terms": "https://afterimage.2-38.com/terms"
+  },
+  "ageRating": {
+    "questionnaireVersion": "ios26",
+    "inAppControls": {
+      "parentalControls": false,
+      "ageAssurance": false
+    },
+    "capabilities": {
+      "unrestrictedWebAccess": false,
+      "userGeneratedContent": true,
+      "messagingAndChat": false,
+      "advertising": false
+    },
+    "contentDescriptors": {
+      "cartoonOrFantasyViolence": "NONE",
+      "realisticViolence": "NONE",
+      "prolongedGraphicOrSadisticViolence": "NONE",
+      "profanityOrCrudeHumor": "NONE",
+      "matureOrSuggestiveThemes": "NONE",
+      "horrorOrFearThemes": "NONE",
+      "medicalOrTreatmentInformation": "NONE",
+      "alcoholTobaccoOrDrugUse": "NONE",
+      "sexualContentOrNudity": "NONE",
+      "graphicSexualContentAndNudity": "NONE",
+      "simulatedGambling": "NONE",
+      "contests": "NONE",
+      "gambling": false,
+      "lootBoxes": false
+    },
+    "override": "NOT_APPLICABLE",
+    "rationale": "ユーザー自身が作成した動画を扱うためUser-Generated ContentはYesとするが、所有者以外への公開、フィード、チャット、広告、Webブラウザ、課金、ゲーム要素はない。ユーザーが取り込む私的動画の内容は予測できないため、提出直前にApp Store Connectの最新設問と審査用fixtureを再確認する。"
+  },
+  "appPrivacy": {
+    "tracking": false,
+    "dataLinkedToUser": true,
+    "dataTypes": [
+      {
+        "label": "正確な位置情報",
+        "manifestType": "NSPrivacyCollectedDataTypePreciseLocation",
+        "purpose": "APP_FUNCTIONALITY",
+        "use": "動画に埋め込まれた撮影座標を記憶の場所として保存し、場所名と地図導線を表示する。現在地は天気取得にも使うが天気snapshotには座標を保存しない。",
+        "evidence": [
+          "backend/migrations/0007_asset_capture_location.sql",
+          "ios/Sources/Import/MediaImporter.swift"
+        ]
+      },
+      {
+        "label": "オーディオデータ",
+        "manifestType": "NSPrivacyCollectedDataTypeAudioData",
+        "purpose": "APP_FUNCTIONALITY",
+        "use": "動画の音声を動画本体とともに保存し、同意後の文字起こしに利用する。",
+        "evidence": [
+          "ios/Sources/Compression/MediaCompressor.swift",
+          "backend/src/soniox.ts"
+        ]
+      },
+      {
+        "label": "写真またはビデオ",
+        "manifestType": "NSPrivacyCollectedDataTypePhotosorVideos",
+        "purpose": "APP_FUNCTIONALITY",
+        "use": "端末で最適化した動画とthumbnailを非公開タイムライン、再生、解析のために保存する。",
+        "evidence": [
+          "ios/Sources/Compression/MediaCompressor.swift",
+          "backend/src/app.ts"
+        ]
+      },
+      {
+        "label": "ユーザID",
+        "manifestType": "NSPrivacyCollectedDataTypeUserID",
+        "purpose": "APP_FUNCTIONALITY",
+        "use": "Sign in with Appleのsubjectを所有者境界とセッション管理に利用する。",
+        "evidence": [
+          "backend/src/apple.ts",
+          "backend/migrations/0001_initial.sql"
+        ]
+      },
+      {
+        "label": "名前",
+        "manifestType": "NSPrivacyCollectedDataTypeName",
+        "purpose": "APP_FUNCTIONALITY",
+        "use": "Sign in with Appleが初回に提供した場合のみアカウント表示名として保存する。",
+        "evidence": [
+          "ios/Sources/App/AppModel.swift",
+          "backend/src/app.ts"
+        ]
+      },
+      {
+        "label": "メールアドレス",
+        "manifestType": "NSPrivacyCollectedDataTypeEmailAddress",
+        "purpose": "APP_FUNCTIONALITY",
+        "use": "Sign in with Appleが提供する実メールまたは非公開リレーアドレスをアカウント識別に利用する。",
+        "evidence": [
+          "backend/src/apple.ts",
+          "backend/migrations/0001_initial.sql"
+        ]
+      },
+      {
+        "label": "その他のユーザーコンテンツ",
+        "manifestType": "NSPrivacyCollectedDataTypeOtherUserContent",
+        "purpose": "APP_FUNCTIONALITY",
+        "use": "文字起こし、映像解析、日次要約を記憶の閲覧と検索のために保存する。",
+        "evidence": [
+          "backend/migrations/0004_transcriptions.sql",
+          "backend/migrations/0008_daily_summaries.sql",
+          "backend/migrations/0010_agent_video_access.sql"
+        ]
+      }
+    ],
+    "processors": [
+      {
+        "name": "Cloudflare",
+        "data": "アカウントmetadata、最適化動画、thumbnail、位置、天気、文字起こし、要約",
+        "purpose": "認証API、非公開保存、配信、metadata処理"
+      },
+      {
+        "name": "Soniox",
+        "data": "同意済み動画の音声を含むmedia",
+        "purpose": "文字起こし"
+      },
+      {
+        "name": "Alibaba Cloud Qwen",
+        "data": "同意済み動画のframe、文字起こし、映像解析結果",
+        "purpose": "映像解析と日次要約"
+      },
+      {
+        "name": "MCP client or agent",
+        "data": "ユーザーが個別に許可した動画、文字起こし、解析結果",
+        "purpose": "ユーザーが接続したAIエージェントでの読み取り"
+      }
+    ]
+  },
+  "reviewNotesFile": "docs/app-store/review-notes-ja.md",
+  "submissionPrerequisites": [
+    "AUTH_CHALLENGE",
+    "ACCOUNT_DELETION",
+    "AI_CONSENT",
+    "LEGAL_PRIVACY",
+    "LEGAL_SUPPORT",
+    "LEGAL_TERMS",
+    "REAL_DEVICE_SMOKE",
+    "SCREENSHOTS_69",
+    "ARCHIVE_EXPORT"
+  ]
+}

@@ -17,6 +17,7 @@ xcuserdata/
 ios/*.xcodeproj/
 *.xcresult/
 .wrangler-dry-run/
+artifacts/
 
 # Secrets and local overrides
 .env

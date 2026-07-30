@@ -158,12 +158,12 @@ assert.match(
 );
 assert.match(privacy, /<key>NSPrivacyTracking<\/key>\s*<false\/>/);
 for (const category of [
+  "NSPrivacyCollectedDataTypePreciseLocation",
+  "NSPrivacyCollectedDataTypeAudioData",
   "NSPrivacyCollectedDataTypeName",
   "NSPrivacyCollectedDataTypeEmailAddress",
   "NSPrivacyCollectedDataTypeUserID",
   "NSPrivacyCollectedDataTypePhotosorVideos",
-  "NSPrivacyCollectedDataTypePreciseLocation",
-  "NSPrivacyCollectedDataTypeAudioData",
   "NSPrivacyCollectedDataTypeOtherUserContent",
 ]) {
   assert.ok(privacy.includes(category), `missing privacy declaration: ${category}`);
