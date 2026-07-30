@@ -10,16 +10,16 @@ struct AfterimageApp: App {
             #if DEBUG
             if let scene = AppStoreScreenshotScene.launchScene {
                 AppStoreScreenshotFixtureView(scene: scene)
-                    .tint(Color(red: 1.0, green: 0.40, blue: 0.36))
+                    .tint(.accentColor)
             } else {
                 RootView()
                     .environmentObject(model)
-                    .tint(Color(red: 1.0, green: 0.40, blue: 0.36))
+                    .tint(.accentColor)
             }
             #else
             RootView()
                 .environmentObject(model)
-                .tint(Color(red: 1.0, green: 0.40, blue: 0.36))
+                .tint(.accentColor)
             #endif
         }
     }

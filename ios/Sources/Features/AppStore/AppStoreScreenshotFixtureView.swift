@@ -69,7 +69,7 @@ private struct AppStoreFixtureBackground: View {
         .ignoresSafeArea()
         .overlay(alignment: .topTrailing) {
             Circle()
-                .fill(Color(red: 1.0, green: 0.38, blue: 0.31).opacity(0.17))
+                .fill(Color.accentColor.opacity(0.17))
                 .frame(width: 340, height: 340)
                 .blur(radius: 76)
                 .offset(x: 100, y: -110)
@@ -126,7 +126,7 @@ private struct AppStoreTimelineFixture: View {
 
                     HStack(alignment: .top, spacing: 12) {
                         Image(systemName: "quote.opening")
-                            .foregroundStyle(Color(red: 1.0, green: 0.42, blue: 0.36))
+                            .foregroundStyle(Color.accentColor)
                         Text(fixture.transcript)
                             .font(.headline)
                             .lineSpacing(3)
@@ -229,7 +229,7 @@ private struct AppStoreMemoryFixture: View {
                     VStack(alignment: .leading, spacing: 10) {
                         Label("文字起こし", systemImage: "waveform")
                             .font(.headline)
-                            .foregroundStyle(Color(red: 1.0, green: 0.48, blue: 0.41))
+                            .foregroundStyle(Color.accentColor)
                         Text("「噴水の音が聞こえる。今日は空がきれい。\(fixture.transcript)」")
                             .font(.title3)
                             .lineSpacing(5)
@@ -257,7 +257,7 @@ private struct AppStoreAnalysisFixture: View {
                         .font(.headline)
                     Spacer()
                     Image(systemName: "sparkles")
-                        .foregroundStyle(Color(red: 1.0, green: 0.48, blue: 0.41))
+                        .foregroundStyle(Color.accentColor)
                 }
                 .font(.title3.weight(.semibold))
 
@@ -267,7 +267,7 @@ private struct AppStoreAnalysisFixture: View {
                 VStack(alignment: .leading, spacing: 14) {
                     Label("映像から見つかったこと", systemImage: "sparkles")
                         .font(.title2.bold())
-                        .foregroundStyle(Color(red: 1.0, green: 0.55, blue: 0.44))
+                        .foregroundStyle(Color.accentColor)
                     Text(fixture.analysis)
                         .font(.title3)
                         .lineSpacing(5)
@@ -277,7 +277,7 @@ private struct AppStoreAnalysisFixture: View {
                 .background(
                     LinearGradient(
                         colors: [
-                            Color(red: 1.0, green: 0.34, blue: 0.30).opacity(0.18),
+                            Color.accentColor.opacity(0.18),
                             Color.white.opacity(0.07),
                         ],
                         startPoint: .topLeading,
@@ -336,7 +336,7 @@ private struct AppStoreAnalysisSegment: View {
                 Circle()
                     .fill(Color.white.opacity(0.09))
                 Image(systemName: icon)
-                    .foregroundStyle(Color(red: 1.0, green: 0.55, blue: 0.44))
+                    .foregroundStyle(Color.accentColor)
             }
             .frame(width: 46, height: 46)
             VStack(alignment: .leading, spacing: 4) {
