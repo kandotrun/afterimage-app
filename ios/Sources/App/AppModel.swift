@@ -33,6 +33,7 @@ struct UploadPresentation: Equatable {
     var progress: Double
     var current: Int
     var total: Int
+    var preview: UploadPreviewDescriptor? = nil
 }
 
 struct ImportSelectionSummary: Equatable {
@@ -409,11 +410,11 @@ final class AppModel: ObservableObject {
     }
 
     func cancelUpload() {
+        upload = nil
         BackgroundUploadManager.shared.cancelAll()
         uploadTask?.cancel()
         backgroundUploadNeedsRetry = false
         notice = nil
-        upload = nil
         haptics.play(.delete)
     }
 
@@ -566,7 +567,9 @@ final class AppModel: ObservableObject {
                         context: context,
                         activityID: activityID,
                         progress: { [weak self] _, progress, _, _ in
-                            self?.upload?.progress = 0.50 + progress * 0.44
+                            guard let self else { return }
+                            self.upload?.progress = 0.50 + progress * 0.44
+                            self.upload?.preview = BackgroundUploadManager.shared.currentPreviewDescriptor
                         },
                         completion: { result in
                             Task { @MainActor [weak self] in
@@ -587,6 +590,7 @@ final class AppModel: ObservableObject {
                         }
                     )
                     didHandOff = true
+                    self.upload?.preview = BackgroundUploadManager.shared.currentPreviewDescriptor
                 } catch {
                     continuation.resume(throwing: error)
                 }
@@ -647,7 +651,8 @@ final class AppModel: ObservableObject {
                     stage: .uploading,
                     progress: 0.50 + progress * 0.44,
                     current: current,
-                    total: total
+                    total: total,
+                    preview: manager.currentPreviewDescriptor
                 )
             },
             completion: { [weak self] result in
@@ -674,7 +679,13 @@ final class AppModel: ObservableObject {
         )
         if resumed, upload == nil {
             backgroundUploadNeedsRetry = false
-            upload = UploadPresentation(stage: .uploading, progress: 0.50, current: 1, total: 1)
+            upload = UploadPresentation(
+                stage: .uploading,
+                progress: 0.50,
+                current: 1,
+                total: 1,
+                preview: manager.currentPreviewDescriptor
+            )
         }
     }
 

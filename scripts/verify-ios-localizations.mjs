@@ -19,6 +19,9 @@ assert.equal(catalog.version, "1.0");
 assert.ok(Object.keys(catalog.strings).length > 0, "localization catalog must not be empty");
 
 for (const key of [
+  "upload.action.cancel",
+  "upload.status.saving",
+  "accessibility.upload_preview",
   "memory.search.open",
   "memory.search.title",
   "memory.search.prompt",
