@@ -144,6 +144,8 @@ struct CameraCaptureStatusView: View {
                 )
                 .buttonStyle(.glassProminent)
                 .accessibilityLabel(L10n.string("camera.action.retry"))
+                // The timeline's own retry can share the same localized label;
+                // UI tests need an unambiguous handle for this one.
                 .accessibilityIdentifier("cameraRetryButton")
             }
             Button(

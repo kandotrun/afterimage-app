@@ -132,6 +132,8 @@ final class DailyPostReminderScheduler {
         await center.notificationSettings().authorizationStatus
     }
 
+    /// Explicit consent entry point — shown after the user's first post, never as
+    /// a surprise OS dialog during sign-in.
     func requestPermission() async -> Bool {
         let granted = (try? await center.requestAuthorization(options: [.alert, .sound])) == true
         if granted {

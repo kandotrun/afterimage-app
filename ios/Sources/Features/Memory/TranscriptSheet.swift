@@ -34,10 +34,7 @@ struct TranscriptSheet: View {
                     )
                 } else if let loadError {
                     ContentUnavailableView {
-                        Label(
-                            L10n.string("transcript.load_failed_title"),
-                            systemImage: "exclamationmark.circle"
-                        )
+                        Label("読み込めませんでした", systemImage: "exclamationmark.circle")
                     } description: {
                         Text(loadError)
                     } actions: {

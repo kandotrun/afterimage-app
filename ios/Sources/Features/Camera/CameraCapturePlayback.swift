@@ -31,6 +31,7 @@ struct RecordingDurationView: View {
         )
     }
 
+    /// 「1分12秒」 instead of VoiceOver reading 00:12 as bare digits.
     private func spokenDuration(at date: Date) -> String {
         let totalSeconds = max(0, Int(date.timeIntervalSince(startedAt)))
         return Duration.seconds(totalSeconds).formatted(

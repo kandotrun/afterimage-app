@@ -57,6 +57,8 @@ enum UploadCancellationCleanup {
     }
 }
 
+/// Distinguishes "nothing yet" from "nothing could be loaded" so an offline
+/// launch never masquerades as an empty library.
 enum TimelineLoadState: Equatable {
     case loading
     case loaded
@@ -86,6 +88,14 @@ struct ImportSelectionSummary: Equatable {
         }
         return L10n.format("upload.duplicates.partial_detail", Int64(uploadCount))
     }
+}
+
+/// A day from a previous year resurfacing on the timeline.
+struct OneYearAgoStory: Equatable {
+    let day: Date
+    let clipCount: Int
+    let durationMs: Int
+    let firstAsset: Asset
 }
 
 @MainActor
@@ -119,6 +129,8 @@ final class AppModel: ObservableObject {
     @Published private(set) var aiConsent: AIConsent?
     @Published private(set) var isUpdatingAIConsent = false
     @Published private(set) var accountDeletionState: AccountDeletionState = .idle
+    @Published private(set) var uploadCompletedAt: Date?
+    @Published private(set) var oneYearAgoStory: OneYearAgoStory?
     @Published var reminderInvite = false
     @Published var notice: AppNotice?
 
@@ -143,7 +155,9 @@ final class AppModel: ObservableObject {
     private var authScope: AuthScope?
     private var timelineRefresh: TimelineRefresh?
     private var transientNoticeTask: Task<Void, Never>?
-    private static let reminderInviteOfferedKey = "notification-reminder-invite.has-been-offered"
+    private var uploadCompletedClearTask: Task<Void, Never>?
+    private var oneYearAgoLoadedForDay: Date?
+    private static let reminderInviteOfferedKey = "daily-post-reminder.invite-offered"
 
     var hasActiveBackgroundUpload: Bool {
         uploadTask != nil
@@ -558,6 +572,31 @@ final class AppModel: ObservableObject {
         dailyWeather[DailyWeatherDate.localDate(for: day)]
     }
 
+    /// Lets the same day from one year ago come back to meet its owner.
+    /// Cached per calendar day so scrolling never refetches it.
+    func loadOneYearAgoStory() async {
+        let calendar = Calendar.autoupdatingCurrent
+        let today = calendar.startOfDay(for: .now)
+        guard oneYearAgoLoadedForDay != today else { return }
+        guard let day = calendar.date(byAdding: .year, value: -1, to: today),
+              let interval = calendar.dateInterval(of: .day, for: day) else { return }
+        guard let playback = try? await api.dailyPlayback(
+            startAt: interval.start,
+            endAt: interval.end
+        ) else { return }
+        oneYearAgoLoadedForDay = today
+        guard playback.clipCount > 0, let first = playback.clips.first?.asset else {
+            oneYearAgoStory = nil
+            return
+        }
+        oneYearAgoStory = OneYearAgoStory(
+            day: interval.start,
+            clipCount: playback.clipCount,
+            durationMs: playback.durationMs,
+            firstAsset: first
+        )
+    }
+
     func recordTodayWeather() async {
         guard isAuthenticated else { return }
         guard !isRecordingDailyWeather else {
@@ -704,6 +743,7 @@ final class AppModel: ObservableObject {
                             continue
                         } catch {
                             if Task.isCancelled { break }
+                            // A broken file must not silently discard the rest of the batch.
                             if Self.isItemScopedFailure(error) {
                                 failedItemCount += 1
                                 continue
@@ -815,6 +855,14 @@ final class AppModel: ObservableObject {
 
     func resumeBackgroundUpload() async {
         await resumeBackgroundUploadIfNeeded(retryAfterFailure: true)
+    }
+
+    /// Discards a persisted background upload that is waiting for an explicit retry,
+    /// so the dock's trash action can clear the stalled state for good.
+    func discardPendingUpload() {
+        BackgroundUploadManager.shared.cancelAll()
+        backgroundUploadNeedsRetry = false
+        haptics.play(.delete)
     }
 
     func setAgentAccess(_ asset: Asset, enabled: Bool) async -> Bool {
@@ -1190,7 +1238,7 @@ final class AppModel: ObservableObject {
                                     await self.postReminderScheduler.recordPost()
                                     try? await self.refreshTimelineEnsuringFresh()
                                     self.haptics.play(.success)
-                                    await self.offerReminderInviteAfterSuccessfulUpload()
+                                    self.celebrateUploadCompletion()
                                     continuation.resume()
                                 case .failure(let error):
                                     continuation.resume(throwing: error)
@@ -1297,7 +1345,7 @@ final class AppModel: ObservableObject {
                         await self.postReminderScheduler.recordPost()
                         try? await self.refreshTimelineEnsuringFresh()
                         self.haptics.play(.success)
-                        await self.offerReminderInviteAfterSuccessfulUpload()
+                        self.celebrateUploadCompletion()
                     case .failure(let error):
                         if case .some(.cancelled) = error as? AfterimageError {
                             self.syncBackgroundUploadRecovery()
@@ -1433,8 +1481,10 @@ final class AppModel: ObservableObject {
         timelineLoadState = .loading
         paginationFailed = false
         aiConsent = nil
-        pendingAccountDeletionAuthorizationCode = nil
+        pendingAccountDeletionReauthorization = nil
         reminderInvite = false
+        oneYearAgoStory = nil
+        oneYearAgoLoadedForDay = nil
         isAuthenticated = false
         await postReminderScheduler.clear()
     }
@@ -1623,8 +1673,22 @@ final class AppModel: ObservableObject {
     }
 
     private func show(error: Error) {
+        if handleIfSessionExpired(error) { return }
         let message = (error as? LocalizedError)?.errorDescription ?? error.localizedDescription
         notice = AppNotice(title: L10n.string("error.generic_title"), message: message)
+    }
+
+    /// The moment a memory is safely kept deserves more than a disappearing pill:
+    /// show a short "received" moment, then offer the nightly reminder once.
+    private func celebrateUploadCompletion() {
+        uploadCompletedClearTask?.cancel()
+        uploadCompletedAt = Date()
+        uploadCompletedClearTask = Task { [weak self] in
+            try? await Task.sleep(for: .seconds(2.5))
+            guard !Task.isCancelled else { return }
+            self?.uploadCompletedAt = nil
+        }
+        Task { await offerReminderInviteAfterSuccessfulUpload() }
     }
 
     private func showTransient(_ message: String) {
@@ -1645,3 +1709,4 @@ private enum LocalCleanupError: LocalizedError {
         L10n.string("error.local_cleanup_failed")
     }
 }
+

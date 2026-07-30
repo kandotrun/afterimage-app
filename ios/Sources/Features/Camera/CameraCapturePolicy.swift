@@ -78,6 +78,9 @@ enum CameraCapturePolicy {
         }
     }
 
+    /// `.inactive` covers Control Center, the notification shade, and incoming-call
+    /// banners — moments where the system camera keeps recording, so we must too.
+    /// Only a real `.background` transition suspends capture.
     static func sceneChangeAction(for change: CameraScenePhaseChange) -> CameraSceneChangeAction {
         switch change {
         case .active: .resume

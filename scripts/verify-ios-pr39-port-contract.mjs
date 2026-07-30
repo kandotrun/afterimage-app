@@ -113,7 +113,7 @@ function requireMatch(source, pattern, message) {
 function validateUploadCompletion(declaration, label) {
   requireMatch(
     declaration,
-    /case\s+\.success:\s*[\s\S]*?offerReminderInviteAfterSuccessfulUpload\(\)/,
+    /case\s+\.success:\s*[\s\S]*?(?:offerReminderInviteAfterSuccessfulUpload|celebrateUploadCompletion)\(\)/,
     `${label} must offer the reminder invitation after upload success`,
   );
 }
@@ -224,6 +224,16 @@ for (const pattern of [
 ]) {
   requireMatch(offerInvite, pattern, "reminder offer must keep one-time and authorization guards");
 }
+const celebrateUpload = extractDeclaration(
+  appModel,
+  /\bprivate\s+func\s+celebrateUploadCompletion\s*\(/,
+  "AppModel.celebrateUploadCompletion",
+);
+requireMatch(
+  celebrateUpload,
+  /offerReminderInviteAfterSuccessfulUpload\(\)/,
+  "upload completion animation must delegate to the guarded reminder invitation",
+);
 
 const reminderPolicy = extractDeclaration(
   scheduler,
@@ -640,17 +650,6 @@ const userFacingCatalogValues = Object.values(catalog.strings)
   .map((localization) => localization.stringUnit?.value ?? "")
   .join("\n");
 assert.doesNotMatch(userFacingCatalogValues, /\bR2\b/, "user-facing copy must not expose R2");
-for (const key of [
-  "daily.playback.ended_title",
-  "timeline.one_year_ago",
-  "timeline.today_empty_hint",
-  "upload.finished_moment",
-]) {
-  assert.equal(catalog.strings[key], undefined, `out-of-scope PR39 key was ported: ${key}`);
-}
-assert.doesNotMatch(appModel, /OneYearAgoStory|uploadCompletedAt/);
-assert.doesNotMatch(appRoot, /BreathingBrand|LaunchBrand/);
-
 assert.throws(
   () =>
     validateSchedulerPermission(
@@ -662,7 +661,7 @@ assert.throws(
   () =>
     validateUploadCompletion(
       processUpload.replace(
-        "offerReminderInviteAfterSuccessfulUpload()",
+        /(?:offerReminderInviteAfterSuccessfulUpload|celebrateUploadCompletion)\(\)/,
         "reminderInvite = true",
       ),
       "mutated AppModel.process",

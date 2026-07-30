@@ -33,7 +33,7 @@ struct DailyWeatherBadge: View {
                             .resizable()
                             .scaledToFit()
                     case .empty, .failure:
-                        Text("Weather")
+                        Text(verbatim: L10n.string("weather.attribution.fallback"))
                             .font(.caption2.weight(.medium))
                             .foregroundStyle(.secondary)
                     @unknown default:
@@ -41,6 +41,7 @@ struct DailyWeatherBadge: View {
                     }
                 }
                 .frame(width: 78, height: 14, alignment: .trailing)
+                // Grow the hit area to ~44pt without moving the layout.
                 .padding(.vertical, 15)
                 .contentShape(.rect)
                 .padding(.vertical, -15)
@@ -50,6 +51,8 @@ struct DailyWeatherBadge: View {
         }
     }
 
+    /// VoiceOver hears the condition (「晴れ」) when the symbol is recognizable;
+    /// unknown symbols fall back to the temperature-only summary.
     private var summaryAccessibilityLabel: String {
         if let conditionKey = WeatherConditionDescriber.key(forSymbol: weather.symbolName) {
             return L10n.format(
@@ -80,13 +83,21 @@ struct DailyWeatherBadge: View {
 struct StandaloneDailyWeatherSection: View {
     let title: String
     let weather: DailyWeather
+    var invitation: String?
 
     var body: some View {
-        HStack(alignment: .top, spacing: 12) {
-            Text(title)
-                .font(.title3.weight(.semibold))
-            Spacer(minLength: 8)
-            DailyWeatherBadge(weather: weather)
+        VStack(alignment: .leading, spacing: 6) {
+            HStack(alignment: .top, spacing: 12) {
+                Text(title)
+                    .font(.title3.weight(.semibold))
+                Spacer(minLength: 8)
+                DailyWeatherBadge(weather: weather)
+            }
+            if let invitation {
+                Text(verbatim: invitation)
+                    .font(.footnote)
+                    .foregroundStyle(.secondary)
+            }
         }
     }
 }

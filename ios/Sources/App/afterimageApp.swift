@@ -33,15 +33,18 @@ struct RootView: View {
         Group {
             if model.isBootstrapping {
                 MemoryBackdrop {
-                    ProgressView()
-                        .controlSize(.large)
+                    LaunchMomentView()
                 }
+                .transition(.opacity)
             } else if model.isAuthenticated {
                 TimelineView()
+                    .transition(.opacity)
             } else {
                 LoginView()
+                    .transition(.opacity)
             }
         }
+        .animation(.easeInOut(duration: 0.35), value: model.isBootstrapping)
         .task { await launch() }
         .onChange(of: scenePhase) {
             guard scenePhase == .active else { return }
@@ -98,5 +101,30 @@ struct RootView: View {
         }
         #endif
         await model.bootstrap()
+    }
+}
+
+/// The daily front door: the brand mark breathing instead of an anonymous spinner.
+private struct LaunchMomentView: View {
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    @State private var pulsing = false
+
+    var body: some View {
+        VStack(spacing: 18) {
+            Image("BrandMark")
+                .resizable()
+                .scaledToFit()
+                .frame(width: 88, height: 88)
+                .clipShape(.rect(cornerRadius: 20))
+                .opacity(pulsing && !reduceMotion ? 0.55 : 1)
+                .animation(
+                    reduceMotion ? nil : .easeInOut(duration: 1.1).repeatForever(autoreverses: true),
+                    value: pulsing
+                )
+            Text(verbatim: "afterimage")
+                .font(.title2.bold())
+        }
+        .onAppear { pulsing = true }
+        .accessibilityHidden(true)
     }
 }

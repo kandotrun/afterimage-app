@@ -42,6 +42,8 @@ final class CameraCaptureAccessibilityUITests: XCTestCase {
 
         let unavailable = app.staticTexts["No camera is available"]
         XCTAssertTrue(unavailable.waitForExistence(timeout: 10))
+        // The failed-timeline view behind the camera cover has its own
+        // "Try Again"; address the camera one by identifier.
         let retry = app.buttons["cameraRetryButton"]
         XCTAssertTrue(retry.isHittable)
         let close = app.buttons["Close"]

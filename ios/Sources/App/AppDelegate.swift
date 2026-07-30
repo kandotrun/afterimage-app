@@ -24,6 +24,7 @@ final class AppDelegate: NSObject, UIApplicationDelegate, UNUserNotificationCent
         _ center: UNUserNotificationCenter,
         willPresent notification: UNNotification
     ) async -> UNNotificationPresentationOptions {
+        // The nightly invitation must not interrupt someone already using the app.
         if DailyPostReminderPolicy.isReminder(identifier: notification.request.identifier) {
             return []
         }

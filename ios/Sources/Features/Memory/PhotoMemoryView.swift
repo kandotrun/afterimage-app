@@ -14,6 +14,8 @@ struct PhotoMemoryView: View {
         ZStack {
             if let image = fullImage ?? thumbnail {
                 ZoomableImageView(image: image, onSingleTap: onSingleTap)
+                    // UIImageView is invisible to VoiceOver by default; without
+                    // this, the photo page reads as an empty screen.
                     .accessibilityElement(children: .ignore)
                     .accessibilityLabel(
                         L10n.format(

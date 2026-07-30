@@ -1,3 +1,6 @@
+/// Maps WeatherKit SF Symbol names to localized condition keys so VoiceOver
+/// hears 「晴れ」, not just three temperatures. Unknown symbols return nil and
+/// the caller falls back to the temperature-only summary.
 enum WeatherConditionDescriber {
     static func key(forSymbol symbolName: String) -> String? {
         if symbolName.contains("bolt") { return "weather.condition.storm" }

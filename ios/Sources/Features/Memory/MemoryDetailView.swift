@@ -81,6 +81,18 @@ struct MemoryDetailView: View {
         .toolbarVisibility(chromeVisible ? .visible : .hidden, for: .navigationBar)
         .statusBarHidden(!chromeVisible)
         .toolbar {
+            ToolbarItem(placement: .principal) {
+                VStack(spacing: 1) {
+                    Text(verbatim: title)
+                        .font(.headline)
+                    if let relativeLabel {
+                        Text(verbatim: relativeLabel)
+                            .font(.caption2)
+                            .foregroundStyle(.secondary)
+                    }
+                }
+                .accessibilityElement(children: .combine)
+            }
             ToolbarItem(placement: .topBarTrailing) {
                 Menu {
                     if let currentAsset {
@@ -154,7 +166,19 @@ struct MemoryDetailView: View {
     }
 
     private var title: String {
-        (currentAsset ?? asset).capturedAt.formatted(.dateTime.month(.wide).day().hour().minute())
+        let capturedAt = (currentAsset ?? asset).capturedAt
+        // A lifelog spans years; hide the year only while it is unambiguous.
+        if Calendar.autoupdatingCurrent.isDate(capturedAt, equalTo: .now, toGranularity: .year) {
+            return capturedAt.formatted(.dateTime.month(.wide).day().hour().minute())
+        }
+        return capturedAt.formatted(.dateTime.year().month(.wide).day().hour().minute())
+    }
+
+    /// 「1年前」「昨日」 — the emotional distance to this memory.
+    private var relativeLabel: String? {
+        let capturedAt = (currentAsset ?? asset).capturedAt
+        guard !Calendar.autoupdatingCurrent.isDateInToday(capturedAt) else { return nil }
+        return capturedAt.formatted(.relative(presentation: .named))
     }
 
     private func updateAgentAccess(_ enabled: Bool) {

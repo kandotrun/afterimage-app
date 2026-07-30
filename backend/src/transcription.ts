@@ -483,8 +483,7 @@ export async function pollTranscriptions(bindings: Env, now = new Date()) {
           ).bind(nowIso, asset.id, nowIso, leaseToken, nowIso).run();
           continue;
         }
-        if (object.size > directUploadMaxBytes(bindings)
-          && bindings.TRANSCRIPTION_MEDIA_BASE_URL) {
+        if (object.size > directUploadMaxBytes(bindings)) {
           const mediaUrl = await createTranscriptionMediaUrl(bindings, asset, now, nowIso);
           mediaGrantCreated = true;
           provisionalTranscriptionId = await createTranscription(bindings, { audioUrl: mediaUrl });
