@@ -23,6 +23,19 @@ if [[ ! -f "$WRANGLER_CONFIG" ]]; then
   exit 1
 fi
 
+if [[ -z "${CLOUDFLARE_ACCOUNT_ID:-}" ]]; then
+  CLOUDFLARE_ACCOUNT_ID="$(WRANGLER_CONFIG="$WRANGLER_CONFIG" node -e '
+    const source = require("fs").readFileSync(process.env.WRANGLER_CONFIG, "utf8");
+    const match = source.match(/"account_id"\s*:\s*"([^"]+)"/);
+    if (!match) process.exit(1);
+    process.stdout.write(match[1]);
+  ')" || {
+    printf 'Missing account_id in production Wrangler config: %s\n' "$WRANGLER_CONFIG" >&2
+    exit 1
+  }
+  export CLOUDFLARE_ACCOUNT_ID
+fi
+
 expect_status() {
   local expected="$1"
   local path="${2:-/health}"
@@ -41,12 +54,40 @@ expect_status() {
   return 1
 }
 
+require_binding() {
+  local binding="$1"
+  if [[ "$FINAL_DRY_RUN_OUTPUT" != *"env.$binding"* ]]; then
+    printf 'Missing production Worker binding: %s\n' "$binding" >&2
+    return 1
+  fi
+  if [[ "$FINAL_DRY_RUN_OUTPUT" == *"env.$binding (\"<"* ]]; then
+    printf 'Production Worker binding is still a placeholder: %s\n' "$binding" >&2
+    return 1
+  fi
+}
+
+require_secret() {
+  local secret="$1"
+  SECRET_LIST_JSON="$SECRET_LIST_JSON" REQUIRED_SECRET="$secret" node -e '
+    const secrets = JSON.parse(process.env.SECRET_LIST_JSON || "[]");
+    if (!secrets.some((entry) => entry.name === process.env.REQUIRED_SECRET)) {
+      console.error(`Missing production Worker secret: ${process.env.REQUIRED_SECRET}`);
+      process.exit(1);
+    }
+  '
+}
+
 npm run typecheck
-npx wrangler deploy --config "$WRANGLER_CONFIG" --dry-run \
-  --outdir "$TEMP_DIR/final" --keep-vars
+FINAL_DRY_RUN_OUTPUT="$(npx wrangler deploy --config "$WRANGLER_CONFIG" --dry-run \
+  --outdir "$TEMP_DIR/final" --keep-vars 2>&1)"
+printf '%s\n' "$FINAL_DRY_RUN_OUTPUT"
 npx wrangler deploy src/maintenance.ts --config "$WRANGLER_CONFIG" --dry-run \
   --outdir "$TEMP_DIR/maintenance" --keep-vars
 npx wrangler d1 migrations list "$D1_DATABASE" --remote --config "$WRANGLER_CONFIG"
+SECRET_LIST_JSON="$(npx wrangler secret list --config "$WRANGLER_CONFIG" --format json)"
+require_binding APPLE_TEAM_ID
+require_binding APPLE_KEY_ID
+require_secret APPLE_PRIVATE_KEY
 
 # Phase 1: stop auth, uploads, AI dispatch, deletion jobs, and all cron work.
 npx wrangler deploy src/maintenance.ts --config "$WRANGLER_CONFIG" --keep-vars \

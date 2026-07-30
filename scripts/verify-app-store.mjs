@@ -739,6 +739,7 @@ export function verifyWorkflowTrust(workflows) {
 }
 
 export function verifyBackendRolloutScript(source) {
+  const failures = [];
   const executable = normalizedLines(source)
     .map((line) => line.replace(/\s+#.*$/, "").trim())
     .filter((line) => line && !line.startsWith("#"))
@@ -751,17 +752,31 @@ export function verifyBackendRolloutScript(source) {
   const migration = executable.indexOf("wrangler d1 migrations apply");
   const finalDeploy = executable.lastIndexOf('wrangler deploy --config "$WRANGLER_CONFIG"');
   const finalProbe = executable.indexOf("expect_status 200");
+  const appleCredentialChecks = [
+    executable.indexOf("wrangler secret list"),
+    executable.indexOf("APPLE_TEAM_ID"),
+    executable.indexOf("APPLE_KEY_ID"),
+    executable.indexOf("APPLE_PRIVATE_KEY"),
+  ];
+  if (maintenance < 0 || appleCredentialChecks.some((index) =>
+    index < 0 || index >= maintenance
+  )) {
+    failures.push(failure(
+      "backend.rollout.apple-credentials",
+      "maintenance移行前にAPPLE_TEAM_ID / APPLE_KEY_ID / APPLE_PRIVATE_KEYをpreflightしてください。",
+    ));
+  }
   if (maintenance < 0
       || maintenanceProbe <= maintenance
       || migration <= maintenanceProbe
       || finalDeploy <= migration
       || finalProbe <= finalDeploy) {
-    return [failure(
+    failures.push(failure(
       "backend.rollout.order",
       "production backendはmaintenance deploy→503確認→D1 migration→final deploy→200確認の順で適用してください。",
-    )];
+    ));
   }
-  return [];
+  return failures;
 }
 
 export function verifyDeployWorkflow(source) {

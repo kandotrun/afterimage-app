@@ -263,6 +263,17 @@ test("TestFlight export前にarchive read-back gateを要求する", () => {
 
 test("production backend rollout はmaintenance→migration→final deploy順を要求する", () => {
   const safe = `
+wrangler secret list --config "$WRANGLER_CONFIG"
+require_binding APPLE_TEAM_ID
+require_binding APPLE_KEY_ID
+require_secret APPLE_PRIVATE_KEY
+wrangler deploy src/maintenance.ts --config "$WRANGLER_CONFIG"
+expect_status 503
+wrangler d1 migrations apply "$D1_DATABASE" --remote --config "$WRANGLER_CONFIG"
+wrangler deploy --config "$WRANGLER_CONFIG"
+expect_status 200
+`;
+  const missingAppleCredentials = `
 wrangler deploy src/maintenance.ts --config "$WRANGLER_CONFIG"
 expect_status 503
 wrangler d1 migrations apply "$D1_DATABASE" --remote --config "$WRANGLER_CONFIG"
@@ -277,6 +288,9 @@ wrangler deploy --config "$WRANGLER_CONFIG"
   assert.deepEqual(verifyBackendRolloutScript(safe), []);
   assert.ok(verifyBackendRolloutScript(unsafe).some((failure) =>
     failure.id === "backend.rollout.order"
+  ));
+  assert.ok(verifyBackendRolloutScript(missingAppleCredentials).some((failure) =>
+    failure.id === "backend.rollout.apple-credentials"
   ));
 });
 
