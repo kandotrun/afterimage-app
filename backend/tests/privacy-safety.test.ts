@@ -922,7 +922,7 @@ describe("durable account deletion", () => {
         crypto.randomUUID(),
         owner.userId,
         NOW.toISOString(),
-        new Date(NOW.getTime() + 60_000).toISOString(),
+        NOW.toISOString(),
       ),
     ]);
     return {
@@ -1164,6 +1164,46 @@ describe("durable account deletion", () => {
     expect(await env.DB.prepare(
       "SELECT id FROM users WHERE id = ?",
     ).bind(fixtures.owner.userId).first()).toBeNull();
+  });
+
+  it("waits for in-flight external AI work before completing account deletion", async () => {
+    const clock = { value: NOW };
+    const providers = deletionProviders();
+    const app = makeDeletionApp(clock, providers);
+    const fixtures = await createDeletionFixtures(app, env, "deletion-qwen-race");
+    await env.DB.prepare(
+      "UPDATE external_ai_work_leases SET expires_at = ? WHERE user_id = ?",
+    ).bind(
+      new Date(NOW.getTime() + 60_000).toISOString(),
+      fixtures.owner.userId,
+    ).run();
+
+    const accepted = await app.request("/v1/account", {
+      method: "DELETE",
+      headers: {
+        authorization: fixtures.owner.authorization,
+        "content-type": "application/json",
+      },
+      body: JSON.stringify(await accountDeletionCredentials(
+        app,
+        "deletion-qwen-race",
+        "apple-authorization-code-qwen-race",
+      )),
+    }, env);
+    expect(accepted.status).toBe(202);
+    await expect(accepted.json()).resolves.toEqual({
+      deletion: { status: "pending" },
+      localSessionShouldBeCleared: true,
+    });
+    expect(await env.DB.prepare("SELECT id FROM users WHERE id = ?")
+      .bind(fixtures.owner.userId).first()).not.toBeNull();
+
+    clock.value = new Date(NOW.getTime() + 61_000);
+    await expect(processPendingAccountDeletions(env, clock.value, providers))
+      .resolves.toEqual({ processed: 1 });
+    expect(providers.revokeAppleToken).toHaveBeenCalledOnce();
+    expect(await env.DB.prepare("SELECT id FROM users WHERE id = ?")
+      .bind(fixtures.owner.userId).first()).toBeNull();
   });
 
   it("prunes completed deletion receipts and tombstones after thirty days", async () => {
@@ -1451,6 +1491,26 @@ describe("durable account deletion", () => {
       `users/${fixtures.owner.userId}/assets/${lateAssetId}/media`,
       nowIso,
       nowIso,
+    ).run()).rejects.toThrow(/account_deletion_in_progress/);
+    await expect(env.DB.prepare(
+      `INSERT INTO external_ai_work_leases (
+        id, user_id, kind, created_at, expires_at
+      ) VALUES (?, ?, 'qwen_summary', ?, ?)`,
+    ).bind(
+      crypto.randomUUID(),
+      fixtures.owner.userId,
+      nowIso,
+      new Date(clock.value.getTime() + 120_000).toISOString(),
+    ).run()).rejects.toThrow(/account_deletion_in_progress/);
+    await expect(env.DB.prepare(
+      `INSERT INTO soniox_work_leases (
+        asset_id, user_id, owner_token, created_at, expires_at
+      ) VALUES (?, ?, 'late-soniox-owner', ?, ?)`,
+    ).bind(
+      fixtures.readyAssetId,
+      fixtures.owner.userId,
+      nowIso,
+      new Date(clock.value.getTime() + 120_000).toISOString(),
     ).run()).rejects.toThrow(/account_deletion_in_progress/);
   });
 

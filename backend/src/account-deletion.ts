@@ -363,13 +363,22 @@ export async function processAccountDeletionJob(
       }
     }
 
-    const activeSonioxWork = await bindings.DB.prepare(
+    const activeExternalWork = await bindings.DB.prepare(
       `SELECT 1 AS found
-         FROM soniox_work_leases
-        WHERE user_id = ? AND expires_at > ?
-        LIMIT 1`,
-    ).bind(claimed.user_id, nowIso).first<{ found: number }>();
-    if (activeSonioxWork) {
+         WHERE EXISTS (
+           SELECT 1 FROM soniox_work_leases
+            WHERE user_id = ? AND expires_at > ?
+         ) OR EXISTS (
+           SELECT 1 FROM external_ai_work_leases
+            WHERE user_id = ? AND expires_at > ?
+         )`,
+    ).bind(
+      claimed.user_id,
+      nowIso,
+      claimed.user_id,
+      nowIso,
+    ).first<{ found: number }>();
+    if (activeExternalWork) {
       await returnJobToPending(
         bindings,
         jobId,
