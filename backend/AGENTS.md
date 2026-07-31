@@ -1,52 +1,32 @@
 # Backend Knowledge Base
 
-## OVERVIEW
+## RUNTIME MAP
 
-- Cloudflare Worker の Hono API。`src/index.ts` が fetch と scheduled の境界。
-- `createApp` が公開ルートと `/v1` ルートを組み立て、D1 は状態、R2 `MEDIA` は本文を持つ。
-- 認証、アップロード、再生、文字起こし、日次要約、daily weather、MCP を同じ Worker で扱う。
+- `src/index.ts`: Worker entry. `fetch` delegates to `createApp`; `17 3 * * *` runs state cleanup plus account-deletion work, every other trigger runs transcription polling, Mage queue polling, and account-deletion work.
+- `src/app.ts`: composition root for auth, `/v1` routes, upload/playback, weather, summaries, MCP handoff, and deletion intent; `createApp(overrides)` is the test seam. Keep provider and lease mechanics in leaf modules.
+- `src/transcription.ts`: Soniox submission/status polling. Claim an asset, acquire `soniox_work_leases`, persist provider IDs before promotion, and use `soniox_cleanup_outbox` for retryable deletion; never clear IDs manually after a provider failure.
+- `src/gpu-jobs.ts`: consent-gated Mage-VL queue and worker lease API. Analysis jobs use the pinned model/revision and a per-owner limit of four; frame/clip derivatives additionally require `agent_access_enabled`.
+- `src/mcp.ts`: Streamable HTTP MCP endpoint. Hash `aft_mcp_…` tokens, require current AI consent, scope every query and grant to the authenticated owner, and return short-lived agent resource links only.
+- `src/account-deletion.ts`: durable intent, immediate session/token quarantine, Apple revocation, owner-token fencing, Soniox/R2 cleanup, and idempotent tombstone completion. `processPendingAccountDeletions` is the scheduled retry driver.
+- `src/privacy.ts`: `AI_CONSENT_VERSION` and active-consent predicates are the authority for Soniox, Qwen, Mage, and MCP work. `src/soniox.ts` and `src/qwen-summary.ts` contain provider-specific HTTP and response validation.
 
-## WHERE TO LOOK
+## STATE AND PRIVACY BOUNDARIES
 
-- `src/index.ts`: `createApp()` の fetch 委譲、cron 分岐。`17 3 * * *` は期限状態 cleanup、それ以外は Soniox polling（production example の trigger は daily cron のみ）。
-- `src/app.ts`: `createApp`、`authMiddleware`、全 `/v1` route、asset の D1/R2 状態遷移。
-- `src/apple.ts`: Apple JWKS の JWT 検証。issuer と `APPLE_BUNDLE_ID` audience。
-- `src/soniox.ts`: Soniox の file upload、async job 作成、status/transcript 取得、resource cleanup。
-- `src/qwen-summary.ts`: Qwen Token Plan の endpoint 制約、model 選択、日次要約の正規化。
-- `src/weather.ts`: 認証ユーザー単位の daily weather upsert/list、日付範囲、WeatherKit attribution URL。
-- `src/mcp.ts`: MCP bearer token の hash 照合、認証ユーザー専用の read-only tools、CORS。
-- `migrations/`: D1 schema の履歴。新しい SQL は番号を追加し、適用済み migration は書き換えない。
-- `tests/app.test.ts`, `tests/qwen-summary.test.ts`: route lifecycle、weather ownership、Qwen provider の境界テスト。`tests/setup.ts` は D1 migrations を適用する。
-- `wrangler.dev.jsonc`, `wrangler.test.jsonc`, `wrangler.example.jsonc`: 環境別 D1/R2 binding と vars。`scripts/seed-dev.mjs` は dev 用データ入口。
-- `src/worker-configuration.d.ts`: Wrangler 生成の ambient binding 型。手編集せず、手動実装の対象から除外。
+- Bind all asset, transcript, derivative, grant, MCP, and deletion queries to the authenticated `user_id`; object keys are `users/{userId}/assets/{assetId}/…` and must pass the same-prefix guard before deletion.
+- Upload lifecycle is `uploading` → `ready`/`failed`; single and multipart operations hold D1 claims while streaming request bodies to R2. Completion verifies object existence and declared size before publishing `ready`.
+- App, worker, transcription, and agent media grants are hashed, purpose-tagged, owner-bound, and expiring. Large Soniox inputs use an HTTPS private media grant; do not buffer the R2 body in Worker memory.
+- Withdrawal or account deletion must stop new AI work, revoke applicable grants, and fence stale leases. Account deletion waits for active Soniox/external-AI work before removing provider resources and the owner prefix.
+- `migrations/` is append-only. `0012_privacy_safety.sql` resets agent access and external jobs; `0013_soniox_cleanup_safety.sql` adds deletion markers/leases/outbox; `0014_account_deletion_work_fence.sql` blocks new work during deletion. Use the maintenance Worker rollout sequence for schema changes.
+- `src/worker-configuration.d.ts` is Wrangler-generated ambient binding type; regenerate with the `types` script, never hand-edit or treat it as source of truth. Keep `wrangler.*.jsonc` bindings aligned per environment.
 
-## CONVENTIONS
+## PROVIDER AND LEASE RULES
 
-- `createApp(overrides)` に Apple verifier、Qwen generator、clock を注入。テストは外部 provider を stub 化する。
-- `authMiddleware` は bearer token を SHA-256 hash 化し、D1 の sessions/users join で `auth` context を設定する。`/v1` は middleware 配下。
-- asset・MCP token・session の D1 query は `auth.userId` を必ず bind。R2 key は `users/{userId}/assets/{assetId}/` prefix で揃える。
-- upload は `uploading` → `ready`/`failed`。single は lease、multipart は `upload_parts` と R2 upload id を D1 で追跡する。
-- complete は R2 object の存在・size を確認してから D1 を `ready` に遷移。thumbnail、delete、stale cleanup は D1 と R2 を同じ owner prefix で掃除する。
-- video が ready になった後、Soniox key がある場合だけ transcription を `pending` に queue。poll は pending/processing を順に進める。
-- daily weather は `auth.userId` と local date で所有者分離し、保存した WeatherKit attribution URL を応答へ維持する。
-- Qwen は HTTPS かつ許可された Token Plan host のみ。応答 model は設定値と一致し、要約は 60 文字以内。
+- Soniox direct upload is bounded by `SONIOX_DIRECT_UPLOAD_MAX_BYTES` (default 100 MiB); oversized media must use the HTTPS grant path. Lease takeover must not let stale workers promote IDs or release a replacement lease.
+- Mage worker requests require a token matching `MAGE_WORKER_TOKEN_HASH`, supported capabilities, active consent, and a live lease token. Validate model/revision, ranges, bounded summaries, and failure codes with Zod; persist no raw provider payloads or secrets.
+- Qwen requests require HTTPS and an allowed Token Plan host/model; normalize output to the 60-character summary contract and hide upstream response bodies. External-AI leases are owner-scoped and counted against concurrency limits.
 
-## ANTI-PATTERNS
+## TEST AND CHANGE SURFACE
 
-- `findOwnedAsset` や同等の owner 条件を外した D1 asset query、または別ユーザーの R2 prefix 参照。
-- single upload や multipart part を Worker memory に全量展開する処理。request body は R2 へ stream する。
-- migration の既存番号編集・並べ替え、schema の手動適用。D1 の `migrations_dir` と履歴を壊さない。
-- `17 3 * * *` の daily cleanup と Soniox polling の責務を一つの処理へ混在させる。
-- Soniox/Qwen の許可されていない endpoint、model の無検証利用、provider の生レスポンスを API に露出する実装。
-- `scripts/seed-dev.mjs` を本番・remote D1/R2 に向ける変更。これは `wrangler ... --local` 前提のローカル専用 seeder。
-
-## COMMANDS
-
-```bash
-npm --workspace backend test
-npm --workspace backend run typecheck
-npm --workspace backend run deploy:dry
-npm --workspace backend run dev
-npm --workspace backend run seed:dev
-npm --workspace backend run types
-```
+- Route/auth/upload/cleanup/weather/MCP/GPU behavior: `backend/tests/app.test.ts`, `memory-api.test.ts`, `privacy-safety.test.ts`.
+- Soniox claim, streaming, takeover, and large-asset paths: `backend/tests/transcription.test.ts`, `transcription-large-assets.test.ts`; provider summary boundaries: `qwen-summary.test.ts`.
+- Run `npm --workspace backend test`, `npm --workspace backend run typecheck`, `npm --workspace backend run types`, and `npm --workspace backend run deploy:dry`; use `npm run check` for the repository gate. Update migration/contract tests with any schema or wire change.

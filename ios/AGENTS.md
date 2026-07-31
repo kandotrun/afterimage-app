@@ -1,52 +1,46 @@
 # iOS Knowledge Base
 
-## OVERVIEW
+## SCOPE
 
-- Afterimage の iOS 26 / Swift 6 SwiftUI 本体と `AfterimageUploadWidget` 拡張。
-- `project.yml` が XcodeGen の唯一のプロジェクト定義。
-- `AppModel`（`@MainActor`）が認証・タイムライン・取り込み・再開を束ね、UI は状態を表示する。
+- Swift 6 / iOS 26 SwiftUI app と `AfterimageUploadWidget` extension。
+- `project.yml` が target、scheme、resource、localization の source of truth。xcodeproj は生成物。
+- `ios/Sources/Features/AGENTS.md` が画面・feature policy の詳細ルール。ここでは重複記述しない。
 
-## WHERE TO LOOK
+## ROUTING
 
-- `project.yml`: targets、依存関係、scheme、resource/localization の組み込み。
-- `Sources/App/AppModel.swift`: 起動、Keychain セッション、重複判定、取り込みからバックグラウンド移譲まで。
-- `Sources/Networking/APIClient.swift`: API パス解決、Bearer 管理、認証済みデータ/再生 grant。
-- `Sources/Security/KeychainSessionStore.swift`: bearer を保存する唯一の永続境界。
-- `Sources/Import/MediaImporter.swift`: PhotosPicker の file-based `Transferable`、一時ファイル、日時/位置メタデータ。
-- `Sources/Compression/MediaCompressor.swift`: AVAssetReader/Writer の HEVC 出力、プレビュー、サイズ計測。
-- `Sources/Upload/BackgroundUploadManager.swift`: URLSession background、staged file、再開可能な secret-free JSON state。
-- `Sources/Upload/MediaUploader.swift`: 単一 PUT と multipart chunk の計画/検証。
-- `Sources/Features/{Auth,Timeline,Memory,Settings}`: 画面と AppModel/API の接続。
-- `Sources/Playback`: AVAudioSession、再生時計、grant 失敗時の recovery policy。
-- `Sources/Weather/DailyWeatherRecorder.swift`, `Sources/Models/DailyWeather.swift`, `Sources/Features/Timeline/DailyWeatherBadge.swift`: current location の WeatherKit snapshot、API model、timeline 表示。
-- `Sources/Shared/UploadActivityAttributes.swift` と `AfterimageUploadWidget/`: Live Activity の共有契約と表示。
-- `Tests/`・`UITests/`: API/圧縮/取り込み/再生/アップロード契約、実画面ナビゲーション。
+- `Sources/App/AppModel.swift`: bootstrap、auth generation、timeline/weather、import、upload、AI consent、account deletion の状態集約。
+- `Sources/Networking/APIClient.swift` / `Sources/Models/APIModels.swift`: HTTPS origin、相対/絶対 API path、session-bound request、wire model。
+- `Sources/Security/KeychainSessionStore.swift`: bearer session の永続境界。`AuthGenerationGate` と logout race を併読。
+- `Sources/Import/MediaImporter.swift` → `Sources/Compression/MediaCompressor.swift`: file-based PhotosPicker、metadata、HEVC 出力、thumbnail。
+- `Sources/Upload/BackgroundUploadManager.swift` / `MediaUploader.swift`: staged file、single PUT/multipart、retry、handoff、background callback。
+- `Sources/Playback/`: grant recovery、clock/audio、player chrome の共通 policy。feature controller は子 guide を参照。
+- `Sources/Privacy/`: AI consent version と transfer policy。Settings の deletion UI は子 guide を参照。
+- `Sources/Shared/UploadActivityAttributes.swift` + `AfterimageUploadWidget/`: app/widget 共通の stage/progress/filename 契約。
+- `Sources/Localization/L10n.swift` + `Resources/Localizable.xcstrings`: dynamic/error/accessibility text と ja/en/zh-Hans/ko catalog。
+- `Tests/` は policy・wire・lifecycle unit tests、`UITests/` は camera/accessibility/consent/navigation/screenshots。
 
-## CONVENTIONS
+## BOUNDARIES
 
-- Swift 6 の actor 境界を保つ。`APIClient`、`MediaCompressor`、`MediaUploader` は actor、画面モデル/Controller は `@MainActor`、値型は必要に応じて `Sendable`。
-- プロジェクト変更は `project.yml` に記述して `xcodegen generate`。新規 source/resource は target の sources 定義と scheme の test 対象を確認する。
-- 取り込みは `PhotosPickerItem.loadTransferable` のファイル表現を使い、所有一時ファイルを処理後に削除する。元動画/画像をメモリ全量へ読まない。
-- 動画は AVAssetReader/Writer で HEVC に変換し、音声は `outputSettings: nil` と source format hint の passthrough。変換失敗時に原本を送信しない。
-- 最適化結果には content type、byte size、寸法、duration、capture metadata、thumbnail URL を揃えてから asset を作成する。
-- 背景 upload は staged file と chunk 単位。永続 state に base URL、asset、進捗だけを置き、bearer は Keychain から都度取得して widget/Activity に渡さない。
-- `UploadActivityAttributes` を変更したら app と widget の両 target、Localization、Live Activity の stage/progress 表示を同時に確認する。
-- daily weather は日単位で記録し、WeatherKit attribution の legal/light/dark URL を model、API、badge 間で欠落させない。
-- ユーザー向け文言・アクセシビリティ・エラーは `Localizable.xcstrings` と `L10n` のキーを通す。ja/en/zh-Hans/ko の resource と fallback を契約テストで確認する。
-- 再生は API の短命 grant を `AVPlayer` に渡し、`PlaybackRecoveryPolicy`/`PlaybackAudioSession` の状態遷移を単体テストで固定する。
+- `APIClient`、`MediaCompressor`、`MediaUploader` は actor。`AppModel`、camera model、playback controller は `@MainActor`。境界値は `Sendable`。
+- `BackgroundUploadState` は URL、asset、progress、generation のみ。bearer は Keychain から request ごとに取得し、Activity/UserDefaults/log に渡さない。
+- import/camera/optimized temporary files は所有者が明確な URL。handoff、cancel、account deletion 後に cleanup し、HEVC 失敗時は原本を upload しない。
+- camera は permission → configure → ready → recording/finalizing/reviewing の phase を守る。`.inactive` は capture 継続、`.background` は policy に従い停止する。
+- playback は API grant を `AVPlayer` に解決し、expiry/error を recovery policy で扱う。remote URL や非 video descriptor を preview 境界へ入れない。
+- 外部 AI 転送と agent access は `AIConsentPolicy` の current version、grant、withdrawal、timestamp を全て満たす場合だけ許可する。
+- `UploadActivityAttributes` の変更は app/widget 両 target、4言語 catalog、stage/progress contract scripts を同じ変更で更新する。
+- SwiftUI の static text 以外は `L10n` 経由。placeholder、fallback、accessibility string を catalog contract で確認する。
+
+## VALIDATION
+
+- `cd ios && xcodegen generate` 後、`project.yml` と生成差分を確認。
+- `xcrun simctl list devices available` で実在する iOS 26 simulator ID を選ぶ。
+- `cd ios && xcodebuild test -project afterimage.xcodeproj -scheme afterimage -destination 'platform=iOS Simulator,id=<UDID>' -derivedDataPath DerivedData -resultBundlePath TestResults.xcresult CODE_SIGNING_ALLOWED=NO`。
+- source/contract 変更時は `node scripts/verify-ios-contract.mjs`、`node scripts/verify-ios-haptics.mjs`、`node scripts/verify-ios-localizations.mjs` を実行。
+- archive/release の確認は `scripts/verify-ios-archive.py` と workflow の実 destination/log を使用する。
 
 ## ANTI-PATTERNS
 
-- `afterimage.xcodeproj` や scheme を手編集して `project.yml` と乖離させる。
-- bearer、grant、署名 URL、API token を `BackgroundUploadState`、UserDefaults、Activity attributes、ログへ書く。
-- `Data(contentsOf:)` 等で大容量メディア全体を抱える、音声を再エンコードする、HEVC 失敗時に原本へフォールバックする。
-- actor の状態を直接共有する、`@MainActor` UI を非 Sendable callback から更新する、重複 upload を task 調査なしで起動する。
-- SwiftUI の表示文言や widget stage をハードコードし、string catalog/contract test を迂回する。
-- scheme や simulator 名を推測して結果を読む。`project.yml` と CI の実 destination を合わせる。
-
-## COMMANDS
-
-- `cd ios && xcodegen generate`
-- `xcrun simctl list devices available` で iOS 26 の iPhone UDID を選ぶ。
-- `cd ios && xcodebuild test -project afterimage.xcodeproj -scheme afterimage -destination 'platform=iOS Simulator,id=<UDID>'`
-- CI 同等の実測は iOS 26 simulator の UDID を選び、`-derivedDataPath DerivedData -resultBundlePath TestResults.xcresult CODE_SIGNING_ALLOWED=NO` とログ/xcresult を保存する。
+- generated `afterimage.xcodeproj`、scheme、Info.plist を source として編集しない。
+- Swift concurrency の警告を `@unchecked Sendable`、detached task、MainActor hop の追加だけで隠さない。
+- camera recording URL、background transfer identifier、session generation を別 owner の cleanup で消さない。
+- localization、widget stage、privacy manifest、entitlement の変更を単一 target の動作確認だけで完了扱いにしない。
