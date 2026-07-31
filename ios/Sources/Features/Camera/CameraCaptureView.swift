@@ -38,6 +38,7 @@ struct CameraCaptureView: View {
             switch state {
             case .review, .failed:
                 model.discard()
+                appModel.playHaptic(.delete)
                 dismiss()
             default:
                 break
@@ -45,6 +46,10 @@ struct CameraCaptureView: View {
         }
         .onChange(of: model.accessibilityAnnouncement) { _, announcement in
             guard let announcement else { return }
+            guard !dismissAfterFinalization else { return }
+            if let cue = CameraHapticPolicy.cue(for: announcement.kind) {
+                appModel.playHaptic(cue)
+            }
             UIAccessibility.post(
                 notification: .announcement,
                 argument: announcementText(for: announcement.kind)
@@ -59,6 +64,7 @@ struct CameraCaptureView: View {
             }
             Button(L10n.string("camera.action.cancel"), role: .cancel) {
                 model.cancelSilentRecording()
+                appModel.playHaptic(.selection)
             }
         } message: {
             Text(L10n.string("camera.microphone.message"))
@@ -156,9 +162,11 @@ struct CameraCaptureView: View {
         CameraCaptureReviewView(
             video: video,
             onClose: {
+                appModel.playHaptic(.warning)
                 isShowingDiscardConfirmation = true
             },
             onRetake: {
+                appModel.playHaptic(.lift)
                 Task {
                     await model.retake()
                 }
@@ -167,6 +175,7 @@ struct CameraCaptureView: View {
                 if model.transfer({ appModel.importCapturedMedia($0) }) {
                     dismiss()
                 } else {
+                    appModel.playHaptic(.warning)
                     isShowingUploadBusyNotice = true
                 }
             }
@@ -187,12 +196,14 @@ struct CameraCaptureView: View {
             opensSettings: opensSettings,
             canRetry: canRetry,
             onRetry: {
+                appModel.playHaptic(.lift)
                 Task {
                     await model.retry()
                 }
             },
             onClose: {
                 model.discard()
+                appModel.playHaptic(.selection)
                 dismiss()
             }
         )
@@ -220,9 +231,11 @@ struct CameraCaptureView: View {
     private func requestClose() {
         switch model.state {
         case .recording, .finalizing, .review:
+            appModel.playHaptic(.warning)
             isShowingDiscardConfirmation = true
         default:
             model.discard()
+            appModel.playHaptic(.selection)
             dismiss()
         }
     }
@@ -236,6 +249,7 @@ struct CameraCaptureView: View {
             dismissAfterFinalization = true
         default:
             model.discard()
+            appModel.playHaptic(.delete)
             dismiss()
         }
     }

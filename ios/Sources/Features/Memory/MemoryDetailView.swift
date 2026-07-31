@@ -35,10 +35,21 @@ struct MemoryDetailView: View {
         pageAssets.first { $0.id == selectedAssetID }
     }
 
+    private var pagerSelection: Binding<String?> {
+        Binding(
+            get: { selectedAssetID },
+            set: { newValue in
+                guard newValue != selectedAssetID else { return }
+                selectedAssetID = newValue
+                model.playHaptic(.selection)
+            }
+        )
+    }
+
     var body: some View {
         ZStack {
             Color.black.ignoresSafeArea()
-            TabView(selection: $selectedAssetID) {
+            TabView(selection: pagerSelection) {
                 ForEach(pageAssets) { entry in
                     MemoryPageView(
                         asset: entry,
@@ -124,6 +135,7 @@ struct MemoryDetailView: View {
                             .accessibilityValue(currentAsset.agentAccessEnabled ? "オン" : "オフ")
                         }
                         Button("削除", systemImage: "trash", role: .destructive) {
+                            model.playHaptic(.warning)
                             confirmDelete = true
                         }
                     }
@@ -224,6 +236,7 @@ struct MemoryDetailView: View {
 }
 
 private struct MemoryPageView: View {
+    @EnvironmentObject private var model: AppModel
     let asset: Asset
     let isActive: Bool
     @Binding var chromeVisible: Bool
@@ -243,6 +256,7 @@ private struct MemoryPageView: View {
             )
         } else {
             PhotoMemoryView(asset: asset) {
+                model.playHaptic(.selection)
                 withAnimation(.easeInOut(duration: 0.2)) {
                     chromeVisible.toggle()
                 }

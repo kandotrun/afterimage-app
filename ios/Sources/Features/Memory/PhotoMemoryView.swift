@@ -13,7 +13,11 @@ struct PhotoMemoryView: View {
     var body: some View {
         ZStack {
             if let image = fullImage ?? thumbnail {
-                ZoomableImageView(image: image, onSingleTap: onSingleTap)
+                ZoomableImageView(
+                    image: image,
+                    onSingleTap: onSingleTap,
+                    onDoubleTap: { model.playHaptic(.lift) }
+                )
                     // UIImageView is invisible to VoiceOver by default; without
                     // this, the photo page reads as an empty screen.
                     .accessibilityElement(children: .ignore)
@@ -36,6 +40,7 @@ struct PhotoMemoryView: View {
                         .font(.callout)
                         .multilineTextAlignment(.center)
                     Button(L10n.string("action.retry")) {
+                        model.playHaptic(.lift)
                         Task { await load() }
                     }
                     .buttonStyle(.glass)
@@ -61,6 +66,7 @@ struct PhotoMemoryView: View {
         } catch {
             if fullImage == nil, thumbnail == nil {
                 loadError = (error as? LocalizedError)?.errorDescription ?? error.localizedDescription
+                model.playHaptic(.failure)
             }
         }
     }

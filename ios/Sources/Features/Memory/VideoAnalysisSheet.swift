@@ -42,6 +42,7 @@ struct VideoAnalysisSheet: View {
                 Text(verbatim: loadError)
             } actions: {
                 Button(L10n.string("memory.analysis.retry")) {
+                    model.playHaptic(.lift)
                     retryGeneration += 1
                 }
                 .buttonStyle(.borderedProminent)
@@ -112,6 +113,7 @@ struct VideoAnalysisSheet: View {
                                 .font(.headline)
                             ForEach(analysis.segments) { segment in
                                 Button {
+                                    model.playHaptic(.selection)
                                     onSeek(segment.startMs)
                                     dismiss()
                                 } label: {
@@ -167,6 +169,7 @@ struct VideoAnalysisSheet: View {
             } catch {
                 isLoading = false
                 loadError = error.localizedDescription
+                model.playHaptic(.failure)
                 return
             }
         }

@@ -78,6 +78,7 @@ struct AIConnectionView: View {
                                 }
                                 Spacer()
                                 Button {
+                                    model.playHaptic(.warning)
                                     tokenToRevoke = token
                                     showRevocationConfirmation = true
                                 } label: {
@@ -95,6 +96,7 @@ struct AIConnectionView: View {
 
                 Section {
                     Button {
+                        model.playHaptic(.selection)
                         proposedName = "Hermes"
                         showCreatePrompt = true
                     } label: {
@@ -184,8 +186,10 @@ struct AIConnectionView: View {
         do {
             let created = try await model.createMCPToken(name: name)
             tokens.insert(created.item, at: 0)
+            model.playHaptic(.success)
             reveal = MCPReveal(configuration: MCPAgentConfiguration(endpoint: endpoint, token: created.token))
         } catch {
+            model.playHaptic(.failure)
             errorMessage = error.localizedDescription
         }
     }
@@ -195,6 +199,7 @@ struct AIConnectionView: View {
             try await model.revokeMCPToken(id: token.id)
             tokens.removeAll { $0.id == token.id }
         } catch {
+            model.playHaptic(.failure)
             errorMessage = error.localizedDescription
         }
         tokenToRevoke = nil
@@ -207,6 +212,7 @@ private struct MCPReveal: Identifiable {
 }
 
 private struct MCPTokenRevealView: View {
+    @EnvironmentObject private var model: AppModel
     @Environment(\.dismiss) private var dismiss
     let configuration: MCPAgentConfiguration
     @State private var copiedMessage: String?
@@ -285,7 +291,6 @@ private struct MCPTokenRevealView: View {
                 }
             }
         }
-        .sensoryFeedback(.success, trigger: copiedMessage)
     }
 
     @ViewBuilder
@@ -313,6 +318,7 @@ private struct MCPTokenRevealView: View {
 
     private func copy(_ text: String, message: String) {
         UIPasteboard.general.string = text
+        model.playHaptic(.copy)
         withAnimation(.snappy) { copiedMessage = message }
     }
 }

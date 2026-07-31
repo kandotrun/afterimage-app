@@ -762,12 +762,26 @@ final class CameraCaptureModelTests: XCTestCase {
         await model.record()
         model.stopRecording()
 
-        model.focus(at: .zero)
+        XCTAssertFalse(model.focus(at: .zero))
         model.zoom(to: 2)
 
         XCTAssertEqual(model.state, .finalizing)
         XCTAssertEqual(focusCount, 0)
         XCTAssertEqual(zoomCount, 0)
+    }
+
+    func testReadyFocusReportsAcceptance() async {
+        var focusedPoint: CGPoint?
+        let client = makeClient(
+            cameraPermission: .authorized,
+            microphonePermission: .authorized,
+            focus: { focusedPoint = $0 }
+        )
+        let model = CameraCaptureModel(client: client)
+        await model.start()
+
+        XCTAssertTrue(model.focus(at: CGPoint(x: 0.25, y: 0.75)))
+        XCTAssertEqual(focusedPoint, CGPoint(x: 0.25, y: 0.75))
     }
 
     func testBackgroundingStopsAndFinalizesRecording() async {

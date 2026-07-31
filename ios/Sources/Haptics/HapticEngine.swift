@@ -10,10 +10,15 @@ struct HapticEventDescriptor: Equatable, Sendable {
     let duration: TimeInterval
 }
 
-enum HapticCue: Sendable {
+enum HapticCue: Equatable, Sendable {
     case selection
     case lift
     case progress
+    case focus
+    case recordStart
+    case recordStop
+    case copy
+    case warning
     case success
     case failure
     case delete
@@ -26,6 +31,28 @@ enum HapticCue: Sendable {
             [HapticEventDescriptor(kind: .transient, relativeTime: 0, intensity: 0.45, sharpness: 0.42, duration: 0)]
         case .progress:
             [HapticEventDescriptor(kind: .transient, relativeTime: 0, intensity: 0.16, sharpness: 0.35, duration: 0)]
+        case .focus:
+            [HapticEventDescriptor(kind: .transient, relativeTime: 0, intensity: 0.14, sharpness: 0.92, duration: 0)]
+        case .recordStart:
+            [
+                HapticEventDescriptor(kind: .transient, relativeTime: 0, intensity: 0.42, sharpness: 0.38, duration: 0),
+                HapticEventDescriptor(kind: .transient, relativeTime: 0.07, intensity: 0.82, sharpness: 0.72, duration: 0),
+            ]
+        case .recordStop:
+            [
+                HapticEventDescriptor(kind: .transient, relativeTime: 0, intensity: 0.74, sharpness: 0.64, duration: 0),
+                HapticEventDescriptor(kind: .transient, relativeTime: 0.08, intensity: 0.34, sharpness: 0.28, duration: 0),
+            ]
+        case .copy:
+            [
+                HapticEventDescriptor(kind: .transient, relativeTime: 0, intensity: 0.20, sharpness: 0.62, duration: 0),
+                HapticEventDescriptor(kind: .transient, relativeTime: 0.06, intensity: 0.40, sharpness: 0.80, duration: 0),
+            ]
+        case .warning:
+            [
+                HapticEventDescriptor(kind: .continuous, relativeTime: 0, intensity: 0.34, sharpness: 0.20, duration: 0.08),
+                HapticEventDescriptor(kind: .transient, relativeTime: 0.10, intensity: 0.58, sharpness: 0.30, duration: 0),
+            ]
         case .success:
             [
                 HapticEventDescriptor(kind: .transient, relativeTime: 0, intensity: 0.55, sharpness: 0.45, duration: 0),
@@ -43,7 +70,12 @@ enum HapticCue: Sendable {
 }
 
 @MainActor
-final class HapticEngine {
+protocol HapticPlaying: AnyObject {
+    func play(_ cue: HapticCue)
+}
+
+@MainActor
+final class HapticEngine: HapticPlaying {
     private var engine: CHHapticEngine?
 
     init() {
@@ -94,10 +126,16 @@ final class HapticEngine {
             UINotificationFeedbackGenerator().notificationOccurred(.success)
         case .failure:
             UINotificationFeedbackGenerator().notificationOccurred(.error)
-        case .selection, .progress:
+        case .warning:
+            UINotificationFeedbackGenerator().notificationOccurred(.warning)
+        case .selection, .progress, .focus:
             UISelectionFeedbackGenerator().selectionChanged()
-        case .lift:
+        case .lift, .copy:
             UIImpactFeedbackGenerator(style: .light).impactOccurred()
+        case .recordStart:
+            UIImpactFeedbackGenerator(style: .rigid).impactOccurred(intensity: 0.82)
+        case .recordStop:
+            UIImpactFeedbackGenerator(style: .medium).impactOccurred(intensity: 0.68)
         case .delete:
             UIImpactFeedbackGenerator(style: .heavy).impactOccurred()
         }

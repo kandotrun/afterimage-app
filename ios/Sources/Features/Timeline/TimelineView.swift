@@ -44,6 +44,7 @@ struct TimelineView: View {
                             .padding(.top, 8)
                         case .failed:
                             TimelineLoadFailedView {
+                                model.playHaptic(.lift)
                                 Task { await model.refreshTimelineReportingFailure() }
                             }
                             .padding(.top, 120)
@@ -131,6 +132,7 @@ struct TimelineView: View {
                 ToolbarItem(placement: .topBarTrailing) {
                     Button {
                         isShowingMemorySearch = true
+                        model.playHaptic(.selection)
                     } label: {
                         Image(systemName: "magnifyingglass")
                     }
@@ -142,15 +144,18 @@ struct TimelineView: View {
                             L10n.string("account.settings.title"),
                             systemImage: "gearshape"
                         ) {
+                            model.playHaptic(.selection)
                             isShowingSettings = true
                         }
                         Button("再読み込み", systemImage: "arrow.clockwise") {
+                            model.playHaptic(.lift)
                             Task {
                                 await model.refreshTimelineReportingFailure()
                                 await model.recordTodayWeather()
                             }
                         }
                         Button("サインアウト", systemImage: "rectangle.portrait.and.arrow.right", role: .destructive) {
+                            model.playHaptic(.warning)
                             isConfirmingSignOut = true
                         }
                     } label: {
@@ -232,7 +237,11 @@ struct TimelineView: View {
                     .foregroundStyle(.secondary)
                 Spacer(minLength: 8)
                 Button(L10n.string("action.retry")) {
-                    Task { await model.retryPagination() }
+                    model.playHaptic(.lift)
+                    Task {
+                        await model.retryPagination()
+                        model.playHaptic(model.paginationFailed ? .failure : .success)
+                    }
                 }
                 .buttonStyle(.glass)
                 .font(.footnote.weight(.semibold))
@@ -247,6 +256,7 @@ struct TimelineView: View {
 
 /// The same day, one year ago, coming back to meet its owner.
 private struct OneYearAgoCard: View {
+    @EnvironmentObject private var model: AppModel
     let story: OneYearAgoStory
 
     var body: some View {
@@ -282,6 +292,9 @@ private struct OneYearAgoCard: View {
             .contentShape(.rect(cornerRadius: 22, style: .continuous))
         }
         .buttonStyle(.plain)
+        .simultaneousGesture(
+            TapGesture().onEnded { model.playHaptic(.selection) }
+        )
         .accessibilityLabel(
             L10n.format("daily.playback.card_accessibility", Int64(story.clipCount))
         )
@@ -511,6 +524,7 @@ private struct UploadDock: View {
                             )
 
                             Button(role: .cancel) {
+                                model.playHaptic(.warning)
                                 if upload.total > 1 {
                                     isConfirmingCancel = true
                                 } else {
@@ -526,6 +540,7 @@ private struct UploadDock: View {
                             .accessibilityLabel(L10n.string("upload.action.cancel"))
                         } else if model.backgroundUploadNeedsRetry {
                             Button {
+                                model.playHaptic(.lift)
                                 Task { await model.resumeBackgroundUpload() }
                             } label: {
                                 Label(L10n.string("upload.resume"), systemImage: "arrow.clockwise")
@@ -536,6 +551,7 @@ private struct UploadDock: View {
                             .buttonStyle(.glassProminent)
 
                             Button(role: .destructive) {
+                                model.playHaptic(.warning)
                                 isConfirmingDiscardStalled = true
                             } label: {
                                 Image(systemName: "trash")
@@ -555,12 +571,14 @@ private struct UploadDock: View {
                                 L10n.string("camera.source.record"),
                                 systemImage: "video.badge.plus"
                             ) {
+                                model.playHaptic(.lift)
                                 recordVideo()
                             }
                             Button(
                                 L10n.string("camera.source.library"),
                                 systemImage: "photo.on.rectangle"
                             ) {
+                                model.playHaptic(.lift)
                                 isShowingLibrary = true
                             }
                         } label: {

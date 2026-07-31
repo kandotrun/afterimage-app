@@ -1,6 +1,7 @@
 import SwiftUI
 
 struct CameraLiveCaptureView: View {
+    @EnvironmentObject private var appModel: AppModel
     @ObservedObject var model: CameraCaptureModel
     let onClose: () -> Void
     @State private var focusPoint: CGPoint?
@@ -10,6 +11,7 @@ struct CameraLiveCaptureView: View {
             ZStack {
                 CameraPreview(model: model) { point in
                     focusPoint = point
+                    appModel.playHaptic(.focus)
                     Task {
                         try? await Task.sleep(for: .seconds(1))
                         if focusPoint == point {
@@ -71,6 +73,9 @@ struct CameraLiveCaptureView: View {
             Button {
                 Task {
                     await model.switchCamera()
+                    if model.state == .ready {
+                        appModel.playHaptic(.selection)
+                    }
                 }
             } label: {
                 Image(systemName: "arrow.triangle.2.circlepath.camera")

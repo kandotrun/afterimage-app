@@ -49,8 +49,9 @@ struct CameraPreview: UIViewRepresentable {
             let layerPoint = recognizer.location(in: previewView)
             let devicePoint = previewView.previewLayer
                 .captureDevicePointConverted(fromLayerPoint: layerPoint)
-            model.focus(at: devicePoint)
-            onFocus(layerPoint)
+            if model.focus(at: devicePoint) {
+                onFocus(layerPoint)
+            }
         }
 
         @objc func zoom(_ recognizer: UIPinchGestureRecognizer) {

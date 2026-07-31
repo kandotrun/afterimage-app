@@ -7,9 +7,10 @@ import UIKit
 struct ZoomableImageView: UIViewRepresentable {
     let image: UIImage
     let onSingleTap: () -> Void
+    let onDoubleTap: () -> Void
 
     func makeCoordinator() -> Coordinator {
-        Coordinator(onSingleTap: onSingleTap)
+        Coordinator(onSingleTap: onSingleTap, onDoubleTap: onDoubleTap)
     }
 
     func makeUIView(context: Context) -> ZoomScrollView {
@@ -50,6 +51,7 @@ struct ZoomableImageView: UIViewRepresentable {
 
     func updateUIView(_ scrollView: ZoomScrollView, context: Context) {
         context.coordinator.onSingleTap = onSingleTap
+        context.coordinator.onDoubleTap = onDoubleTap
         if context.coordinator.imageView?.image !== image {
             context.coordinator.imageView?.image = image
             scrollView.setZoomScale(1, animated: false)
@@ -69,10 +71,12 @@ struct ZoomableImageView: UIViewRepresentable {
     @MainActor
     final class Coordinator: NSObject, UIScrollViewDelegate {
         var onSingleTap: () -> Void
+        var onDoubleTap: () -> Void
         weak var imageView: UIImageView?
 
-        init(onSingleTap: @escaping () -> Void) {
+        init(onSingleTap: @escaping () -> Void, onDoubleTap: @escaping () -> Void) {
             self.onSingleTap = onSingleTap
+            self.onDoubleTap = onDoubleTap
         }
 
         func relayout(_ scrollView: UIScrollView) {
@@ -104,6 +108,7 @@ struct ZoomableImageView: UIViewRepresentable {
 
         @objc func handleDoubleTap(_ gesture: UITapGestureRecognizer) {
             guard let scrollView = gesture.view as? UIScrollView else { return }
+            onDoubleTap()
             if scrollView.zoomScale > scrollView.minimumZoomScale {
                 scrollView.setZoomScale(scrollView.minimumZoomScale, animated: true)
             } else {

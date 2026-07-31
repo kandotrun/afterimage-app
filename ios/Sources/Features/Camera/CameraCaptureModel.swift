@@ -2,6 +2,25 @@
 import CoreGraphics
 import Foundation
 
+enum CameraHapticPolicy {
+    static func cue(
+        for kind: CameraAccessibilityAnnouncementKind,
+        isDiscarding: Bool = false
+    ) -> HapticCue? {
+        guard !isDiscarding else { return nil }
+        switch kind {
+        case .recordingStarted, .silentRecordingStarted:
+            .recordStart
+        case .recordingStopped:
+            .recordStop
+        case .captureFailed:
+            .failure
+        case .reviewReady:
+            .success
+        }
+    }
+}
+
 @MainActor
 final class CameraCaptureModel: ObservableObject {
     @Published private(set) var state: CameraCaptureState = .authorizing
@@ -119,9 +138,11 @@ final class CameraCaptureModel: ObservableObject {
         }
     }
 
-    func focus(at point: CGPoint) {
-        guard state == .ready || isRecording else { return }
+    @discardableResult
+    func focus(at point: CGPoint) -> Bool {
+        guard state == .ready || isRecording else { return false }
         client.focus(point)
+        return true
     }
 
     func zoom(to factor: CGFloat) {

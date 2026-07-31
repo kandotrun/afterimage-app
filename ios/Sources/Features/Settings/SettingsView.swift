@@ -99,10 +99,14 @@ struct SettingsView: View {
                         systemImage: "cpu"
                     )
                 }
+                .simultaneousGesture(
+                    TapGesture().onEnded { model.playHaptic(.selection) }
+                )
                 Button(
                     L10n.string("privacy.ai.withdraw"),
                     role: .destructive
                 ) {
+                    model.playHaptic(.warning)
                     confirmsConsentWithdrawal = true
                 }
                 .disabled(model.isUpdatingAIConsent)
@@ -130,6 +134,7 @@ struct SettingsView: View {
     private var accountSection: some View {
         Section {
             Button(L10n.string("settings.reload")) {
+                model.playHaptic(.lift)
                 Task {
                     try? await model.refreshTimeline()
                     await model.recordTodayWeather()
@@ -148,6 +153,7 @@ struct SettingsView: View {
                 L10n.string("account.delete.action"),
                 role: .destructive
             ) {
+                model.playHaptic(.warning)
                 confirmsAccountDeletion = true
             }
             .disabled(

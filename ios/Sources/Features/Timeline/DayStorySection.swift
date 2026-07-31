@@ -36,6 +36,9 @@ struct DayStorySection: View {
                     DayStoryHero(asset: story.hero, playbackVideos: [])
                 }
                 .buttonStyle(.plain)
+                .simultaneousGesture(
+                    TapGesture().onEnded { model.playHaptic(.selection) }
+                )
                 .matchedTransitionSource(id: story.hero.id, in: namespace)
                 .accessibilityLabel(Self.accessibilityLabel(for: story.hero))
             } else {
@@ -43,6 +46,9 @@ struct DayStorySection: View {
                     DayStoryHero(asset: story.hero, playbackVideos: readyVideos)
                 }
                 .buttonStyle(.plain)
+                .simultaneousGesture(
+                    TapGesture().onEnded { model.playHaptic(.selection) }
+                )
                 .accessibilityLabel(
                     L10n.format("daily.playback.card_accessibility", Int64(readyVideos.count))
                 )
@@ -66,6 +72,9 @@ struct DayStorySection: View {
                                     .contentShape(.rect(cornerRadius: 14, style: .continuous))
                             }
                             .buttonStyle(.plain)
+                            .simultaneousGesture(
+                                TapGesture().onEnded { model.playHaptic(.selection) }
+                            )
                             .matchedTransitionSource(id: asset.id, in: namespace)
                             .accessibilityLabel(Self.accessibilityLabel(for: asset))
                         }
