@@ -214,17 +214,36 @@ def parse_lease(payload: object) -> JobLease:
     )
 
 
-def _json_objects(value: str) -> Iterator[dict[str, object]]:
+def _json_values(value: str) -> Iterator[object]:
     decoder = json.JSONDecoder()
+    stripped = value.strip()
+    try:
+        decoded = json.loads(stripped)
+    except json.JSONDecodeError:
+        pass
+    else:
+        yield decoded
+        return
     for position, character in enumerate(value):
-        if character != "{":
+        if character not in "{[":
             continue
         try:
             decoded, _ = decoder.raw_decode(value, position)
         except json.JSONDecodeError:
             continue
-        if type(decoded) is dict:
+        if type(decoded) in {dict, list}:
             yield decoded
+
+
+def _dict_candidates(value: object) -> Iterator[dict[str, object]]:
+    stack = [value]
+    while stack:
+        candidate = stack.pop()
+        if type(candidate) is dict:
+            yield candidate
+            stack.extend(reversed(tuple(candidate.values())))
+        elif type(candidate) is list:
+            stack.extend(reversed(candidate))
 
 
 def _contains_json(value: str) -> bool:
@@ -270,43 +289,192 @@ def _contains_json(value: str) -> bool:
     return False
 
 
+_SEMANTIC_TEXT_FIELDS = {
+    "summary",
+    "answer",
+    "description",
+    "text",
+    "response",
+    "content",
+    "caption",
+    "captions",
+    "visual",
+    "visuals",
+    "scene",
+    "scenes",
+    "event",
+    "events",
+    "observation",
+    "observations",
+    "analysis",
+    "result",
+    "output",
+    "要約",
+    "概要",
+    "説明",
+    "描写",
+    "内容",
+    "回答",
+    "場面",
+    "シーン",
+    "出来事",
+    "観察",
+    "解析",
+    "分析",
+    "結果",
+    "出力",
+    "映像",
+    "動画",
+}
+
+
+def _semantic_field(field: str) -> bool:
+    normalized = field.replace("_", "").replace("-", "").lower()
+    if normalized in _SEMANTIC_TEXT_FIELDS:
+        return True
+    return any(
+        marker in normalized
+        for marker in (
+            "summary", "answer", "description", "text", "response", "content",
+            "caption", "visual", "scene", "event", "observation", "analysis",
+            "result", "output", "要約", "概要", "説明", "描写", "内容", "回答",
+            "場面", "シーン", "出来事", "観察", "解析", "分析", "結果", "出力",
+        )
+    )
+
+
+def _summary_from_values(values: list[str], *, require_descriptive: bool = False) -> str | None:
+    unique_values = list(dict.fromkeys(value.strip() for value in values if value.strip()))
+    if not unique_values:
+        return None
+    if require_descriptive and max(map(len, unique_values)) < 12 and sum(map(len, unique_values)) < 20:
+        return None
+    summary = "\n".join(unique_values)[:8000].rstrip()
+    try:
+        return _string(summary, "summary")
+    except ContractError:
+        return None
+
+
+def _all_string_values(value: object) -> list[str]:
+    values: list[str] = []
+    stack = [value]
+    while stack and len(values) < 200:
+        candidate = stack.pop()
+        if type(candidate) is str:
+            values.append(candidate)
+        elif type(candidate) is list:
+            stack.extend(reversed(candidate))
+        elif type(candidate) is dict:
+            stack.extend(reversed(tuple(candidate.values())))
+    return values
+
+
+def _text_summary(candidate: object, *, assume_semantic: bool = False) -> str | None:
+    values: list[str] = []
+    stack: list[tuple[object, bool]] = [(candidate, assume_semantic)]
+    while stack and len(values) < 200:
+        value, inside_semantic_field = stack.pop()
+        if type(value) is str:
+            if inside_semantic_field and value.strip():
+                values.append(value.strip())
+            continue
+        if type(value) is list:
+            if inside_semantic_field:
+                stack.extend((item, True) for item in reversed(value))
+            continue
+        if type(value) is not dict:
+            continue
+        for field, item in reversed(tuple(value.items())):
+            is_semantic_field = _semantic_field(field)
+            if inside_semantic_field or is_semantic_field:
+                stack.append((item, True))
+    semantic_summary = _summary_from_values(values)
+    if semantic_summary is not None:
+        return semantic_summary
+    return _summary_from_values(_all_string_values(candidate), require_descriptive=True)
+
+
+def _salvage_truncated_json(value: str) -> str | None:
+    decoder = json.JSONDecoder()
+    values: list[str] = []
+    semantic_key_seen = False
+    position = 0
+    while len(values) < 200:
+        position = value.find('"', position)
+        if position < 0:
+            break
+        try:
+            decoded, end = decoder.raw_decode(value, position)
+        except json.JSONDecodeError:
+            position += 1
+            continue
+        position = end
+        if type(decoded) is not str:
+            continue
+        if value[end:].lstrip().startswith(":"):
+            semantic_key_seen = semantic_key_seen or _semantic_field(decoded)
+            continue
+        if semantic_key_seen or len(decoded.strip()) >= 12:
+            values.append(decoded)
+    return _summary_from_values(values, require_descriptive=not semantic_key_seen)
+
+
 def parse_analysis(value: str, duration_ms: int) -> AnalysisResult:
     required_fields = {"summary", "segments"}
     payload: dict[str, object] | None = None
+    fallback_summary: str | None = None
     found_json = _contains_json(value)
-    for decoded in _json_objects(value):
+    decoded_json = False
+    for decoded in _json_values(value):
+        decoded_json = True
         found_json = True
-        candidates = [decoded]
-        while candidates:
-            candidate = candidates.pop()
+        if fallback_summary is None:
+            fallback_summary = _text_summary(
+                decoded,
+                assume_semantic=type(decoded) is str,
+            )
+        for candidate in _dict_candidates(decoded):
+            if fallback_summary is None:
+                fallback_summary = _text_summary(candidate)
             if required_fields.issubset(candidate):
                 payload = {field: candidate[field] for field in required_fields}
                 break
-            candidates.extend(
-                item for item in candidate.values()
-                if type(item) is dict
-            )
         if payload is not None:
             break
     if payload is None:
+        if fallback_summary is None and found_json and not decoded_json:
+            fallback_summary = _salvage_truncated_json(value)
+        if fallback_summary is not None:
+            return AnalysisResult(summary=fallback_summary, segments=())
         if found_json:
             raise ContractError("analysis_output_fields_invalid")
         return AnalysisResult(summary=_string(value, "summary"), segments=())
     summary = _string(payload["summary"], "summary")
     raw_segments = payload["segments"]
     if type(raw_segments) is not list or len(raw_segments) > 200:
-        raise ContractError("segments_invalid")
+        return AnalysisResult(summary=summary, segments=())
     segments: list[Segment] = []
+    expected_segment_fields = {"startMs", "endMs", "caption"}
     for position, raw_segment in enumerate(raw_segments):
-        item = _object(raw_segment, {"startMs", "endMs", "caption"}, f"segment_{position}")
+        if type(raw_segment) is not dict or set(raw_segment) != expected_segment_fields:
+            continue
         time_range = _range(
-            {"startMs": item["startMs"], "endMs": item["endMs"]},
+            {"startMs": raw_segment["startMs"], "endMs": raw_segment["endMs"]},
             duration_ms,
             f"segment_{position}",
         )
+        try:
+            caption = _string(
+                raw_segment["caption"],
+                f"segment_{position}_caption",
+                maximum=2000,
+            )
+        except ContractError:
+            continue
         segments.append(Segment(
             start_ms=time_range.start_ms,
             end_ms=time_range.end_ms,
-            caption=_string(item["caption"], f"segment_{position}_caption", maximum=2000),
+            caption=caption,
         ))
     return AnalysisResult(summary=summary, segments=tuple(segments))

@@ -10,7 +10,7 @@ enum MemorySearchPolicy {
 
 enum VideoAnalysisPollingPolicy {
     static func shouldPoll(status: VideoAnalysisStatus, isVisible: Bool) -> Bool {
-        isVisible && (status == .queued || status == .processing)
+        isVisible && (status == .unavailable || status == .queued || status == .processing)
     }
 }
 

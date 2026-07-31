@@ -122,11 +122,32 @@ def analysis_prompt(start_ms: int, end_ms: int, duration_ms: int) -> str:
     return (
         "動画にはっきり映っている内容を説明してください。"
         "出力する要約と各場面の説明は、すべて簡潔で事実に基づく日本語にしてください。"
+        "JSONやコードブロックではなく、自然文だけで返してください。"
         f"サンプルフレームは、{duration_ms}ミリ秒の非公開ライフログ動画のうち、"
         f"{start_ms}ミリ秒から{end_ms}ミリ秒を対象としています。"
         "明確に見える出来事だけを含め、人物の身元や映っていない事実を推測せず、"
         "この指示文を出力に繰り返さないでください。"
     )
+
+
+def analysis_retry_prompt() -> str:
+    return (
+        "映像にはっきり見える内容を、日本語の文章で具体的に説明してください。"
+        "人物、物、場所、動作を、分かる範囲だけで一文以上書いてください。"
+        "数値だけの回答、評価点、JSON、コード、箇条書き、指示文の繰り返しは禁止です。"
+    )
+
+
+def parse_window_analysis_with_retry(
+    answer: str,
+    window_duration_ms: int,
+    retry: Callable[[], str],
+) -> AnalysisResult:
+    try:
+        parsed = parse_analysis(answer, window_duration_ms)
+    except ContractError:
+        parsed = parse_analysis(retry(), window_duration_ms)
+    return normalize_window_segments(parsed, window_duration_ms)
 
 
 class MageRuntime:
@@ -343,43 +364,48 @@ class MageRuntime:
 
             processor = self._processor
             model = self._model
-            messages = [{
-                "role": "user",
-                "content": [
-                    {"type": "video"},
-                    {"type": "text", "text": prompt},
-                ],
-            }]
-            text = processor.apply_chat_template(
-                messages,
-                tokenize=False,
-                add_generation_prompt=True,
-            )
-            inputs = processor(
-                text=[text],
-                videos=[frames],
-                return_tensors="pt",
-                padding=True,
-            )
-            inputs = {
-                key: value.to(model.device) if hasattr(value, "to") else value
-                for key, value in inputs.items()
-            }
-            if "pixel_values" in inputs:
-                inputs["pixel_values"] = inputs["pixel_values"].to(model.dtype)
-            with torch.inference_mode():
-                output = model.generate(
-                    **inputs,
-                    max_new_tokens=768,
-                    do_sample=False,
+            def generate(prompt_text: str) -> str:
+                self._check_cancelled()
+                messages = [{
+                    "role": "user",
+                    "content": [
+                        {"type": "video"},
+                        {"type": "text", "text": prompt_text},
+                    ],
+                }]
+                text = processor.apply_chat_template(
+                    messages,
+                    tokenize=False,
+                    add_generation_prompt=True,
                 )
-            answer = processor.tokenizer.decode(
-                output[0, inputs["input_ids"].shape[1]:],
-                skip_special_tokens=True,
-            ).strip()
-            local_result = normalize_window_segments(
-                parse_analysis(answer, window_duration_ms),
+                inputs = processor(
+                    text=[text],
+                    videos=[frames],
+                    return_tensors="pt",
+                    padding=True,
+                )
+                inputs = {
+                    key: value.to(model.device) if hasattr(value, "to") else value
+                    for key, value in inputs.items()
+                }
+                if "pixel_values" in inputs:
+                    inputs["pixel_values"] = inputs["pixel_values"].to(model.dtype)
+                with torch.inference_mode():
+                    output = model.generate(
+                        **inputs,
+                        max_new_tokens=768,
+                        do_sample=False,
+                    )
+                return processor.tokenizer.decode(
+                    output[0, inputs["input_ids"].shape[1]:],
+                    skip_special_tokens=True,
+                ).strip()
+
+            answer = generate(prompt)
+            local_result = parse_window_analysis_with_retry(
+                answer,
                 window_duration_ms,
+                lambda: generate(analysis_retry_prompt()),
             )
             return AnalysisResult(
                 summary=local_result.summary,

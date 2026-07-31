@@ -69,9 +69,9 @@ struct VideoAnalysisSheet: View {
                 )
             case .unavailable:
                 statusView(
-                    titleKey: "memory.analysis.unavailable_title",
-                    detailKey: "memory.analysis.unavailable_detail",
-                    systemImage: "eye.slash"
+                    titleKey: "memory.analysis.queued_title",
+                    detailKey: "memory.analysis.queued_detail",
+                    systemImage: "clock.badge"
                 )
             case .completed:
                 completedContent(analysis)
