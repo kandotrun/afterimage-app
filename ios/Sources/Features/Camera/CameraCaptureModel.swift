@@ -10,13 +10,13 @@ enum CameraHapticPolicy {
         guard !isDiscarding else { return nil }
         switch kind {
         case .recordingStarted, .silentRecordingStarted:
-            .recordStart
+            return .recordStart
         case .recordingStopped:
-            .recordStop
+            return .recordStop
         case .captureFailed:
-            .failure
+            return .failure
         case .reviewReady:
-            .success
+            return .success
         }
     }
 }
