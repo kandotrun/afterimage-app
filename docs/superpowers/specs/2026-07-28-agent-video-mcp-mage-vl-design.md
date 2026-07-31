@@ -39,10 +39,11 @@ changing app playback or transcription retention.
 
 ## Privacy boundary
 
-`assets.agent_access_enabled` is an integer boolean with a database default of
-`1`. Existing and newly uploaded assets therefore start enabled. The first
-release exposes video assets through MCP; the column lives on `assets` so
-legacy photos can use the same boundary in a later release.
+`assets.agent_access_enabled` is an integer boolean used as the per-video
+MCP/agent gate. The privacy migration starts existing assets at `0`; active global
+AI consent is the account-level opt-in that enables the owner’s existing and future
+video assets. A user can still turn access off for an individual video, and
+withdrawing consent turns access off for all assets.
 
 Transcription and agent access are independent:
 

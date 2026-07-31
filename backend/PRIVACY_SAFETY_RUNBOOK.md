@@ -14,11 +14,12 @@ Coordinate rollout with a client that obtains `GET /v1/auth/apple/challenge`, ha
 
 ## Migration
 
-Do not apply the privacy reset while the old Worker remains live. For production, use `scripts/deploy-backend-production.sh`: it first deploys the schema-independent maintenance Worker and confirms HTTP 503 for `/health`, then applies migrations `0012_privacy_safety.sql` and `0013_soniox_cleanup_safety.sql`, and only then deploys the final Worker. Migration `0012` preserves users and assets, backfills `assets.agent_access_enabled` to off, and clears existing external-agent grants and GPU jobs; `0013` adds the asset deletion marker and bounded Soniox work leases. If migration or final deployment fails, keep maintenance active and forward-fix instead of restoring the old privacy boundary.
+Do not apply the privacy reset while the old Worker remains live. For production, use `scripts/deploy-backend-production.sh`: it first deploys the schema-independent maintenance Worker and confirms HTTP 503 for `/health`, then applies migrations `0012_privacy_safety.sql` and `0013_soniox_cleanup_safety.sql`, and only then deploys the final Worker. Migration `0012` preserves users and assets, backfills `assets.agent_access_enabled` to off, and clears existing external-agent grants and GPU jobs; `0013` adds the asset deletion marker and bounded Soniox work leases. Granting the current global AI consent is the explicit account-level opt-in for AI-agent reads: it enables the owner’s existing and future video assets, while the per-asset toggle can revoke one video. If migration or final deployment fails, keep maintenance active and forward-fix instead of restoring the old privacy boundary.
 
-After migration, verify:
+After migration, all existing assets start with `agent_access_enabled = 0`. Granting active AI consent bulk-enables the owner’s video assets and future video creation enables access only while that consent is active. A per-video disable remains effective until the user re-enables that video or re-grants global consent.
 
-- all existing assets have `agent_access_enabled = 0`;
+Verify:
+
 - the consent, Apple challenge, quota ledger, external-AI lease, Soniox work lease, and deletion-job tables exist;
 - `assets.deletion_requested_at` exists and is null for active assets;
 - no agent, worker, or transcription media grant from before the consent boundary remains;

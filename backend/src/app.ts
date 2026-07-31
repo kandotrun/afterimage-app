@@ -1544,16 +1544,23 @@ export function createApp(overrides: Partial<AppDependencies> = {}) {
     const auth = context.get("auth");
     const nowIso = dependencies.now().toISOString();
     if (parsed.data.consented) {
-      await context.env.DB.prepare(
-        `INSERT INTO ai_consents (
-          user_id, version, consented_at, withdrawn_at, updated_at
-        ) VALUES (?, ?, ?, NULL, ?)
-        ON CONFLICT(user_id) DO UPDATE SET
-          version = excluded.version,
-          consented_at = excluded.consented_at,
-          withdrawn_at = NULL,
-          updated_at = excluded.updated_at`,
-      ).bind(auth.userId, AI_CONSENT_VERSION, nowIso, nowIso).run();
+      await context.env.DB.batch([
+        context.env.DB.prepare(
+          `INSERT INTO ai_consents (
+            user_id, version, consented_at, withdrawn_at, updated_at
+          ) VALUES (?, ?, ?, NULL, ?)
+          ON CONFLICT(user_id) DO UPDATE SET
+            version = excluded.version,
+            consented_at = excluded.consented_at,
+            withdrawn_at = NULL,
+            updated_at = excluded.updated_at`,
+        ).bind(auth.userId, AI_CONSENT_VERSION, nowIso, nowIso),
+        context.env.DB.prepare(
+          `UPDATE assets
+              SET agent_access_enabled = 1, updated_at = ?
+            WHERE user_id = ? AND kind = 'video'`,
+        ).bind(nowIso, auth.userId),
+      ]);
       try {
         await queueAvailableVideoAnalyses(context.env, auth.userId, dependencies.now());
       } catch (error) {
@@ -2018,6 +2025,20 @@ export function createApp(overrides: Partial<AppDependencies> = {}) {
         "storage_quota_exceeded",
         "Active uploads and stored assets may use at most 30 GiB.",
       );
+    }
+    if (parsed.data.kind === "video") {
+      await context.env.DB.prepare(
+        `UPDATE assets
+            SET agent_access_enabled = 1, updated_at = ?
+          WHERE id = ? AND user_id = ?
+            AND EXISTS (
+              SELECT 1 FROM ai_consents consent
+               WHERE consent.user_id = ?
+                 AND consent.version = ?
+                 AND consent.consented_at IS NOT NULL
+                 AND consent.withdrawn_at IS NULL
+            )`,
+      ).bind(nowIso, assetId, auth.userId, auth.userId, AI_CONSENT_VERSION).run();
     }
 
     const asset = await findOwnedAsset(context.env, assetId, auth.userId);

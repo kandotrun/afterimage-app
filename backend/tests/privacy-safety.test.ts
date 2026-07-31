@@ -489,6 +489,46 @@ describe("explicit AI consent", () => {
     expect(blockedMcp.status).toBe(403);
   });
 
+  it("enables existing and future video memories after consent", async () => {
+    const owner = await signIn("consent-agent-scope");
+    const existingAssetId = crypto.randomUUID();
+    await env.DB.prepare(
+      `INSERT INTO assets (
+        id, user_id, kind, filename, content_type, byte_size, captured_at,
+        status, object_key, upload_mode, created_at, updated_at,
+        transcription_status, transcript, agent_access_enabled
+      ) VALUES (?, ?, 'video', 'existing.mp4', 'video/mp4', 5, ?,
+        'ready', ?, 'single', ?, ?, 'completed', 'existing transcript', 0)`,
+    ).bind(
+      existingAssetId,
+      owner.userId,
+      NOW.toISOString(),
+      `users/${owner.userId}/assets/${existingAssetId}/media`,
+      NOW.toISOString(),
+      NOW.toISOString(),
+    ).run();
+
+    await expect(env.DB.prepare(
+      "SELECT agent_access_enabled FROM assets WHERE id = ?",
+    ).bind(existingAssetId).first()).resolves.toMatchObject({
+      agent_access_enabled: 0,
+    });
+
+    const granted = await setConsent(owner, true);
+    expect(granted.status).toBe(200);
+    await expect(env.DB.prepare(
+      "SELECT agent_access_enabled FROM assets WHERE id = ?",
+    ).bind(existingAssetId).first()).resolves.toMatchObject({
+      agent_access_enabled: 1,
+    });
+
+    const created = await createAsset(owner, { filename: "future.mp4" });
+    expect(created.status).toBe(201);
+    await expect(created.json()).resolves.toMatchObject({
+      asset: { agentAccessEnabled: true },
+    });
+  });
+
   it("grants and withdraws the current consent version at the backend authority", async () => {
     const owner = await signIn("consent-lifecycle");
     const granted = await setConsent(owner, true);
@@ -670,7 +710,7 @@ describe("explicit AI consent", () => {
       "SELECT transcription_status, agent_access_enabled FROM assets WHERE id = ?",
     ).bind(withBody.asset.id).first()).toMatchObject({
       transcription_status: "pending",
-      agent_access_enabled: 0,
+      agent_access_enabled: 1,
     });
     await expect(env.DB.prepare(
       "SELECT kind, status FROM gpu_jobs WHERE asset_id = ?",
@@ -707,7 +747,7 @@ describe("explicit AI consent", () => {
     });
     await expect(env.DB.prepare(
       "SELECT agent_access_enabled FROM assets WHERE id = ?",
-    ).bind(body.asset.id).first()).resolves.toEqual({ agent_access_enabled: 0 });
+    ).bind(body.asset.id).first()).resolves.toEqual({ agent_access_enabled: 1 });
   });
 
   it("blocks Qwen before consent and caps concurrent external-AI work at four", async () => {

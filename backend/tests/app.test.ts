@@ -2273,9 +2273,9 @@ describe("agent access privacy boundary", () => {
     return { ...owner, assetId: body.asset.id, createdAsset: body.asset };
   }
 
-  it("defaults existing and new assets to agent access disabled", async () => {
+  it("enables existing and new assets after active consent", async () => {
     const owner = await createReadyVideo("agent-access-default", false);
-    expect(owner.createdAsset.agentAccessEnabled).toBe(false);
+    expect(owner.createdAsset.agentAccessEnabled).toBe(true);
 
     const timeline = await owner.app.request("/v1/assets", {
       headers: { authorization: owner.authorization },
@@ -2283,7 +2283,7 @@ describe("agent access privacy boundary", () => {
     await expect(timeline.json()).resolves.toMatchObject({
       items: [{
         id: owner.assetId,
-        agentAccessEnabled: false,
+        agentAccessEnabled: true,
         videoAnalysisStatus: "queued",
       }],
     });
