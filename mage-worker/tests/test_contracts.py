@@ -78,6 +78,92 @@ def test_analysis_accepts_bounded_json() -> None:
     assert result.segments[0].caption == "keys"
 
 
+def test_analysis_accepts_json_summary_without_segments() -> None:
+    result = parse_analysis(
+        json.dumps({"summary": "keys on desk"}),
+        duration_ms=4000,
+    )
+    assert result.summary == "keys on desk"
+    assert result.segments == ()
+
+
+def test_analysis_keeps_summary_when_segments_are_malformed() -> None:
+    result = parse_analysis(
+        json.dumps({
+            "summary": "keys on desk",
+            "segments": [{"start": 0, "end": 4, "description": "keys"}],
+        }),
+        duration_ms=4000,
+    )
+    assert result.summary == "keys on desk"
+    assert result.segments == ()
+
+
+def test_analysis_accepts_common_text_alias_when_model_omits_summary() -> None:
+    result = parse_analysis(
+        json.dumps({"answer": "keys on desk"}),
+        duration_ms=4000,
+    )
+    assert result.summary == "keys on desk"
+    assert result.segments == ()
+
+
+def test_analysis_extracts_text_from_nested_semantic_json() -> None:
+    result = parse_analysis(
+        json.dumps({
+            "analysis": {
+                "scenes": [
+                    {"0-120 seconds": "a person works beside stacked boards"},
+                    {"120-240 seconds": "the person moves a panel"},
+                ],
+            },
+        }),
+        duration_ms=240000,
+    )
+    assert result.summary == (
+        "a person works beside stacked boards\n"
+        "the person moves a panel"
+    )
+    assert result.segments == ()
+
+
+def test_analysis_extracts_text_from_top_level_json_array() -> None:
+    result = parse_analysis(
+        json.dumps([
+            {"0-120 seconds": "a person works beside stacked boards"},
+            {"120-240 seconds": "the person moves a panel"},
+        ]),
+        duration_ms=240000,
+    )
+    assert result.summary == (
+        "a person works beside stacked boards\n"
+        "the person moves a panel"
+    )
+    assert result.segments == ()
+
+
+def test_analysis_accepts_json_encoded_summary_string() -> None:
+    result = parse_analysis(json.dumps("a person moves a panel"), duration_ms=4000)
+    assert result.summary == "a person moves a panel"
+    assert result.segments == ()
+
+
+def test_analysis_salvages_semantic_text_from_truncated_json() -> None:
+    result = parse_analysis(
+        '{"analysis": {"description": "a person moves a panel"',
+        duration_ms=4000,
+    )
+    assert result.summary == "a person moves a panel"
+    assert result.segments == ()
+
+
+def test_analysis_does_not_treat_unrelated_json_metadata_as_summary() -> None:
+    with pytest.raises(ContractError, match="analysis_output_fields_invalid"):
+        parse_analysis(json.dumps({"confidence": "high"}), duration_ms=4000)
+    with pytest.raises(ContractError, match="analysis_output_fields_invalid"):
+        parse_analysis(json.dumps([{"confidence": "high"}]), duration_ms=4000)
+
+
 def test_analysis_accepts_json_code_fence() -> None:
     result = parse_analysis(
         "```json\n"
@@ -146,15 +232,12 @@ def test_analysis_accepts_plain_visual_summary() -> None:
 @pytest.mark.parametrize(
     "value",
     [
-        json.dumps({"summary": "keys on desk"}),
         json.dumps({"segments": []}),
         "Metadata: " + json.dumps({"confidence": "high"}),
         json.dumps([]),
-        json.dumps("visual summary"),
         json.dumps(42),
         json.dumps(True),
         json.dumps(None),
-        'prefix {"summary":"keys","segments":',
         "[1,",
         '"unterminated',
     ],

@@ -2015,6 +2015,59 @@ describe("abuse and cost quotas", () => {
       "SELECT COUNT(*) AS count FROM gpu_jobs WHERE kind = 'analysis' AND status = 'queued'",
     ).first()).resolves.toEqual({ count: 4 });
   });
+
+  it("expires a max-attempt Mage lease before refilling the backlog", async () => {
+    const owner = await signIn("ai-work-expired-lease-owner");
+    expect((await setConsent(owner, true)).status).toBe(200);
+    const assetIds = Array.from({ length: 5 }, () => crypto.randomUUID());
+    for (const assetId of assetIds) {
+      await env.DB.prepare(
+        `INSERT INTO assets (
+          id, user_id, kind, filename, content_type, byte_size, captured_at,
+          status, object_key, upload_mode, created_at, updated_at, agent_access_enabled
+        ) VALUES (?, ?, 'video', ?, 'video/mp4', 5, ?, 'ready', ?, 'single', ?, ?, 0)`,
+      ).bind(
+        assetId,
+        owner.userId,
+        `${assetId}.mp4`,
+        NOW.toISOString(),
+        `users/${owner.userId}/assets/${assetId}/media`,
+        NOW.toISOString(),
+        NOW.toISOString(),
+      ).run();
+    }
+    await pollVideoAnalyses(env, NOW);
+    const stale = await env.DB.prepare(
+      "SELECT id FROM gpu_jobs WHERE kind = 'analysis' ORDER BY created_at, id LIMIT 1",
+    ).first<{ id: string }>();
+    expect(stale).not.toBeNull();
+    await env.DB.prepare(
+      `UPDATE gpu_jobs
+          SET status = 'leased', attempt_count = 3, error_code = 'output_invalid',
+              lease_token_hash = ?, lease_expires_at = ?
+        WHERE id = ?`,
+    ).bind(
+      "a".repeat(64),
+      new Date(NOW.getTime() - 1_000).toISOString(),
+      stale!.id,
+    ).run();
+
+    await pollVideoAnalyses(env, NOW);
+
+    await expect(env.DB.prepare(
+      "SELECT status, lease_token_hash, lease_expires_at FROM gpu_jobs WHERE id = ?",
+    ).bind(stale!.id).first()).resolves.toEqual({
+      status: "failed",
+      lease_token_hash: null,
+      lease_expires_at: null,
+    });
+    await expect(env.DB.prepare(
+      "SELECT COUNT(*) AS count FROM gpu_jobs WHERE kind = 'analysis'",
+    ).first()).resolves.toEqual({ count: 5 });
+    await expect(env.DB.prepare(
+      "SELECT COUNT(*) AS count FROM gpu_jobs WHERE kind = 'analysis' AND status IN ('queued', 'leased')",
+    ).first()).resolves.toEqual({ count: 4 });
+  });
 });
 
 describe("privacy safety migration", () => {

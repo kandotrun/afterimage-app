@@ -13,7 +13,7 @@ final class MageMemoryPolicyTests: XCTestCase {
         XCTAssertTrue(VideoAnalysisPollingPolicy.shouldPoll(status: .processing, isVisible: true))
         XCTAssertFalse(VideoAnalysisPollingPolicy.shouldPoll(status: .completed, isVisible: true))
         XCTAssertFalse(VideoAnalysisPollingPolicy.shouldPoll(status: .failed, isVisible: true))
-        XCTAssertFalse(VideoAnalysisPollingPolicy.shouldPoll(status: .unavailable, isVisible: true))
+        XCTAssertTrue(VideoAnalysisPollingPolicy.shouldPoll(status: .unavailable, isVisible: true))
         XCTAssertFalse(VideoAnalysisPollingPolicy.shouldPoll(status: .queued, isVisible: false))
     }
 

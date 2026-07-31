@@ -54,6 +54,16 @@ export async function queueAvailableVideoAnalyses(
   now: Date,
 ): Promise<number> {
   const nowIso = now.toISOString();
+  await bindings.DB.prepare(
+    `UPDATE gpu_jobs
+        SET status = 'failed', lease_token_hash = NULL, lease_expires_at = NULL,
+            error_code = COALESCE(error_code, 'inference_failed'), updated_at = ?
+      WHERE status = 'leased' AND attempt_count >= 3 AND lease_expires_at <= ?
+        AND EXISTS (
+          SELECT 1 FROM assets a
+           WHERE a.id = gpu_jobs.asset_id AND a.user_id = ?
+        )`,
+  ).bind(nowIso, nowIso, userId).run();
   let queued = 0;
   while (queued < ACTIVE_GPU_JOB_LIMIT) {
     const result = await bindings.DB.prepare(

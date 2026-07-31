@@ -26,6 +26,7 @@ def test_analysis_prompt_requires_japanese_output() -> None:
     prompt = analysis_prompt(start_ms=1200, end_ms=3400, duration_ms=5000)
     assert "要約と各場面の説明" in prompt
     assert "すべて簡潔で事実に基づく日本語" in prompt
+    assert "JSONやコードブロックではなく、自然文だけ" in prompt
     assert "5000ミリ秒" in prompt
     assert "1200ミリ秒から3400ミリ秒" in prompt
 
