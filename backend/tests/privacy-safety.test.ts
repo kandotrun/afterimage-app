@@ -1,6 +1,7 @@
 import { env } from "cloudflare:workers";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { cleanupExpiredState, createApp, type AppleIdentity } from "../src/app";
+import { pollVideoAnalyses } from "../src/gpu-jobs";
 import {
   createAccountDeletionIntent,
   processPendingAccountDeletions,
@@ -488,6 +489,46 @@ describe("explicit AI consent", () => {
     expect(blockedMcp.status).toBe(403);
   });
 
+  it("enables existing and future video memories after consent", async () => {
+    const owner = await signIn("consent-agent-scope");
+    const existingAssetId = crypto.randomUUID();
+    await env.DB.prepare(
+      `INSERT INTO assets (
+        id, user_id, kind, filename, content_type, byte_size, captured_at,
+        status, object_key, upload_mode, created_at, updated_at,
+        transcription_status, transcript, agent_access_enabled
+      ) VALUES (?, ?, 'video', 'existing.mp4', 'video/mp4', 5, ?,
+        'ready', ?, 'single', ?, ?, 'completed', 'existing transcript', 0)`,
+    ).bind(
+      existingAssetId,
+      owner.userId,
+      NOW.toISOString(),
+      `users/${owner.userId}/assets/${existingAssetId}/media`,
+      NOW.toISOString(),
+      NOW.toISOString(),
+    ).run();
+
+    await expect(env.DB.prepare(
+      "SELECT agent_access_enabled FROM assets WHERE id = ?",
+    ).bind(existingAssetId).first()).resolves.toMatchObject({
+      agent_access_enabled: 0,
+    });
+
+    const granted = await setConsent(owner, true);
+    expect(granted.status).toBe(200);
+    await expect(env.DB.prepare(
+      "SELECT agent_access_enabled FROM assets WHERE id = ?",
+    ).bind(existingAssetId).first()).resolves.toMatchObject({
+      agent_access_enabled: 1,
+    });
+
+    const created = await createAsset(owner, { filename: "future.mp4" });
+    expect(created.status).toBe(201);
+    await expect(created.json()).resolves.toMatchObject({
+      asset: { agentAccessEnabled: true },
+    });
+  });
+
   it("grants and withdraws the current consent version at the backend authority", async () => {
     const owner = await signIn("consent-lifecycle");
     const granted = await setConsent(owner, true);
@@ -669,8 +710,44 @@ describe("explicit AI consent", () => {
       "SELECT transcription_status, agent_access_enabled FROM assets WHERE id = ?",
     ).bind(withBody.asset.id).first()).toMatchObject({
       transcription_status: "pending",
-      agent_access_enabled: 0,
+      agent_access_enabled: 1,
     });
+    await expect(env.DB.prepare(
+      "SELECT kind, status FROM gpu_jobs WHERE asset_id = ?",
+    ).bind(withBody.asset.id).first()).resolves.toEqual({
+      kind: "analysis",
+      status: "queued",
+    });
+  });
+
+  it("backfills Mage analysis for ready videos when consent is granted", async () => {
+    const owner = await signIn("consent-ai-backfill", makeApp(), env);
+    const created = await createAsset(owner, { filename: "before-consent.mp4" });
+    const body = await created.json<{ asset: { id: string } }>();
+    await owner.app.request(`/v1/assets/${body.asset.id}/upload`, {
+      method: "PUT",
+      headers: {
+        authorization: owner.authorization,
+        "content-type": "video/mp4",
+        "content-length": "5",
+      },
+      body: "video",
+    }, env);
+    await owner.app.request(`/v1/assets/${body.asset.id}/upload/complete`, {
+      method: "POST",
+      headers: { authorization: owner.authorization },
+    }, env);
+
+    expect((await setConsent(owner, true)).status).toBe(200);
+    await expect(env.DB.prepare(
+      "SELECT kind, status FROM gpu_jobs WHERE asset_id = ?",
+    ).bind(body.asset.id).first()).resolves.toEqual({
+      kind: "analysis",
+      status: "queued",
+    });
+    await expect(env.DB.prepare(
+      "SELECT agent_access_enabled FROM assets WHERE id = ?",
+    ).bind(body.asset.id).first()).resolves.toEqual({ agent_access_enabled: 1 });
   });
 
   it("blocks Qwen before consent and caps concurrent external-AI work at four", async () => {
@@ -720,6 +797,7 @@ describe("explicit AI consent", () => {
     expect(generateDailySummary).not.toHaveBeenCalled();
 
     expect((await setConsent(owner, true, bindings)).status).toBe(200);
+    await env.DB.prepare("DELETE FROM gpu_jobs WHERE asset_id = ?").bind(assetId).run();
     const requests = Array.from({ length: 5 }, requestSummary);
     const firstCompleted = await Promise.race(requests);
     expect(firstCompleted.status).toBe(429);
@@ -1906,7 +1984,7 @@ describe("abuse and cost quotas", () => {
     });
   });
 
-  it("caps active Mage and total external-AI work at four per user", async () => {
+  it("caps active Mage work at four per user and refills from the backlog", async () => {
     const owner = await signIn("ai-work-owner");
     expect((await setConsent(owner, true)).status).toBe(200);
     const assetIds = Array.from({ length: 6 }, () => crypto.randomUUID());
@@ -1926,50 +2004,16 @@ describe("abuse and cost quotas", () => {
         NOW.toISOString(),
       ).run();
     }
+    await pollVideoAnalyses(env, NOW);
+    await expect(env.DB.prepare(
+      "SELECT COUNT(*) AS count FROM gpu_jobs WHERE kind = 'analysis' AND status = 'queued'",
+    ).first()).resolves.toEqual({ count: 4 });
 
-    for (const assetId of assetIds.slice(0, 4)) {
-      const enabled = await owner.app.request(`/v1/assets/${assetId}/agent-access`, {
-        method: "PATCH",
-        headers: {
-          authorization: owner.authorization,
-          "content-type": "application/json",
-        },
-        body: JSON.stringify({ enabled: true }),
-      }, env);
-      expect(enabled.status).toBe(200);
-    }
-    const mageLimited = await owner.app.request(`/v1/assets/${assetIds[4]}/agent-access`, {
-      method: "PATCH",
-      headers: {
-        authorization: owner.authorization,
-        "content-type": "application/json",
-      },
-      body: JSON.stringify({ enabled: true }),
-    }, env);
-    expect(mageLimited.status).toBe(429);
-    await expect(mageLimited.json()).resolves.toMatchObject({
-      error: { code: "analysis_queue_limit" },
-    });
-
-    await env.DB.prepare("DELETE FROM gpu_jobs").run();
-    await env.DB.prepare("UPDATE assets SET agent_access_enabled = 0").run();
-    for (const assetId of assetIds.slice(0, 4)) {
-      await env.DB.prepare(
-        "UPDATE assets SET transcription_status = 'pending' WHERE id = ?",
-      ).bind(assetId).run();
-    }
-    const externalLimited = await owner.app.request(`/v1/assets/${assetIds[5]}/agent-access`, {
-      method: "PATCH",
-      headers: {
-        authorization: owner.authorization,
-        "content-type": "application/json",
-      },
-      body: JSON.stringify({ enabled: true }),
-    }, env);
-    expect(externalLimited.status).toBe(429);
-    await expect(externalLimited.json()).resolves.toMatchObject({
-      error: { code: "external_ai_work_limit" },
-    });
+    await env.DB.prepare("DELETE FROM gpu_jobs WHERE asset_id = ?").bind(assetIds[0]).run();
+    await pollVideoAnalyses(env, NOW);
+    await expect(env.DB.prepare(
+      "SELECT COUNT(*) AS count FROM gpu_jobs WHERE kind = 'analysis' AND status = 'queued'",
+    ).first()).resolves.toEqual({ count: 4 });
   });
 });
 

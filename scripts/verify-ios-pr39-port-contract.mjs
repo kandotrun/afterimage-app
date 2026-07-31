@@ -603,7 +603,7 @@ assert.ok(
 );
 assert.equal(
   localizedValue("mcp.connection.description", "ja"),
-  "あなたが個別に許可した動画・文字起こし・解析を、接続したAIエージェントへ読み取り専用で渡します。写真や動画を書き換える権限はありません。",
+  "同意したアカウントの動画・文字起こし・解析を、接続したAIエージェントへ読み取り専用で渡します。動画ごとに共有をオフにできます。写真や動画を書き換える権限はありません。",
 );
 assert.ok(
   aiConnectionView.includes('L10n.string("mcp.connection.description")')

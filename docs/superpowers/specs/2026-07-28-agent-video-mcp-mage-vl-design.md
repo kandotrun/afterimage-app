@@ -39,34 +39,39 @@ changing app playback or transcription retention.
 
 ## Privacy boundary
 
-`assets.agent_access_enabled` is an integer boolean with a database default of
-`1`. Existing and newly uploaded assets therefore start enabled. The first
-release exposes video assets through MCP; the column lives on `assets` so
-legacy photos can use the same boundary in a later release.
+`assets.agent_access_enabled` is an integer boolean used as the per-video
+MCP/agent gate. The privacy migration starts existing assets at `0`; active global
+AI consent is the account-level opt-in that enables the owner’s existing and future
+video assets. A user can still turn access off for an individual video, and
+withdrawing consent turns access off for all assets.
 
 Transcription and agent access are independent:
 
 | Agent access | App playback | Transcription | MCP | Mage-VL |
 |---|---|---|---|---|
-| Enabled | allowed | retained | allowed | allowed |
-| Disabled | allowed | retained | hidden as missing | cancelled and purged |
+| Enabled | allowed | retained | allowed | allowed after active AI consent |
+| Disabled | allowed | retained | hidden as missing | continues after active AI consent |
+
+Mage-VL is an owner-facing external-AI analysis and is gated by the current global
+AI consent. `agent_access_enabled` is the per-asset MCP/agent sharing boundary;
+it must not cancel owner Mage analysis.
 
 Disabling access performs one owner-scoped mutation that:
 
 1. sets `agent_access_enabled = 0`;
-2. deletes agent and worker media grants for the asset;
-3. deletes queued and leased GPU jobs for the asset;
-4. deletes Mage analyses, segments, and generated derivatives;
-5. deletes derivative R2 objects after the D1 mutation;
-6. preserves app playback grants, the optimized source video, thumbnails, and
-   transcription.
+2. deletes agent media grants for the asset;
+3. deletes queued and leased frame/clip GPU jobs for the asset;
+4. deletes generated derivatives and their R2 objects;
+5. preserves Mage analysis jobs, worker grants, completed analysis, app playback
+grants, the optimized source video, thumbnails, and transcription.
 
-Every agent or worker media request rechecks the current asset flag. A grant
-issued while enabled becomes unusable immediately after the flag is disabled.
-App grants do not consult the flag.
+Every agent or worker media request rechecks the current consent and asset boundary.
+An agent grant issued while enabled becomes unusable immediately after the flag is
+disabled. Mage worker grants remain valid only while the global AI consent is
+active. App grants do not consult the flag.
 
-Re-enabling access never revives a grant or analysis. It creates a new
-background-analysis job with a new identifier.
+Re-enabling access never revives an old agent grant; the client requests a new
+agent grant when needed.
 
 ## D1 schema
 

@@ -31,6 +31,8 @@ type GpuAssetRow = {
 
 const modelId = "microsoft/Mage-VL";
 const modelRevision = "8484f3154beea3b563bee99e2fab2d6c8bb5d3f3";
+export const ACTIVE_GPU_JOB_LIMIT = 4;
+export const ACTIVE_EXTERNAL_AI_WORK_LIMIT = 4;
 const leaseDurationMs = 15 * 60 * 1_000;
 const mediaGrantDurationMs = 10 * 60 * 1_000;
 
@@ -40,6 +42,108 @@ function activeAiConsentSql(assetAlias: string): string {
      WHERE consent.user_id = ${assetAlias}.user_id AND consent.version = '${AI_CONSENT_VERSION}'
        AND consent.consented_at IS NOT NULL AND consent.withdrawn_at IS NULL
   )`;
+}
+
+function workerJobAccessSql(jobAlias = "j", assetAlias = "a"): string {
+  return `(${jobAlias}.kind = 'analysis' OR ${assetAlias}.agent_access_enabled = 1)`;
+}
+
+export async function queueAvailableVideoAnalyses(
+  bindings: Env,
+  userId: string,
+  now: Date,
+): Promise<number> {
+  const nowIso = now.toISOString();
+  let queued = 0;
+  while (queued < ACTIVE_GPU_JOB_LIMIT) {
+    const result = await bindings.DB.prepare(
+      `INSERT INTO gpu_jobs (
+        id, asset_id, kind, status, request_json, priority, attempt_count,
+        available_at, created_at, updated_at
+      )
+      SELECT ?, a.id, 'analysis', 'queued', '{}', 0, 0, ?, ?, ?
+        FROM assets a
+       WHERE a.user_id = ? AND a.kind = 'video' AND a.status = 'ready'
+         AND ${activeAiConsentSql("a")}
+         AND NOT EXISTS (
+           SELECT 1 FROM video_analyses analysis
+            WHERE analysis.asset_id = a.id
+         )
+         AND NOT EXISTS (
+           SELECT 1 FROM gpu_jobs existing_job
+            WHERE existing_job.asset_id = a.id AND existing_job.kind = 'analysis'
+         )
+         AND (
+           SELECT COUNT(*)
+             FROM gpu_jobs active_job
+             JOIN assets active_asset ON active_asset.id = active_job.asset_id
+            WHERE active_asset.user_id = a.user_id
+              AND active_job.status IN ('queued', 'leased')
+         ) < ?
+         AND (
+           (
+             SELECT COUNT(*)
+               FROM gpu_jobs active_job
+               JOIN assets active_asset ON active_asset.id = active_job.asset_id
+              WHERE active_asset.user_id = a.user_id
+                AND active_job.status IN ('queued', 'leased')
+           )
+           +
+           (
+             SELECT COUNT(*)
+               FROM assets active_transcription
+              WHERE active_transcription.user_id = a.user_id
+                AND active_transcription.transcription_status IN ('pending', 'processing')
+           )
+           +
+           (
+             SELECT COUNT(*)
+               FROM external_ai_work_leases lease
+              WHERE lease.user_id = a.user_id AND lease.expires_at > ?
+           )
+         ) < ?
+       ORDER BY julianday(a.captured_at) ASC, a.id ASC
+       LIMIT 1`,
+    ).bind(
+      crypto.randomUUID(),
+      nowIso,
+      nowIso,
+      nowIso,
+      userId,
+      ACTIVE_GPU_JOB_LIMIT,
+      nowIso,
+      ACTIVE_EXTERNAL_AI_WORK_LIMIT,
+    ).run();
+    if ((result.meta.changes ?? 0) !== 1) break;
+    queued += 1;
+  }
+  return queued;
+}
+
+export async function pollVideoAnalyses(bindings: Env, now: Date): Promise<void> {
+  const users = await bindings.DB.prepare(
+    `SELECT user_id FROM ai_consents
+      WHERE version = ? AND consented_at IS NOT NULL AND withdrawn_at IS NULL`,
+  ).bind(AI_CONSENT_VERSION).all<{ user_id: string }>();
+  await Promise.all(users.results.map((user) =>
+    queueAvailableVideoAnalyses(bindings, user.user_id, now)
+  ));
+}
+
+async function refillVideoAnalysisQueue(
+  context: Context<GpuEnvironment>,
+  userId: string,
+  now: Date,
+): Promise<void> {
+  try {
+    await queueAvailableVideoAnalyses(context.env, userId, now);
+  } catch (error) {
+    console.error(JSON.stringify({
+      event: "video_analysis_refill_failed",
+      userId,
+      message: error instanceof Error ? error.message : String(error),
+    }));
+  }
 }
 
 const leaseSchema = z.object({
@@ -131,7 +235,7 @@ async function validLease(
        FROM gpu_jobs j JOIN assets a ON a.id = j.asset_id
       WHERE j.id = ? AND j.status = 'leased' AND j.lease_token_hash = ?
         AND j.lease_expires_at > ? AND a.kind = 'video' AND a.status = 'ready'
-        AND a.agent_access_enabled = 1 AND ${activeAiConsentSql("a")}`,
+        AND ${workerJobAccessSql()} AND ${activeAiConsentSql("a")}`,
   ).bind(jobId, leaseTokenHash, nowIso).first<{
     id: string;
     asset_id: string;
@@ -174,7 +278,8 @@ export function createGpuJobRoutes(dependencies: GpuJobDependencies) {
         WHERE id = (
           SELECT j.id
             FROM gpu_jobs j JOIN assets a ON a.id = j.asset_id
-           WHERE a.kind = 'video' AND a.status = 'ready' AND a.agent_access_enabled = 1
+           WHERE a.kind = 'video' AND a.status = 'ready'
+             AND ${workerJobAccessSql("j", "a")}
              AND ${activeAiConsentSql("a")}
              AND j.attempt_count < 3
              AND (
@@ -194,11 +299,12 @@ export function createGpuJobRoutes(dependencies: GpuJobDependencies) {
     ).first<GpuJobRow>();
     if (!row) return new Response(null, { status: 204 });
 
+    const jobAccessSql = row.kind === "analysis" ? "1 = 1" : "a.agent_access_enabled = 1";
     const asset = await context.env.DB.prepare(
       `SELECT a.id, a.user_id, a.content_type, a.byte_size, a.duration_ms, a.width, a.height, a.captured_at
          FROM assets a
         WHERE a.id = ? AND a.kind = 'video' AND a.status = 'ready'
-          AND a.agent_access_enabled = 1 AND ${activeAiConsentSql("a")}`,
+          AND ${jobAccessSql} AND ${activeAiConsentSql("a")}`,
     ).bind(row.asset_id).first<GpuAssetRow>();
     if (!asset) {
       await context.env.DB.prepare("DELETE FROM gpu_jobs WHERE id = ?").bind(row.id).run();
@@ -209,13 +315,16 @@ export function createGpuJobRoutes(dependencies: GpuJobDependencies) {
     const mediaExpiresAt = new Date(now.getTime() + mediaGrantDurationMs).toISOString();
     const granted = await context.env.DB.prepare(
       `INSERT INTO media_grants (
-        id, asset_id, user_id, token_hash, expires_at, created_at, purpose
+        id, asset_id, user_id, token_hash, expires_at, created_at, purpose, derivative_id
       )
-      SELECT ?, a.id, a.user_id, ?, ?, ?, 'worker'
+      SELECT ?, a.id, a.user_id, ?, ?, ?, 'worker',
+             (SELECT derivative.id FROM media_derivatives derivative
+               WHERE derivative.job_id = j.id AND derivative.asset_id = a.id
+               LIMIT 1)
         FROM assets a JOIN gpu_jobs j ON j.asset_id = a.id
        WHERE a.id = ? AND a.kind = 'video' AND a.status = 'ready'
-         AND a.agent_access_enabled = 1
-         AND ${activeAiConsentSql("a")}
+       AND ${jobAccessSql}
+       AND ${activeAiConsentSql("a")}
          AND j.id = ? AND j.status = 'leased' AND j.lease_token_hash = ?
          AND j.lease_expires_at > ?`,
     ).bind(
@@ -283,7 +392,7 @@ export function createGpuJobRoutes(dependencies: GpuJobDependencies) {
           AND EXISTS (
             SELECT 1 FROM assets a
              WHERE a.id = gpu_jobs.asset_id AND a.kind = 'video'
-               AND a.status = 'ready' AND a.agent_access_enabled = 1
+               AND a.status = 'ready' AND ${workerJobAccessSql("gpu_jobs", "a")}
                AND ${activeAiConsentSql("a")}
           )
       RETURNING id`,
@@ -299,7 +408,7 @@ export function createGpuJobRoutes(dependencies: GpuJobDependencies) {
     const jobId = context.req.param("jobId");
     const leaseTokenHash = await sha256Hex(parsed.data.leaseToken);
     const lease = await validLease(context, jobId, leaseTokenHash, nowIso);
-    if (!lease) return errorResponse(context, 404, "gpu_job_not_found", "GPU job was not found.");
+    if (!lease || lease.kind !== "analysis") return errorResponse(context, 404, "gpu_job_not_found", "GPU job was not found.");
     const durationMs = lease.duration_ms;
     const inBounds = [...parsed.data.analyzedRanges, ...parsed.data.segments]
       .every((range) => durationMs === null || range.endMs <= durationMs);
@@ -314,7 +423,7 @@ export function createGpuJobRoutes(dependencies: GpuJobDependencies) {
                WHERE j.id = ? AND j.asset_id = ? AND j.status = 'leased'
                  AND j.lease_token_hash = ? AND j.lease_expires_at > ?
                  AND a.kind = 'video' AND a.status = 'ready'
-                 AND a.agent_access_enabled = 1
+                 AND j.kind = 'analysis'
                  AND ${activeAiConsentSql("a")}
             )`,
       ).bind(lease.asset_id, jobId, lease.asset_id, leaseTokenHash, nowIso),
@@ -329,7 +438,7 @@ export function createGpuJobRoutes(dependencies: GpuJobDependencies) {
             WHERE j.id = ? AND j.asset_id = ? AND j.status = 'leased'
               AND j.lease_token_hash = ? AND j.lease_expires_at > ?
               AND a.kind = 'video' AND a.status = 'ready'
-              AND a.agent_access_enabled = 1
+              AND j.kind = 'analysis'
               AND ${activeAiConsentSql("a")}
          )`,
       ).bind(
@@ -359,7 +468,7 @@ export function createGpuJobRoutes(dependencies: GpuJobDependencies) {
              JOIN assets a ON a.id = j.asset_id
             WHERE va.asset_id = ? AND va.job_id = ?
               AND j.status = 'leased' AND j.lease_token_hash = ?
-              AND j.lease_expires_at > ? AND a.agent_access_enabled = 1
+              AND j.lease_expires_at > ? AND j.kind = 'analysis'
               AND ${activeAiConsentSql("a")}
          )`,
       ).bind(
@@ -384,7 +493,7 @@ export function createGpuJobRoutes(dependencies: GpuJobDependencies) {
              JOIN assets a ON a.id = j.asset_id
             WHERE va.asset_id = ? AND va.job_id = ?
               AND j.status = 'leased' AND j.lease_token_hash = ?
-              AND j.lease_expires_at > ? AND a.agent_access_enabled = 1
+              AND j.lease_expires_at > ? AND j.kind = 'analysis'
               AND ${activeAiConsentSql("a")}
          )`,
       ).bind(
@@ -405,7 +514,7 @@ export function createGpuJobRoutes(dependencies: GpuJobDependencies) {
             AND EXISTS (
               SELECT 1 FROM assets a
                WHERE a.id = gpu_jobs.asset_id AND a.kind = 'video'
-                 AND a.status = 'ready' AND a.agent_access_enabled = 1
+                 AND a.status = 'ready' AND (gpu_jobs.kind = 'analysis' OR a.agent_access_enabled = 1)
                  AND ${activeAiConsentSql("a")}
             )`,
       ).bind(jobId, lease.asset_id, leaseTokenHash, nowIso),
@@ -413,6 +522,7 @@ export function createGpuJobRoutes(dependencies: GpuJobDependencies) {
     if ((results.at(-1)?.meta.changes ?? 0) !== 1) {
       return errorResponse(context, 404, "gpu_job_not_found", "GPU job was not found.");
     }
+    await refillVideoAnalysisQueue(context, lease.user_id, dependencies.now());
     return context.json({ status: "completed" });
   });
 
@@ -477,7 +587,7 @@ export function createGpuJobRoutes(dependencies: GpuJobDependencies) {
              WHERE j.id = media_derivatives.job_id AND j.asset_id = media_derivatives.asset_id
                AND j.status = 'leased' AND j.lease_token_hash = ?
                AND j.lease_expires_at > ? AND a.kind = 'video'
-               AND a.status = 'ready' AND a.agent_access_enabled = 1
+               AND a.status = 'ready' AND j.kind IN ('frame', 'clip') AND a.agent_access_enabled = 1
                AND ${activeAiConsentSql("a")}
           )`,
       ).bind(
@@ -498,7 +608,7 @@ export function createGpuJobRoutes(dependencies: GpuJobDependencies) {
             AND EXISTS (
               SELECT 1 FROM assets a
                WHERE a.id = gpu_jobs.asset_id AND a.kind = 'video'
-                 AND a.status = 'ready' AND a.agent_access_enabled = 1
+                 AND a.status = 'ready' AND (gpu_jobs.kind = 'analysis' OR a.agent_access_enabled = 1)
                  AND ${activeAiConsentSql("a")}
             )`,
       ).bind(jobId, lease.asset_id, leaseTokenHash, nowIso),
@@ -507,6 +617,7 @@ export function createGpuJobRoutes(dependencies: GpuJobDependencies) {
       await context.env.MEDIA.delete(objectKey);
       return errorResponse(context, 404, "gpu_job_not_found", "GPU job was not found.");
     }
+    await refillVideoAnalysisQueue(context, lease.user_id, dependencies.now());
     return context.json({ status: "completed", derivativeId: derivative.id });
   });
 
@@ -531,7 +642,7 @@ export function createGpuJobRoutes(dependencies: GpuJobDependencies) {
               AND EXISTS (
                 SELECT 1 FROM assets a
                  WHERE a.id = gpu_jobs.asset_id AND a.kind = 'video'
-                   AND a.status = 'ready' AND a.agent_access_enabled = 1
+                   AND a.status = 'ready' AND (gpu_jobs.kind = 'analysis' OR a.agent_access_enabled = 1)
                    AND ${activeAiConsentSql("a")}
               )`,
         ).bind(parsed.data.code, nowIso, lease.id, leaseTokenHash, nowIso),
@@ -549,6 +660,7 @@ export function createGpuJobRoutes(dependencies: GpuJobDependencies) {
       if ((updated?.meta.changes ?? 0) !== 1) {
         return errorResponse(context, 404, "gpu_job_not_found", "GPU job was not found.");
       }
+      await refillVideoAnalysisQueue(context, lease.user_id, dependencies.now());
       return context.json({ status: "failed" });
     }
     const availableAt = new Date(now.getTime() + retryDelayMs).toISOString();
@@ -561,7 +673,7 @@ export function createGpuJobRoutes(dependencies: GpuJobDependencies) {
           AND EXISTS (
             SELECT 1 FROM assets a
              WHERE a.id = gpu_jobs.asset_id AND a.kind = 'video'
-               AND a.status = 'ready' AND a.agent_access_enabled = 1
+               AND a.status = 'ready' AND (gpu_jobs.kind = 'analysis' OR a.agent_access_enabled = 1)
                AND ${activeAiConsentSql("a")}
           )`,
     ).bind(
@@ -575,6 +687,7 @@ export function createGpuJobRoutes(dependencies: GpuJobDependencies) {
     if ((updated.meta.changes ?? 0) !== 1) {
       return errorResponse(context, 404, "gpu_job_not_found", "GPU job was not found.");
     }
+    await refillVideoAnalysisQueue(context, lease.user_id, dependencies.now());
     return context.json({ status: "queued", availableAt });
   });
 

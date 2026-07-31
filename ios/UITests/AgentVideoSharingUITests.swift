@@ -12,7 +12,7 @@ final class AgentVideoSharingUITests: XCTestCase {
         let items: [Item]
     }
 
-    func testVideoSharingDefaultsOffThenRequiresExplicitConsentAndIsHiddenForPhotos() async throws {
+    func testVideoSharingDefaultsOffBeforeConsentThenCanBeRevokedPerVideo() async throws {
         guard let token = ProcessInfo.processInfo.environment["AFTERIMAGE_UI_TEST_TOKEN"] else {
             throw XCTSkip("AFTERIMAGE_UI_TEST_TOKEN is required")
         }
@@ -40,25 +40,25 @@ final class AgentVideoSharingUITests: XCTestCase {
         for _ in 0..<videoIndex {
             app.swipeLeft()
         }
-        try await waitForVideoAgentAccess(false, token: token)
+        try await waitForVideoAgentAccess(true, token: token)
         let moreButton = app.descendants(matching: .any)
             .matching(identifier: "その他")
             .firstMatch
         XCTAssertTrue(moreButton.waitForExistence(timeout: 15))
         moreButton.tap()
-        addScreenshot(name: "video-agent-sharing-off")
+        addScreenshot(name: "video-agent-sharing-on")
 
         let shareCoordinate = app.coordinate(
             withNormalizedOffset: CGVector(dx: 0.67, dy: 0.16)
         )
         shareCoordinate.tap()
-        try await waitForVideoAgentAccess(true, token: token)
+        try await waitForVideoAgentAccess(false, token: token)
         revealChromeIfNeeded(app: app, moreButton: moreButton)
         moreButton.tap()
-        addScreenshot(name: "video-agent-sharing-on")
+        addScreenshot(name: "video-agent-sharing-off")
 
         shareCoordinate.tap()
-        try await waitForVideoAgentAccess(false, token: token)
+        try await waitForVideoAgentAccess(true, token: token)
         app.swipeLeft()
         revealChromeIfNeeded(app: app, moreButton: moreButton)
         moreButton.tap()
@@ -69,7 +69,7 @@ final class AgentVideoSharingUITests: XCTestCase {
         XCTAssertTrue(
             items
                 .filter { $0.kind == "video" }
-                .allSatisfy { !$0.agentAccessEnabled }
+                .allSatisfy { $0.agentAccessEnabled }
         )
     }
 
