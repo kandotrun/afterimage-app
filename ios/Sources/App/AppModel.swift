@@ -139,7 +139,7 @@ final class AppModel: ObservableObject {
     private let compressor: MediaCompressor
     private let sessionStore: SessionStoring
     private let accountDeletionCleanupStore: AccountDeletionCleanupStoring
-    private let haptics: HapticEngine
+    private let haptics: any HapticPlaying
     private let weatherRecorder: WeatherKitDailyWeatherRecorder
     private let postReminderScheduler: DailyPostReminderScheduler
     private let reminderInviteDefaults: UserDefaults
@@ -180,7 +180,7 @@ final class AppModel: ObservableObject {
         accountDeletionCleanupStore: AccountDeletionCleanupStoring =
             AccountDeletionCleanupStore(),
         compressor: MediaCompressor = MediaCompressor(),
-        haptics: HapticEngine = HapticEngine(),
+        haptics: any HapticPlaying = HapticEngine(),
         weatherRecorder: WeatherKitDailyWeatherRecorder = WeatherKitDailyWeatherRecorder(),
         postReminderScheduler: DailyPostReminderScheduler = DailyPostReminderScheduler(),
         reminderInviteDefaults: UserDefaults = .standard
@@ -212,6 +212,10 @@ final class AppModel: ObservableObject {
         let configured = Bundle.main.object(forInfoDictionaryKey: "AFTERIMAGE_API_BASE_URL") as? String
         let baseURL = configured.flatMap(URL.init(string:)) ?? URL(string: "https://afterimage.2-38.com")!
         return AppModel(api: APIClient(baseURL: baseURL))
+    }
+
+    func playHaptic(_ cue: HapticCue) {
+        haptics.play(cue)
     }
 
     func bootstrap() async {
@@ -479,8 +483,10 @@ final class AppModel: ObservableObject {
     func refreshTimelineReportingFailure() async {
         do {
             try await refreshTimeline()
+            haptics.play(.success)
         } catch {
             if handleIfSessionExpired(error) { return }
+            haptics.play(.failure)
             showTransient(L10n.string("timeline.refresh_failed"))
         }
     }
@@ -1671,11 +1677,13 @@ final class AppModel: ObservableObject {
 
     func acceptReminderInvite() async {
         reminderInvite = false
-        _ = await postReminderScheduler.requestPermission()
+        let granted = await postReminderScheduler.requestPermission()
+        haptics.play(granted ? .success : .warning)
     }
 
     func declineReminderInvite() {
         reminderInvite = false
+        haptics.play(.selection)
     }
 
     private func show(error: Error) {

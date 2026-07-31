@@ -74,6 +74,7 @@ struct DailyPlaybackView: View {
                             systemImage: "trash",
                             role: .destructive
                         ) {
+                            model.playHaptic(.warning)
                             confirmDelete = true
                         }
                     } label: {
@@ -93,6 +94,11 @@ struct DailyPlaybackView: View {
         }
         .task(id: day) { await loadDay() }
         .onDisappear { controller.deactivate() }
+        .onChange(of: controller.phase) { _, phase in
+            if case .failed = phase {
+                model.playHaptic(.failure)
+            }
+        }
     }
 
     private var playerSurface: some View {
@@ -177,6 +183,7 @@ struct DailyPlaybackView: View {
                     .foregroundStyle(.white.opacity(0.6))
                 }
                 Button {
+                    model.playHaptic(.selection)
                     controller.togglePlayPause()
                 } label: {
                     Label(L10n.string("action.retry"), systemImage: "arrow.counterclockwise")
@@ -283,6 +290,7 @@ struct DailyPlaybackView: View {
     private func chapterButtons(vertical: Bool) -> some View {
         ForEach(Array(controller.clips.enumerated()), id: \.element.id) { index, clip in
             Button {
+                model.playHaptic(.selection)
                 controller.playClip(at: index)
             } label: {
                 HStack(spacing: 10) {
@@ -323,6 +331,7 @@ struct DailyPlaybackView: View {
     private var controls: some View {
         HStack(spacing: 11) {
             Button {
+                model.playHaptic(.selection)
                 controller.togglePlayPause()
             } label: {
                 Image(systemName: playPauseIcon)
@@ -345,7 +354,10 @@ struct DailyPlaybackView: View {
                 in: 0...max(controller.duration, 0.01)
             ) { editing in
                 if editing { controller.scrubBegan() }
-                else { controller.scrubEnded() }
+                else {
+                    controller.scrubEnded()
+                    model.playHaptic(.progress)
+                }
             }
             .tint(.accentColor)
             .accessibilityLabel(L10n.string("playback.scrub"))
@@ -403,7 +415,10 @@ struct DailyPlaybackView: View {
                 .font(.callout)
                 .multilineTextAlignment(.center)
             if let action {
-                Button(L10n.string("action.retry"), action: action)
+                Button(L10n.string("action.retry")) {
+                    model.playHaptic(.lift)
+                    action()
+                }
                     .buttonStyle(.glass)
             }
         }
@@ -444,6 +459,7 @@ struct DailyPlaybackView: View {
         } catch {
             guard !Task.isCancelled else { return }
             loadError = (error as? LocalizedError)?.errorDescription ?? error.localizedDescription
+            model.playHaptic(.failure)
             isLoading = false
         }
     }

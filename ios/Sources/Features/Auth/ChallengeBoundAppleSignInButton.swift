@@ -31,6 +31,7 @@ struct ChallengeBoundAppleSignInButton: View {
                 .signInWithAppleButtonStyle(.black)
             } else {
                 Button {
+                    model.playHaptic(.lift)
                     Task { await prepare() }
                 } label: {
                     if isPreparing {

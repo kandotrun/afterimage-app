@@ -39,6 +39,7 @@ struct TranscriptSheet: View {
                         Text(loadError)
                     } actions: {
                         Button(L10n.string("action.retry")) {
+                            model.playHaptic(.lift)
                             self.loadError = nil
                             Task { await load() }
                         }
@@ -57,6 +58,7 @@ struct TranscriptSheet: View {
                 ToolbarItem(placement: .topBarTrailing) {
                     Button("コピー", systemImage: "doc.on.doc") {
                         UIPasteboard.general.string = transcript?.text
+                        model.playHaptic(.copy)
                     }
                     .disabled(transcript == nil)
                 }
@@ -77,6 +79,7 @@ struct TranscriptSheet: View {
             transcript = try await model.transcript(for: asset)
         } catch {
             loadError = (error as? LocalizedError)?.errorDescription ?? error.localizedDescription
+            model.playHaptic(.failure)
         }
     }
 }

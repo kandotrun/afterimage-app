@@ -39,6 +39,7 @@ struct VideoMemoryView: View {
         .frame(maxWidth: .infinity, maxHeight: .infinity)
         .contentShape(.rect)
         .onTapGesture {
+            model.playHaptic(.selection)
             withAnimation(.easeInOut(duration: 0.2)) {
                 chrome.apply(.tapped(at: Date(), isPlaying: controller.phase == .playing))
             }
@@ -84,6 +85,8 @@ struct VideoMemoryView: View {
                 chrome.apply(.paused)
             case .ended:
                 withAnimation(.easeInOut(duration: 0.2)) { chrome.apply(.playbackEnded) }
+            case .failed:
+                model.playHaptic(.failure)
             default:
                 break
             }
@@ -121,6 +124,7 @@ struct VideoMemoryView: View {
                     .font(.callout)
                     .multilineTextAlignment(.center)
                 Button(L10n.string("action.retry")) {
+                    model.playHaptic(.lift)
                     Task { await controller.activate { try await model.playbackGrant(for: asset) } }
                 }
                 .buttonStyle(.glass)
@@ -136,6 +140,7 @@ struct VideoMemoryView: View {
         GlassEffectContainer(spacing: 12) {
             HStack(spacing: 12) {
                 Button {
+                    model.playHaptic(.selection)
                     controller.togglePlayPause()
                 } label: {
                     Image(systemName: playPauseIcon)
@@ -164,6 +169,7 @@ struct VideoMemoryView: View {
                         } else {
                             controller.scrubEnded()
                             chrome.apply(.scrubEnded)
+                            model.playHaptic(.progress)
                         }
                     }
                     .accessibilityLabel(L10n.string("playback.scrub"))
@@ -184,6 +190,7 @@ struct VideoMemoryView: View {
 
                 if showsTranscriptButton {
                     Button {
+                        model.playHaptic(.selection)
                         showTranscript = true
                     } label: {
                         Image(systemName: "text.bubble")
@@ -194,6 +201,7 @@ struct VideoMemoryView: View {
                 }
 
                 Button {
+                    model.playHaptic(.selection)
                     showAnalysis = true
                 } label: {
                     Image(systemName: "sparkles.rectangle.stack")

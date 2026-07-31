@@ -15,7 +15,7 @@
     "verify:app-store:screenshots": "node scripts/verify-app-store.mjs --mode screenshots",
     "verify:app-store:submission": "node scripts/verify-app-store.mjs --mode submission",
     "screenshots:app-store": "bash scripts/generate-app-store-screenshots.sh",
-    "check:ios": "node scripts/verify-ios-contract.mjs && node scripts/verify-ios-pr37-port-contract.mjs && node scripts/verify-ios-pr39-port-contract.mjs && node scripts/verify-ios-localizations.mjs && npm run test:app-store && npm run verify:app-store",
+    "check:ios": "node scripts/verify-ios-contract.mjs && node scripts/verify-ios-haptics.mjs && node scripts/verify-ios-pr37-port-contract.mjs && node scripts/verify-ios-pr39-port-contract.mjs && node scripts/verify-ios-localizations.mjs && npm run test:app-store && npm run verify:app-store",
     "check": "npm run check:ios && npm run test && npm run typecheck && npm --workspace backend run deploy:dry"
   },
   "devDependencies": {

@@ -62,6 +62,7 @@ struct MemorySearchView: View {
                 Text(verbatim: loadError)
             } actions: {
                 Button(L10n.string("action.retry")) {
+                    model.playHaptic(.lift)
                     beginSearch(for: query, debounced: false)
                 }
                 .buttonStyle(.borderedProminent)
@@ -91,6 +92,9 @@ struct MemorySearchView: View {
                         MemorySearchResultCard(result: result)
                     }
                     .buttonStyle(.plain)
+                    .simultaneousGesture(
+                        TapGesture().onEnded { model.playHaptic(.selection) }
+                    )
                     .accessibilityHint(accessibilityHint(for: result))
                     .onAppear {
                         loadMoreIfNeeded(after: result)
@@ -108,6 +112,7 @@ struct MemorySearchView: View {
                             .multilineTextAlignment(.center)
                         Button(L10n.string("action.retry")) {
                             guard let last = results.last else { return }
+                            model.playHaptic(.lift)
                             loadMoreIfNeeded(after: last)
                         }
                         .buttonStyle(.bordered)

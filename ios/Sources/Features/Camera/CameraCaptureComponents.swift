@@ -81,6 +81,7 @@ struct CameraCaptureReviewView: View {
 
 struct CameraCaptureStatusView: View {
     @Environment(\.dynamicTypeSize) private var dynamicTypeSize
+    @EnvironmentObject private var appModel: AppModel
 
     let systemImage: String
     let title: String
@@ -131,6 +132,7 @@ struct CameraCaptureStatusView: View {
                         return
                     }
                     UIApplication.shared.open(url)
+                    appModel.playHaptic(.selection)
                 }
                 .buttonStyle(.glassProminent)
                 .accessibilityLabel(

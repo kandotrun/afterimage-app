@@ -15,6 +15,7 @@ on:
       - "scripts/verify-ios-archive.py"
       - "scripts/generate-app-store-screenshots.sh"
       - "scripts/verify-ios-contract.mjs"
+      - "scripts/verify-ios-haptics.mjs"
       - "scripts/verify-ios-pr37-port-contract.mjs"
       - "scripts/verify-ios-pr39-port-contract.mjs"
       - "scripts/verify-ios-localizations.mjs"
