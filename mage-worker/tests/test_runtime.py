@@ -7,10 +7,12 @@ from afterimage_mage_worker.contracts import AnalysisResult, ContractError, Segm
 from afterimage_mage_worker.runtime import (
     MageRuntime,
     analysis_prompt,
+    analysis_retry_prompt,
     analysis_windows,
     model_output_invalid_event,
     normalize_window_segments,
     offline_model_imports,
+    parse_window_analysis_with_retry,
     sample_frame_indices,
 )
 
@@ -29,6 +31,43 @@ def test_analysis_prompt_requires_japanese_output() -> None:
     assert "JSONやコードブロックではなく、自然文だけ" in prompt
     assert "5000ミリ秒" in prompt
     assert "1200ミリ秒から3400ミリ秒" in prompt
+
+
+def test_analysis_retry_prompt_forbids_numeric_only_output_without_time_values() -> None:
+    prompt = analysis_retry_prompt()
+    assert "数値だけの回答" in prompt
+    assert "一文以上" in prompt
+    assert not any(character.isascii() and character.isdigit() for character in prompt)
+
+
+def test_invalid_numeric_analysis_retries_once_with_narrative_output() -> None:
+    retry_calls = 0
+
+    def retry() -> str:
+        nonlocal retry_calls
+        retry_calls += 1
+        return "作業場で人物が板を運んでいる。"
+
+    result = parse_window_analysis_with_retry("0.5", 120000, retry)
+    assert result.summary == "作業場で人物が板を運んでいる。"
+    assert retry_calls == 1
+
+
+def test_valid_analysis_does_not_retry_generation() -> None:
+    def unexpected_retry() -> str:
+        raise AssertionError("valid analysis must not retry")
+
+    result = parse_window_analysis_with_retry(
+        "作業場で人物が板を運んでいる。",
+        120000,
+        unexpected_retry,
+    )
+    assert result.summary == "作業場で人物が板を運んでいる。"
+
+
+def test_retry_still_rejects_a_second_numeric_analysis() -> None:
+    with pytest.raises(ContractError, match="analysis_output_fields_invalid"):
+        parse_window_analysis_with_retry("0.5", 120000, lambda: "1.0")
 
 
 def test_long_video_uses_bounded_sampled_windows() -> None:
