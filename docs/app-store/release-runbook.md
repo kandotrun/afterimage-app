@@ -28,6 +28,17 @@ Issue #42の認証challenge、versioned AI consent、agent access default OFF、
 
 実コマンドには運用環境の管理configを使う。`wrangler.example.jsonc`のplaceholderを実resource IDへ置換した生成物やCLI tokenをcommitしない。実施前後のmigration一覧、件数だけをprivate release evidenceへ保存し、ユーザー行やtokenを添付しない。
 
+### GitHub Actionsからのproduction自動deploy
+
+`.github/workflows/backend.yml` はtrustedな`main` push（またはmainへの明示的な`workflow_dispatch`）で、`check`成功後に`scripts/deploy-backend-production.sh`を実行する。concurrencyは同一refで直列化し、maintenance→migration→final Worker→health/legal URLの順序はrepo-managed scriptに集約する。PRからproduction deploy jobは実行しない。
+
+Actionsのrepository secretsに次を登録する。
+
+- `CLOUDFLARE_API_TOKEN`: Worker deploy、Worker secret list、対象D1へのmigration applyに必要な最小権限のCloudflare API Token。値はSlack、workflow log、repoへ貼らず、定期的にrotateする。
+- `AFTERIMAGE_PRODUCTION_WRANGLER_CONFIG`: 現在のproduction `backend/wrangler.jsonc`全文。`APPLE_PRIVATE_KEY`などのprivate keyは含めない。workflowはjob内で一時ファイルへ書き、終了時に削除する。
+
+secret未設定時はmaintenance deployの前にfail-fastする。`AFTERIMAGE_PRODUCTION_WRANGLER_CONFIG`を更新した場合は、次回のmain deployで新しいbinding/resource設定が使われる。
+
 ## 3. 法務URL
 
 認証なしの新しいsessionで次をread-backする。redirect後の最終URL、HTTP status、content type、確認日時、content revisionを記録する。

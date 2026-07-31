@@ -738,20 +738,366 @@ export function verifyWorkflowTrust(workflows) {
   return failures;
 }
 
+export function verifyBackendWorkflow(source) {
+  const failures = [];
+  let workflow;
+  try {
+    workflow = parseWorkflow(source);
+  } catch (error) {
+    failures.push(failure(
+      "ci.backend-yaml",
+      `backend workflowを安全にYAML解析できません: ${error.message}`,
+    ));
+    return failures;
+  }
+
+  const triggers = workflow.on && typeof workflow.on === "object" && !Array.isArray(workflow.on)
+    ? workflow.on
+    : {};
+  const push = triggers.push;
+  const branches = push && typeof push === "object" ? push.branches : undefined;
+  const branchList = Array.isArray(branches) ? branches : branches ? [branches] : [];
+  if (!branchList.includes("main") && !branchList.includes("**")) {
+    failures.push(failure(
+      "ci.backend.trigger",
+      "backend workflowはmainへのpushをtriggerに含める必要があります。",
+    ));
+  }
+  if (!Object.hasOwn(triggers, "workflow_dispatch")) {
+    failures.push(failure(
+      "ci.backend.workflow-dispatch",
+      "backend workflowはmainからのworkflow_dispatchを受け付ける必要があります。",
+    ));
+  }
+  const requiredPaths = [
+    "backend/**",
+    "package.json",
+    "package-lock.json",
+    "scripts/deploy-backend-production.sh",
+    "scripts/verify-app-store.mjs",
+    "scripts/tests/verify-app-store.test.mjs",
+    "backend/wrangler.example.jsonc",
+    ".github/workflows/backend.yml",
+  ];
+  const configuredPaths = push && typeof push === "object" && Array.isArray(push.paths)
+    ? push.paths.map((entry) => String(entry))
+    : [];
+  if (requiredPaths.some((requiredPath) => !configuredPaths.includes(requiredPath))) {
+    failures.push(failure(
+      "ci.backend.paths",
+      "backend workflowのpush pathsにbackend本体、deploy script、verifier、config template、workflow自身を含めてください。",
+    ));
+  }
+
+  const jobs = workflow.jobs && typeof workflow.jobs === "object"
+    ? workflow.jobs
+    : {};
+  const check = jobs.check;
+  const checkIsObject = check && typeof check === "object" && !Array.isArray(check);
+  if (!checkIsObject) {
+    failures.push(failure(
+      "ci.backend.check-job",
+      "backend workflowにproduction deployの前提となるcheck jobが必要です。",
+    ));
+  } else {
+    const checkSteps = Array.isArray(check.steps) ? check.steps : [];
+    const checkCommand = checkSteps.find((step) =>
+      step && typeof step.run === "string" && step.run.trim() === "npm run check"
+    );
+    if (!checkCommand) {
+      failures.push(failure(
+        "ci.backend.check-command",
+        "check jobはrepoのnpm run checkを実行する必要があります。",
+      ));
+    }
+    if (Object.hasOwn(check, "if")
+        || Object.hasOwn(check, "continue-on-error")
+        || checkSteps.some((step) =>
+          step && typeof step === "object"
+            && (Object.hasOwn(step, "if") || Object.hasOwn(step, "continue-on-error")))) {
+      failures.push(failure(
+        "ci.backend.check-gate",
+        "check jobとnpm run check stepをconditionalまたはcontinue-on-errorで無効化しないでください。",
+      ));
+    }
+  }
+  const deploy = jobs.deploy;
+  if (!deploy || typeof deploy !== "object" || Array.isArray(deploy)) {
+    failures.push(failure(
+      "ci.backend.deploy-job",
+      "backend workflowにdeploy jobが必要です。",
+    ));
+    return failures;
+  }
+
+  const needs = Array.isArray(deploy.needs)
+    ? deploy.needs
+    : deploy.needs ? [deploy.needs] : [];
+  if (!needs.includes("check")) {
+    failures.push(failure(
+      "ci.backend.needs",
+      "production deploy jobはcheck jobの成功後に実行してください。",
+    ));
+  }
+  if (Object.hasOwn(deploy, "continue-on-error")) {
+    failures.push(failure(
+      "ci.backend.continue-on-error",
+      "production deploy jobでcontinue-on-errorを有効にしないでください。",
+    ));
+  }
+
+  const condition = String(deploy.if ?? "")
+    .replace(/\$\{\{|\}\}/g, "")
+    .replace(/\s+/g, " ")
+    .trim();
+  const expectedCondition = "github.ref == 'refs/heads/main' && (github.event_name == 'push' || github.event_name == 'workflow_dispatch')";
+  if (condition !== expectedCondition
+      || /\b(?:always|failure|cancelled)\s*\(/.test(condition)) {
+    failures.push(failure(
+      "ci.backend.main-gate",
+      "production deployはcheck成功後、mainのtrusted pushまたはworkflow_dispatchだけに制限してください。",
+    ));
+  }
+
+  const steps = Array.isArray(deploy.steps) ? deploy.steps : [];
+  const deployStepIndexes = steps
+    .map((step, index) => step && typeof step.run === "string"
+      && step.run.includes("scripts/deploy-backend-production.sh") ? index : -1)
+    .filter((index) => index >= 0);
+  if (deployStepIndexes.length !== 1) {
+    failures.push(failure(
+      "ci.backend.script",
+      "production deploy jobではrepo管理のscripts/deploy-backend-production.shを1回だけ使ってください。",
+    ));
+  }
+  const deployStepIndex = deployStepIndexes[0] ?? -1;
+  const deployStep = deployStepIndex >= 0 ? steps[deployStepIndex] : undefined;
+  const deployRun = typeof deployStep?.run === "string" ? deployStep.run : "";
+  const secretReferences = (value) => {
+    const serialized = JSON.stringify(value ?? "");
+    const expressions = [...serialized.matchAll(/\$\{\{([^}]*)\}\}/g)];
+    return expressions.flatMap(([, expression]) => {
+      if (!/\bsecrets\b/.test(expression)) return [];
+      const dotReference = expression.match(/\bsecrets\.([A-Za-z0-9_]+)/);
+      const bracketReference = expression.match(/\bsecrets\s*\[\s*[\"']([A-Za-z0-9_]+)[\"']\s*\]/);
+      return [dotReference?.[1] ?? bracketReference?.[1] ?? "__unrecognized_secret_reference__"];
+    });
+  };
+  const expectedSecretReferences = [
+    "AFTERIMAGE_PRODUCTION_WRANGLER_CONFIG",
+    "CLOUDFLARE_API_TOKEN",
+  ].sort();
+  const deployStepSecretReferences = secretReferences(deployStep).sort();
+  const secretScopeViolations = [
+    ...secretReferences(workflow.env),
+    ...Object.entries(jobs)
+      .filter(([jobName]) => jobName !== "deploy")
+      .flatMap(([, job]) => secretReferences(job)),
+    ...secretReferences(deploy.env),
+    ...steps
+      .filter((step, index) => index !== deployStepIndex)
+      .flatMap((step) => secretReferences(step)),
+  ];
+  if (secretScopeViolations.length > 0
+      || JSON.stringify(deployStepSecretReferences) !== JSON.stringify(expectedSecretReferences)) {
+    failures.push(failure(
+      "ci.backend.secret-scope",
+      "Cloudflare secretsはproduction rollout stepのenvだけに、必要な2つを渡してください。",
+    ));
+  }
+  const weakeningStep = steps.find((step) =>
+    step && typeof step === "object"
+      && (Object.hasOwn(step, "if") || Object.hasOwn(step, "continue-on-error"))
+  );
+  if (weakeningStep) {
+    failures.push(failure(
+      "ci.backend.step-gate",
+      "production deploy job/secret-bearing stepにconditional gateを追加しないでください。",
+    ));
+  }
+  const deployEnv = deployStep?.env && typeof deployStep.env === "object"
+    ? deployStep.env
+    : {};
+  const cloudflareSecret = "${{ secrets.CLOUDFLARE_API_TOKEN }}";
+  const configSecret = "${{ secrets.AFTERIMAGE_PRODUCTION_WRANGLER_CONFIG }}";
+  if (deployEnv.CLOUDFLARE_API_TOKEN !== cloudflareSecret) {
+    failures.push(failure(
+      "ci.backend.cloudflare-auth",
+      "production deploy step自身にCLOUDFLARE_API_TOKEN secretを渡してください。",
+    ));
+  }
+  if (deployEnv.AFTERIMAGE_PRODUCTION_WRANGLER_CONFIG !== configSecret) {
+    failures.push(failure(
+      "ci.backend.wrangler-config",
+      "production deploy step自身にAFTERIMAGE_PRODUCTION_WRANGLER_CONFIG secretを渡してください。",
+    ));
+  }
+
+  const configWrite = "printf '%s' \"$AFTERIMAGE_PRODUCTION_WRANGLER_CONFIG\" > \"$CONFIG_PATH\"";
+  const shellLines = normalizedLines(deployRun)
+    .map((line) => line.replace(/^\s*#.*$/, "").replace(/\s+#.*$/, "").trim())
+    .filter(Boolean);
+  const nodeStartIndex = shellLines.findIndex((line) => line.includes("<<'NODE'"));
+  const nodeEndIndex = nodeStartIndex >= 0
+    ? shellLines.findIndex((line, index) => index > nodeStartIndex && line === "NODE")
+    : -1;
+  const shellBeforeNode = nodeStartIndex >= 0
+    ? shellLines.slice(0, nodeStartIndex).join("\n")
+    : "";
+  const nodeBody = nodeStartIndex >= 0 && nodeEndIndex > nodeStartIndex
+    ? shellLines.slice(nodeStartIndex + 1, nodeEndIndex).join("\n")
+    : "";
+  const shellAfterNode = nodeEndIndex > nodeStartIndex
+    ? shellLines.slice(nodeEndIndex + 1).join("\n")
+    : "";
+  const configIndex = shellBeforeNode.indexOf(configWrite);
+  const cleanupIndex = shellBeforeNode.indexOf("trap cleanup EXIT");
+  const scriptIndex = shellAfterNode.indexOf("./scripts/deploy-backend-production.sh");
+  const shellSafetyMarkers = [
+    "CONFIG_PATH=\"$CONFIG_DIR/wrangler.jsonc\"",
+    "mktemp -d",
+    "${RUNNER_TEMP%/}/afterimage-wrangler.XXXXXX",
+    "if [[ \"$CONFIG_DIR\" == \"${RUNNER_TEMP%/}\"/afterimage-wrangler.* ]]; then",
+    "rm -rf -- \"$CONFIG_DIR\"",
+    "trap 'cleanup; exit 130' INT",
+    "trap 'cleanup; exit 143' TERM",
+    "chmod 600 \"$CONFIG_PATH\"",
+    configWrite,
+    "export WRANGLER_CONFIG=\"$CONFIG_PATH\"",
+  ];
+  const nodeSafetyMarkers = [
+    "path.join(backendRoot, \"src\", \"index.ts\")",
+    "path.join(backendRoot, \"migrations\")",
+  ];
+  if (nodeStartIndex < 0
+      || nodeEndIndex <= nodeStartIndex
+      || configIndex < 0
+      || cleanupIndex < 0
+      || cleanupIndex > configIndex
+      || scriptIndex < 0
+      || shellSafetyMarkers.some((marker) => !shellBeforeNode.includes(marker)
+        && !shellAfterNode.includes(marker))
+      || nodeSafetyMarkers.some((marker) => !nodeBody.includes(marker))
+      || deployRun.includes("> backend/wrangler.jsonc")) {
+    failures.push(failure(
+      "ci.backend.config-cleanup",
+      "production Wrangler configはRUNNER_TEMPに作成し、path検証付きcleanupをwrite前に登録してからrollout scriptへ渡してください。",
+    ));
+  }
+
+  const directRollout = steps
+    .filter((step) => typeof step?.run === "string")
+    .map((step) => normalizedLines(step.run)
+      .map((line) => line.replace(/^\s*#.*$/, "").replace(/\s+#.*$/, "").trim())
+      .filter(Boolean)
+      .join("\n")
+      .replace(/\\\n/g, " "))
+    .find((run) => /\bwrangler\s+(?:deploy|d1\s+migrations)\b/.test(run));
+  if (directRollout) {
+    failures.push(failure(
+      "ci.backend.direct-rollout",
+      "production Wrangler rolloutはdeploy jobへ直書きせず、repo管理scriptへ集約してください。",
+    ));
+  }
+  return failures;
+}
+
 export function verifyBackendRolloutScript(source) {
   const failures = [];
-  const executable = normalizedLines(source)
-    .map((line) => line.replace(/\s+#.*$/, "").trim())
-    .filter((line) => line && !line.startsWith("#"))
-    .join("\n");
-  const maintenanceProbe = executable.indexOf("expect_status 503");
-  const maintenance = executable.lastIndexOf(
-    "wrangler deploy src/maintenance.ts",
-    maintenanceProbe,
+  const shellLines = normalizedLines(source)
+    .map((line) => line.replace(/^\s*#.*$/, "").replace(/\s+#.*$/, "").trim())
+    .filter(Boolean);
+  const logicalLines = [];
+  let pendingLine = "";
+  for (const line of shellLines) {
+    const continued = line.endsWith("\\");
+    pendingLine += `${pendingLine ? " " : ""}${continued ? line.slice(0, -1).trim() : line}`;
+    if (!continued) {
+      logicalLines.push(pendingLine);
+      pendingLine = "";
+    }
+  }
+  if (pendingLine) logicalLines.push(pendingLine);
+  const executable = logicalLines.join("\n");
+  const controlDepthAt = [];
+  let controlDepth = 0;
+  for (const line of logicalLines) {
+    if (/^(?:fi|done|esac)(?:\s|$)|^}/.test(line)) controlDepth = Math.max(0, controlDepth - 1);
+    controlDepthAt.push(controlDepth);
+    if (/\bthen\s*$/.test(line)
+        || /\bdo\s*$/.test(line)
+        || /^case\b.*\bin\s*$/.test(line)
+        || /\{\s*$/.test(line)) {
+      controlDepth += 1;
+    }
+  }
+  const commandPattern = /(?:^|[;(|{])\s*(?:(?:[A-Za-z_][A-Za-z0-9_]*=\S+)\s+)*(?:npx\s+)?wrangler\s+(?:deploy|d1\s+migrations)\b[^;)]*/g;
+  const commandRecords = logicalLines.flatMap((line, lineIndex) =>
+    [...line.matchAll(commandPattern)].map(([command]) => ({
+      command: command.replace(/^[\s;(|{]+/, "").trim(),
+      line,
+      lineIndex,
+    }))
   );
-  const migration = executable.indexOf("wrangler d1 migrations apply");
-  const finalDeploy = executable.lastIndexOf('wrangler deploy --config "$WRANGLER_CONFIG"');
-  const finalProbe = executable.indexOf("expect_status 200");
+  const wranglerCommands = commandRecords.map(({ command }) => command);
+  if (commandRecords.some(({ command, line, lineIndex }) =>
+    controlDepthAt[lineIndex] > 0
+      || /\b(?:if|for|while|until|case)\b.*\b(?:then|do|in)\b/.test(line)
+      || /\|\|/.test(command))) {
+    failures.push(failure(
+      "backend.rollout.error-handling",
+      "maintenance、migration、final deployの失敗を|| true等で握りつぶさないでください。",
+    ));
+  }
+  const migrationCommands = wranglerCommands
+    .filter((line) => /\b(?:npx\s+)?wrangler\s+d1\s+migrations\s+(?:list|apply)\b/.test(line));
+  const migrationApplyCommand = migrationCommands.find((line) =>
+    /\b(?:npx\s+)?wrangler\s+d1\s+migrations\s+apply\b/.test(line)
+  );
+  const migration = migrationApplyCommand
+    ? executable.indexOf(migrationApplyCommand)
+    : -1;
+  if (!migrationApplyCommand
+      || migrationCommands.some((command) =>
+        !command.includes("--remote")
+        || !command.includes('--config "$WRANGLER_CONFIG"')
+      )) {
+    failures.push(failure(
+      "backend.rollout.remote",
+      "D1 migration/list操作はすべてremoteかつproduction WRANGLER_CONFIGを明示してください。",
+    ));
+  }
+
+  const maintenanceProbe = executable.indexOf("expect_status 503");
+  const maintenanceCandidates = wranglerCommands.filter((command) =>
+    command.includes("wrangler deploy src/maintenance.ts")
+      && command.includes('--config "$WRANGLER_CONFIG"')
+      && !command.includes("--dry-run")
+  );
+  const maintenance = maintenanceCandidates
+    .map((command) => executable.lastIndexOf(command))
+    .filter((index) => index >= 0 && (maintenanceProbe < 0 || index < maintenanceProbe))
+    .at(-1) ?? -1;
+
+  const finalDeployCandidates = wranglerCommands.filter((command) =>
+    command.includes("wrangler deploy")
+      && !command.includes("src/maintenance.ts")
+      && command.includes('--config "$WRANGLER_CONFIG"')
+  );
+  const finalDeployCommand = finalDeployCandidates.at(-1) ?? "";
+  const finalDeploy = finalDeployCommand
+    ? executable.lastIndexOf(finalDeployCommand)
+    : -1;
+  if (!finalDeployCommand
+      || finalDeployCommand.includes("--dry-run")
+      || !finalDeployCommand.includes("--keep-vars")
+      || !finalDeployCommand.includes("--message")) {
+    failures.push(failure(
+      "backend.rollout.final-deploy",
+      "final production deployはWRANGLER_CONFIGを使う非dry-run deployで、keep-varsとdeploy messageを指定してください。",
+    ));
+  }
+  const finalProbe = executable.lastIndexOf("expect_status 200");
   const appleCredentialChecks = [
     executable.indexOf("wrangler secret list"),
     executable.indexOf("APPLE_TEAM_ID"),
@@ -1484,6 +1830,17 @@ export function verifyRepository({
     failures.push(failure("ci.deploy-file", ".github/workflows/ios-deploy.yml がありません。"));
   } else {
     failures.push(...verifyDeployWorkflow(deploy.content));
+  }
+  const backendWorkflow = workflows.find((workflow) =>
+    workflow.path.endsWith("/backend.yml")
+  );
+  if (!backendWorkflow) {
+    failures.push(failure(
+      "ci.backend-file",
+      ".github/workflows/backend.yml がありません。",
+    ));
+  } else {
+    failures.push(...verifyBackendWorkflow(backendWorkflow.content));
   }
   const screenshotWorkflow = workflows.find((workflow) =>
     workflow.path.endsWith("/app-store-screenshots.yml")
