@@ -169,6 +169,10 @@ class KoyomiDirectInstallTests(unittest.TestCase):
         self.assertNotIn("patch-source", workflow)
         self.assertIn(MODULE.SHARED_KEYCHAIN_ACCESS_GROUP, workflow)
         self.assertIn("Direct-install widget Keychain sharing: PASS", workflow)
+        self.assertIn("Verify Widget displays a migrated pin on iPhone", workflow)
+        self.assertIn("testPhysicalWidgetShowsMigratedPin", workflow)
+        self.assertIn("Physical Widget content readback: PASS", workflow)
+        self.assertTrue((ROOT / "scripts" / "koyomi_physical_widget_ui_test.swift").is_file())
 
 
 if __name__ == "__main__":

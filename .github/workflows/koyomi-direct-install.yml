@@ -272,6 +272,58 @@ jobs:
             --apps-json "$APPS_JSON" \
             --processes-json "$PROCESSES_JSON"
 
+      - name: Verify Widget displays a migrated pin on iPhone
+        shell: bash
+        working-directory: koyomi-source
+        env:
+          TARGET_UDID: ${{ steps.device.outputs.udid }}
+        run: |
+          set -euo pipefail
+          python3 - "$GITHUB_WORKSPACE/scripts/koyomi_physical_widget_ui_test.swift" KoyomiUITests/KoyomiUITests.swift <<'PY'
+          from pathlib import Path
+          import sys
+
+          template = Path(sys.argv[1]).read_text(encoding="utf-8")
+          target = Path(sys.argv[2])
+          target.write_text(target.read_text(encoding="utf-8") + template, encoding="utf-8")
+          PY
+          DEVICE_WIDGET_TEST_DERIVED_DATA=$(mktemp -d "$RUNNER_TEMP/koyomi-device-widget-derived.XXXXXX")
+          DEVICE_WIDGET_TEST_ROOT=$(mktemp -d "$RUNNER_TEMP/koyomi-device-widget-result.XXXXXX")
+          DEVICE_WIDGET_TEST_RESULT="$DEVICE_WIDGET_TEST_ROOT/TestResults.xcresult"
+          DEVICE_WIDGET_TEST_LOG=$(mktemp "$RUNNER_TEMP/koyomi-device-widget.XXXXXX.log")
+          {
+            echo "DEVICE_WIDGET_TEST_DERIVED_DATA=$DEVICE_WIDGET_TEST_DERIVED_DATA"
+            echo "DEVICE_WIDGET_TEST_ROOT=$DEVICE_WIDGET_TEST_ROOT"
+            echo "DEVICE_WIDGET_TEST_RESULT=$DEVICE_WIDGET_TEST_RESULT"
+            echo "DEVICE_WIDGET_TEST_LOG=$DEVICE_WIDGET_TEST_LOG"
+          } >> "$GITHUB_ENV"
+          set -o pipefail
+          xcodebuild -quiet test \
+            -project Koyomi.xcodeproj \
+            -scheme Koyomi \
+            -configuration Debug \
+            -destination "platform=iOS,id=$TARGET_UDID" \
+            -derivedDataPath "$DEVICE_WIDGET_TEST_DERIVED_DATA" \
+            -resultBundlePath "$DEVICE_WIDGET_TEST_RESULT" \
+            -only-testing:KoyomiUITests/KoyomiUITests/testPhysicalWidgetShowsMigratedPin \
+            -parallel-testing-enabled NO \
+            DEVELOPMENT_TEAM=UGNVGWZMAU \
+            CODE_SIGN_STYLE=Automatic \
+            CODE_SIGN_IDENTITY="Apple Development" \
+            "OTHER_CODE_SIGN_FLAGS=--keychain $CI_KEYCHAIN_PATH" \
+            | tee "$DEVICE_WIDGET_TEST_LOG"
+
+      - name: Upload physical Widget evidence
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: koyomi-physical-widget-${{ github.run_id }}
+          path: |
+            ${{ env.DEVICE_WIDGET_TEST_RESULT }}
+            ${{ env.DEVICE_WIDGET_TEST_LOG }}
+          if-no-files-found: warn
+          retention-days: 7
+
       - name: Write installation summary
         if: success()
         shell: bash
@@ -290,6 +342,7 @@ jobs:
             echo '- Device install readback: PASS'
             echo '- Device launch process readback: PASS'
             echo '- Direct-install widget Keychain sharing: PASS'
+            echo '- Physical Widget content readback: PASS'
           } >> "$GITHUB_STEP_SUMMARY"
 
       - name: Restore keychain and remove temporary files
@@ -369,6 +422,9 @@ jobs:
 
           remove_guarded_directory "${SIGNING_ROOT:-}" koyomi-direct-signing
           remove_guarded_directory "${DERIVED_DATA:-}" koyomi-direct-derived
+          remove_guarded_directory "${DEVICE_WIDGET_TEST_DERIVED_DATA:-}" koyomi-device-widget-derived
+          remove_guarded_directory "${DEVICE_WIDGET_TEST_ROOT:-}" koyomi-device-widget-result
+          remove_guarded_file "${DEVICE_WIDGET_TEST_LOG:-}" koyomi-device-widget
           remove_guarded_file "${ORIGINAL_KEYCHAIN_LIST_PATH:-}" koyomi-direct-original-keychains
           remove_guarded_file "${DEVICE_DETAILS:-}" koyomi-device
           remove_guarded_file "${BUILD_LOG:-}" koyomi-direct-build
