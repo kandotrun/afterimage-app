@@ -1,0 +1,31 @@
+name: Koyomi TestFlight
+
+on:
+  workflow_dispatch:
+    inputs:
+      build_number:
+        description: Koyomi CFBundleVersion
+        required: true
+        default: "1"
+        type: string
+
+permissions:
+  contents: read
+
+concurrency:
+  group: koyomi-testflight
+  cancel-in-progress: false
+
+jobs:
+  upload:
+    uses: kandotrun/koyomi-ios/.github/workflows/testflight.yml@e6f1cca032e63bb6f22af367f75b165282c7cc7e
+    with:
+      runner_labels: '["self-hosted","macOS","ARM64","afterimage-ci"]'
+      source_keychain_path: /Users/kan/actions-runner-afterimage/.ci/afterimage-ci.keychain-db
+      source_ref: e6f1cca032e63bb6f22af367f75b165282c7cc7e
+      build_number: ${{ inputs.build_number }}
+    secrets:
+      CI_KEYCHAIN_PASSWORD: ${{ secrets.AFTERIMAGE_CI_KEYCHAIN_PASSWORD }}
+      ASC_ISSUER_ID: ${{ secrets.ASC_ISSUER_ID }}
+      ASC_KEY_ID: ${{ secrets.ASC_KEY_ID }}
+      ASC_PRIVATE_KEY: ${{ secrets.ASC_PRIVATE_KEY }}
