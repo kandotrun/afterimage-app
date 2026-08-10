@@ -17,7 +17,7 @@ jobs:
     env:
       DEVICE_NAME: Kans iPhone
       SOURCE_KEYCHAIN_PATH: /Users/kan/actions-runner-afterimage/.ci/afterimage-ci.keychain-db
-      KOYOMI_SOURCE_SHA: 19134c317d6e100475c92f0b6fd44bf6daff0013
+      KOYOMI_SOURCE_SHA: 210e99e4b59f08c490f462e644f9fabb3be5e237
 
     steps:
       - name: Check out private installer
@@ -29,7 +29,7 @@ jobs:
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           repository: kandotrun/koyomi-ios
-          ref: 19134c317d6e100475c92f0b6fd44bf6daff0013
+          ref: 210e99e4b59f08c490f462e644f9fabb3be5e237
           path: koyomi-source
           persist-credentials: false
 
