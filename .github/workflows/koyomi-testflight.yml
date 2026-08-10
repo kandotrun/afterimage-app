@@ -22,7 +22,7 @@ jobs:
     with:
       runner_labels: '["self-hosted","macOS","ARM64","afterimage-ci"]'
       source_keychain_path: /Users/kan/actions-runner-afterimage/.ci/afterimage-ci.keychain-db
-      source_ref: d5be33f5579c00e43d9591cd0be1ad9fb2a25b12
+      source_ref: 87cb10882fcf5d9fd98e929183cd24371ad2b803
       build_number: ${{ inputs.build_number }}
     secrets:
       CI_KEYCHAIN_PASSWORD: ${{ secrets.AFTERIMAGE_CI_KEYCHAIN_PASSWORD }}
