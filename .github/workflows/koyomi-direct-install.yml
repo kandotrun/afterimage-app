@@ -170,6 +170,23 @@ jobs:
           [[ -d "$WIDGET_PATH" ]]
           cp -p "$PROFILE_PATH" "$APP_PATH/embedded.mobileprovision"
           cp -p "$PROFILE_PATH" "$WIDGET_PATH/embedded.mobileprovision"
+
+          NESTED_CODES=(
+            "$APP_PATH/__preview.dylib"
+            "$APP_PATH/Koyomi.debug.dylib"
+            "$WIDGET_PATH/__preview.dylib"
+            "$WIDGET_PATH/KoyomiWidget.debug.dylib"
+          )
+          for NESTED_CODE in "${NESTED_CODES[@]}"; do
+            [[ -f "$NESTED_CODE" ]] || { echo "Expected nested code is missing: $NESTED_CODE" >&2; exit 1; }
+            codesign --force \
+              --sign "$SIGNING_IDENTITY" \
+              --keychain "$CI_KEYCHAIN_PATH" \
+              --timestamp=none \
+              "$NESTED_CODE"
+            codesign --verify --strict "$NESTED_CODE"
+          done
+
           codesign --force \
             --sign "$SIGNING_IDENTITY" \
             --keychain "$CI_KEYCHAIN_PATH" \
