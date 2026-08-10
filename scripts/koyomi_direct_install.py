@@ -14,7 +14,7 @@ TEAM_ID = "UGNVGWZMAU"
 APP_BUNDLE_ID = "run.kan.koyomi"
 WIDGET_BUNDLE_ID = "run.kan.koyomi.widget"
 SHARED_KEYCHAIN_ACCESS_GROUP = f"{TEAM_ID}.run.kan.koyomi.shared"
-SOURCE_SHA = "210e99e4b59f08c490f462e644f9fabb3be5e237"
+SOURCE_SHA = "19134c317d6e100475c92f0b6fd44bf6daff0013"
 
 
 def concrete_entitlements(profile_entitlements: dict, bundle_id: str) -> dict:
