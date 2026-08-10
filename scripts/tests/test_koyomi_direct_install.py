@@ -1,7 +1,6 @@
 import importlib.util
 import json
 import plistlib
-import tempfile
 import unittest
 from datetime import datetime, timezone
 from pathlib import Path
@@ -17,47 +16,32 @@ SPEC.loader.exec_module(MODULE)
 
 
 class KoyomiDirectInstallTests(unittest.TestCase):
-    def test_patch_source_switches_only_the_temporary_checkout_to_standard_defaults(self):
-        with tempfile.TemporaryDirectory() as directory:
-            repo = Path(directory)
-            source = repo / "Shared" / "PinnedEventsStore.swift"
-            source.parent.mkdir(parents=True)
-            source.write_text(
-                "let defaults = UserDefaults(suiteName: suiteName) ?? .standard\n",
-                encoding="utf-8",
-            )
-
-            MODULE.patch_source(repo)
-
-            self.assertEqual(
-                source.read_text(encoding="utf-8"),
-                "let defaults = UserDefaults.standard\n",
-            )
-
-    def test_patch_source_fails_closed_on_unexpected_source(self):
-        with tempfile.TemporaryDirectory() as directory:
-            repo = Path(directory)
-            source = repo / "Shared" / "PinnedEventsStore.swift"
-            source.parent.mkdir(parents=True)
-            source.write_text("let defaults = UserDefaults.standard\n", encoding="utf-8")
-
-            with self.assertRaisesRegex(ValueError, "expected source line exactly once"):
-                MODULE.patch_source(repo)
-
-    def test_concrete_entitlements_remove_app_groups_and_wildcards(self):
+    def test_concrete_entitlements_use_the_same_shared_keychain_group(self):
         profile_entitlements = {
             "application-identifier": "UGNVGWZMAU.*",
             "com.apple.developer.team-identifier": "UGNVGWZMAU",
-            "com.apple.security.application-groups": ["group.run.kan.koyomi"],
             "get-task-allow": True,
-            "keychain-access-groups": ["UGNVGWZMAU.*"],
+            "keychain-access-groups": ["UGNVGWZMAU.*", "com.apple.token"],
         }
 
-        result = MODULE.concrete_entitlements(profile_entitlements, "run.kan.koyomi")
+        app = MODULE.concrete_entitlements(profile_entitlements, "run.kan.koyomi")
+        widget = MODULE.concrete_entitlements(profile_entitlements, "run.kan.koyomi.widget")
 
-        self.assertNotIn("com.apple.security.application-groups", result)
-        self.assertEqual(result["application-identifier"], "UGNVGWZMAU.run.kan.koyomi")
-        self.assertEqual(result["keychain-access-groups"], ["UGNVGWZMAU.run.kan.koyomi"])
+        self.assertEqual(app["application-identifier"], "UGNVGWZMAU.run.kan.koyomi")
+        self.assertEqual(widget["application-identifier"], "UGNVGWZMAU.run.kan.koyomi.widget")
+        self.assertEqual(app["keychain-access-groups"], [MODULE.SHARED_KEYCHAIN_ACCESS_GROUP])
+        self.assertEqual(widget["keychain-access-groups"], [MODULE.SHARED_KEYCHAIN_ACCESS_GROUP])
+
+    def test_concrete_entitlements_fail_without_wildcard_keychain_permission(self):
+        profile_entitlements = {
+            "application-identifier": "UGNVGWZMAU.*",
+            "com.apple.developer.team-identifier": "UGNVGWZMAU",
+            "get-task-allow": True,
+            "keychain-access-groups": ["UGNVGWZMAU.unrelated"],
+        }
+
+        with self.assertRaisesRegex(ValueError, "wildcard Keychain access group"):
+            MODULE.concrete_entitlements(profile_entitlements, "run.kan.koyomi")
 
     def test_device_details_require_a_booted_physical_ios_device_in_developer_mode(self):
         details = {
@@ -129,6 +113,18 @@ class KoyomiDirectInstallTests(unittest.TestCase):
                 "entitlements": {},
             },
             {
+                "path": Path("no-keychain.mobileprovision"),
+                "name": "no keychain permission",
+                "uuid": "no-keychain",
+                "team": "UGNVGWZMAU",
+                "app_identifier": "UGNVGWZMAU.*",
+                "get_task_allow": True,
+                "devices": ["target-udid"],
+                "expires": datetime(2028, 1, 1, tzinfo=timezone.utc),
+                "certificate_hashes": {"MATCH"},
+                "entitlements": {},
+            },
+            {
                 "path": Path("valid.mobileprovision"),
                 "name": "valid",
                 "uuid": "valid-profile",
@@ -138,7 +134,7 @@ class KoyomiDirectInstallTests(unittest.TestCase):
                 "devices": ["target-udid"],
                 "expires": datetime(2027, 7, 1, tzinfo=timezone.utc),
                 "certificate_hashes": {"MATCH"},
-                "entitlements": {},
+                "entitlements": {"keychain-access-groups": ["UGNVGWZMAU.*"]},
             },
         ]
 
@@ -170,6 +166,9 @@ class KoyomiDirectInstallTests(unittest.TestCase):
         ):
             self.assertIn(nested_code, workflow)
         self.assertIn('codesign --verify --strict "$NESTED_CODE"', workflow)
+        self.assertNotIn("patch-source", workflow)
+        self.assertIn(MODULE.SHARED_KEYCHAIN_ACCESS_GROUP, workflow)
+        self.assertIn("Direct-install widget Keychain sharing: PASS", workflow)
 
 
 if __name__ == "__main__":

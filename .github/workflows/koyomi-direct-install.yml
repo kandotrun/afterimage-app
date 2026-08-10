@@ -17,7 +17,7 @@ jobs:
     env:
       DEVICE_NAME: Kans iPhone
       SOURCE_KEYCHAIN_PATH: /Users/kan/actions-runner-afterimage/.ci/afterimage-ci.keychain-db
-      KOYOMI_SOURCE_SHA: d5be33f5579c00e43d9591cd0be1ad9fb2a25b12
+      KOYOMI_SOURCE_SHA: cb630aa3d95bc8a0cbcb38a0d9d9fbf55fd1989b
 
     steps:
       - name: Check out private installer
@@ -29,7 +29,7 @@ jobs:
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           repository: kandotrun/koyomi-ios
-          ref: d5be33f5579c00e43d9591cd0be1ad9fb2a25b12
+          ref: cb630aa3d95bc8a0cbcb38a0d9d9fbf55fd1989b
           path: koyomi-source
           persist-credentials: false
 
@@ -69,15 +69,12 @@ jobs:
             --details-json "$DEVICE_DETAILS" \
             --github-output "$GITHUB_OUTPUT"
 
-      - name: Patch only the temporary Koyomi checkout
+      - name: Verify pinned Koyomi source
         shell: bash
         run: |
           set -euo pipefail
           [[ "$(git -C koyomi-source rev-parse HEAD)" == "$KOYOMI_SOURCE_SHA" ]]
-          python3 scripts/koyomi_direct_install.py patch-source --repo koyomi-source
-          git -C koyomi-source diff --check
-          CHANGED_FILES=$(git -C koyomi-source diff --name-only)
-          [[ "$CHANGED_FILES" == "Shared/PinnedEventsStore.swift" ]]
+          git -C koyomi-source diff --exit-code
 
       - name: Configure temporary signing keychain
         id: signing_keychain
@@ -213,6 +210,16 @@ jobs:
           codesign -d --entitlements "$WIDGET_ENTITLEMENTS" "$WIDGET_PATH" 2>/dev/null
           [[ "$(/usr/libexec/PlistBuddy -c 'Print :application-identifier' "$APP_ENTITLEMENTS")" == "UGNVGWZMAU.run.kan.koyomi" ]]
           [[ "$(/usr/libexec/PlistBuddy -c 'Print :application-identifier' "$WIDGET_ENTITLEMENTS")" == "UGNVGWZMAU.run.kan.koyomi.widget" ]]
+          [[ "$(/usr/libexec/PlistBuddy -c 'Print :keychain-access-groups:0' "$APP_ENTITLEMENTS")" == "UGNVGWZMAU.run.kan.koyomi.shared" ]]
+          [[ "$(/usr/libexec/PlistBuddy -c 'Print :keychain-access-groups:0' "$WIDGET_ENTITLEMENTS")" == "UGNVGWZMAU.run.kan.koyomi.shared" ]]
+          if /usr/libexec/PlistBuddy -c 'Print :keychain-access-groups:1' "$APP_ENTITLEMENTS" >/dev/null 2>&1; then
+            echo "Direct-install app contains unexpected extra Keychain access groups" >&2
+            exit 1
+          fi
+          if /usr/libexec/PlistBuddy -c 'Print :keychain-access-groups:1' "$WIDGET_ENTITLEMENTS" >/dev/null 2>&1; then
+            echo "Direct-install widget contains unexpected extra Keychain access groups" >&2
+            exit 1
+          fi
           if /usr/libexec/PlistBuddy -c 'Print :com.apple.security.application-groups' "$APP_ENTITLEMENTS" >/dev/null 2>&1; then
             echo "Direct-install app unexpectedly contains App Groups" >&2
             exit 1
@@ -282,7 +289,7 @@ jobs:
             echo '- Development signature: PASS'
             echo '- Device install readback: PASS'
             echo '- Device launch process readback: PASS'
-            echo '- Temporary limitation: Widget App Group sharing disabled'
+            echo '- Direct-install widget Keychain sharing: PASS'
           } >> "$GITHUB_STEP_SUMMARY"
 
       - name: Restore keychain and remove temporary files
@@ -370,5 +377,4 @@ jobs:
           remove_guarded_file "${INSTALL_JSON:-}" koyomi-direct-install
           remove_guarded_file "${APPS_JSON:-}" koyomi-direct-apps
           remove_guarded_file "${PROCESSES_JSON:-}" koyomi-direct-processes
-          git -C "$GITHUB_WORKSPACE/koyomi-source" restore -- Shared/PinnedEventsStore.swift 2>/dev/null || true
           exit "$cleanup_status"
