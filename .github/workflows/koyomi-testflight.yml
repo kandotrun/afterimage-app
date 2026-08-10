@@ -18,7 +18,7 @@ concurrency:
 
 jobs:
   upload:
-    uses: kandotrun/koyomi-ios/.github/workflows/testflight.yml@d5be33f5579c00e43d9591cd0be1ad9fb2a25b12
+    uses: kandotrun/koyomi-ios/.github/workflows/testflight.yml@87cb10882fcf5d9fd98e929183cd24371ad2b803
     with:
       runner_labels: '["self-hosted","macOS","ARM64","afterimage-ci"]'
       source_keychain_path: /Users/kan/actions-runner-afterimage/.ci/afterimage-ci.keychain-db
