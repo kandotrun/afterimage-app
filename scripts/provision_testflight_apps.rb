@@ -71,7 +71,10 @@ token = Spaceship::ConnectAPI::Token.create(
 )
 Spaceship::ConnectAPI.token = token
 
+bundle_ids = TARGETS.to_h do |target|
+  [target, ensure_bundle_id(target)]
+end
+
 TARGETS.each do |target|
-  bundle_id = ensure_bundle_id(target)
-  ensure_app(target, bundle_id)
+  ensure_app(target, bundle_ids.fetch(target))
 end
