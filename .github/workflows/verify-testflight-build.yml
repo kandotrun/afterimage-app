@@ -1,0 +1,82 @@
+name: Verify TestFlight Build
+
+on:
+  workflow_call:
+    inputs:
+      build_number:
+        required: true
+        type: string
+      bundle_identifier:
+        required: true
+        type: string
+      version:
+        required: true
+        type: string
+    secrets:
+      ASC_ISSUER_ID:
+        required: true
+      ASC_KEY_ID:
+        required: true
+      ASC_PRIVATE_KEY:
+        required: true
+
+permissions:
+  contents: read
+
+jobs:
+  verify:
+    runs-on: [self-hosted, macOS, ARM64, afterimage-ci]
+    timeout-minutes: 35
+    steps:
+      - name: Check out trusted verification script
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          persist-credentials: false
+
+      - name: Prepare App Store Connect key
+        shell: bash
+        env:
+          ASC_ISSUER_ID_VALUE: ${{ secrets.ASC_ISSUER_ID }}
+          ASC_KEY_ID_VALUE: ${{ secrets.ASC_KEY_ID }}
+          ASC_PRIVATE_KEY_VALUE: ${{ secrets.ASC_PRIVATE_KEY }}
+        run: |
+          set -euo pipefail
+          [[ -n "$ASC_ISSUER_ID_VALUE" ]]
+          [[ -n "$ASC_KEY_ID_VALUE" ]]
+          [[ -n "$ASC_PRIVATE_KEY_VALUE" ]]
+          API_KEY_DIR=$(mktemp -d "$RUNNER_TEMP/testflight-verify.XXXXXX")
+          API_KEY_PATH="$API_KEY_DIR/AuthKey_${ASC_KEY_ID_VALUE}.p8"
+          {
+            echo "API_KEY_DIR=$API_KEY_DIR"
+            echo "ASC_KEY_PATH=$API_KEY_PATH"
+            echo "ASC_ISSUER_ID=$ASC_ISSUER_ID_VALUE"
+            echo "ASC_KEY_ID=$ASC_KEY_ID_VALUE"
+          } >> "$GITHUB_ENV"
+          printf '%s' "$ASC_PRIVATE_KEY_VALUE" > "$API_KEY_PATH"
+          chmod 600 "$API_KEY_PATH"
+
+      - name: Wait for valid TestFlight build
+        shell: bash
+        env:
+          TESTFLIGHT_BUILD_NUMBER: ${{ inputs.build_number }}
+          TESTFLIGHT_BUNDLE_IDENTIFIER: ${{ inputs.bundle_identifier }}
+          TESTFLIGHT_VERSION: ${{ inputs.version }}
+        run: |
+          set -euo pipefail
+          FASTLANE_PREFIX=$(brew --prefix fastlane)
+          RUBY_BIN="$(brew --prefix ruby)/bin/ruby"
+          GEM_PATH="$FASTLANE_PREFIX/libexec" "$RUBY_BIN" scripts/verify_testflight_build.rb
+
+      - name: Remove temporary App Store Connect key
+        if: always()
+        shell: bash
+        run: |
+          set +e
+          case "${API_KEY_DIR:-}" in
+            "$RUNNER_TEMP"/testflight-verify.*)
+              find "$API_KEY_DIR" -type f -delete
+              rmdir "$API_KEY_DIR"
+              ;;
+            "") ;;
+            *) exit 1 ;;
+          esac

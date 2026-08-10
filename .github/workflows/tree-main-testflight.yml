@@ -1,0 +1,118 @@
+name: Tree Main TestFlight
+
+on:
+  schedule:
+    - cron: "*/5 * * * *"
+  workflow_dispatch:
+    inputs:
+      force:
+        description: Deploy the current Tree main commit again
+        required: false
+        default: false
+        type: boolean
+      build_number:
+        description: Optional numeric CFBundleVersion override
+        required: false
+        default: ""
+        type: string
+
+permissions:
+  contents: read
+  deployments: write
+
+concurrency:
+  group: tree-main-testflight
+  cancel-in-progress: false
+
+jobs:
+  prepare:
+    runs-on: [self-hosted, macOS, ARM64, afterimage-ci]
+    outputs:
+      build_number: ${{ steps.state.outputs.build_number }}
+      deploy: ${{ steps.state.outputs.deploy }}
+      source_sha: ${{ steps.state.outputs.source_sha }}
+    env:
+      DEPLOYMENT_ENVIRONMENT: tree-main-testflight
+      FORCE_DEPLOY: ${{ inputs.force }}
+      GH_TOKEN: ${{ github.token }}
+      REQUESTED_BUILD_NUMBER: ${{ inputs.build_number }}
+      TARGET_REPOSITORY: kandotrun/tree
+    steps:
+      - name: Resolve Tree main deployment state
+        id: state
+        shell: bash
+        run: |
+          set -euo pipefail
+          SOURCE_SHA=$(gh api "repos/$TARGET_REPOSITORY/commits/main" --jq .sha)
+          [[ "$SOURCE_SHA" =~ ^[0-9a-f]{40}$ ]]
+          DEPLOYED_SHA=$(gh api --method GET "repos/$GITHUB_REPOSITORY/deployments" \
+            -f environment="$DEPLOYMENT_ENVIRONMENT" \
+            -F per_page=1 \
+            --jq '.[0].payload.source_sha // ""')
+          BUILD_NUMBER="$REQUESTED_BUILD_NUMBER"
+          if [[ -z "$BUILD_NUMBER" ]]; then
+            BUILD_NUMBER=$(date -u +%Y%m%d%H%M%S)
+          fi
+          [[ "$BUILD_NUMBER" =~ ^[1-9][0-9]{0,17}$ ]]
+          DEPLOY=false
+          if [[ "$FORCE_DEPLOY" == "true" || "$SOURCE_SHA" != "$DEPLOYED_SHA" ]]; then
+            DEPLOY=true
+          fi
+          {
+            echo "build_number=$BUILD_NUMBER"
+            echo "deploy=$DEPLOY"
+            echo "source_sha=$SOURCE_SHA"
+          } >> "$GITHUB_OUTPUT"
+
+  upload:
+    needs: prepare
+    if: needs.prepare.outputs.deploy == 'true'
+    uses: kandotrun/tree/.github/workflows/testflight.yml@570be854106e4093d1beb9c675881ac242f4e1e9
+    with:
+      runner_labels: '["self-hosted","macOS","ARM64","afterimage-ci"]'
+      source_keychain_path: /Users/kan/actions-runner-afterimage/.ci/afterimage-ci.keychain-db
+      source_ref: ${{ needs.prepare.outputs.source_sha }}
+      build_number: ${{ needs.prepare.outputs.build_number }}
+    secrets:
+      CI_KEYCHAIN_PASSWORD: ${{ secrets.AFTERIMAGE_CI_KEYCHAIN_PASSWORD }}
+      ASC_ISSUER_ID: ${{ secrets.ASC_ISSUER_ID }}
+      ASC_KEY_ID: ${{ secrets.ASC_KEY_ID }}
+      ASC_PRIVATE_KEY: ${{ secrets.ASC_PRIVATE_KEY }}
+
+  verify:
+    needs: [prepare, upload]
+    uses: ./.github/workflows/verify-testflight-build.yml
+    with:
+      build_number: ${{ needs.prepare.outputs.build_number }}
+      bundle_identifier: run.kan.treewatering
+      version: 1.0.0
+    secrets:
+      ASC_ISSUER_ID: ${{ secrets.ASC_ISSUER_ID }}
+      ASC_KEY_ID: ${{ secrets.ASC_KEY_ID }}
+      ASC_PRIVATE_KEY: ${{ secrets.ASC_PRIVATE_KEY }}
+
+  record:
+    needs: [prepare, upload, verify]
+    if: needs.prepare.outputs.deploy == 'true' && needs.verify.result == 'success'
+    runs-on: [self-hosted, macOS, ARM64, afterimage-ci]
+    env:
+      BUILD_NUMBER: ${{ needs.prepare.outputs.build_number }}
+      DEPLOYMENT_ENVIRONMENT: tree-main-testflight
+      GH_TOKEN: ${{ github.token }}
+      SOURCE_SHA: ${{ needs.prepare.outputs.source_sha }}
+    steps:
+      - name: Record successful Tree deployment
+        shell: bash
+        run: |
+          set -euo pipefail
+          DEPLOYMENT_ID=$(jq -n \
+            --arg ref "$GITHUB_SHA" \
+            --arg environment "$DEPLOYMENT_ENVIRONMENT" \
+            --arg source_sha "$SOURCE_SHA" \
+            --arg build_number "$BUILD_NUMBER" \
+            '{ref: $ref, environment: $environment, auto_merge: false, required_contexts: [], payload: {source_sha: $source_sha, build_number: $build_number}}' \
+            | gh api --method POST "repos/$GITHUB_REPOSITORY/deployments" --input - --jq .id)
+          jq -n \
+            --arg log_url "$GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID" \
+            '{state: "success", log_url: $log_url, description: "Tree TestFlight build is valid"}' \
+            | gh api --method POST "repos/$GITHUB_REPOSITORY/deployments/$DEPLOYMENT_ID/statuses" --input - --silent
