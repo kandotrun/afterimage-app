@@ -13,31 +13,18 @@ from pathlib import Path
 TEAM_ID = "UGNVGWZMAU"
 APP_BUNDLE_ID = "run.kan.koyomi"
 WIDGET_BUNDLE_ID = "run.kan.koyomi.widget"
-SOURCE_SHA = "d5be33f5579c00e43d9591cd0be1ad9fb2a25b12"
-SOURCE_DEFAULTS_LINE = "let defaults = UserDefaults(suiteName: suiteName) ?? .standard"
-DIRECT_DEFAULTS_LINE = "let defaults = UserDefaults.standard"
-
-
-def patch_source(repo: Path) -> None:
-    source = repo / "Shared" / "PinnedEventsStore.swift"
-    text = source.read_text(encoding="utf-8")
-    if text.count(SOURCE_DEFAULTS_LINE) != 1:
-        raise ValueError("expected source line exactly once")
-    source.write_text(
-        text.replace(SOURCE_DEFAULTS_LINE, DIRECT_DEFAULTS_LINE),
-        encoding="utf-8",
-    )
+SHARED_KEYCHAIN_ACCESS_GROUP = f"{TEAM_ID}.run.kan.koyomi.shared"
+SOURCE_SHA = "8fe232acadf2864a680decaa7bea003f2e3f221c"
 
 
 def concrete_entitlements(profile_entitlements: dict, bundle_id: str) -> dict:
+    wildcard_group = f"{TEAM_ID}.*"
+    if wildcard_group not in profile_entitlements.get("keychain-access-groups", []):
+        raise ValueError("profile does not permit the wildcard Keychain access group")
     entitlements = copy.deepcopy(profile_entitlements)
     entitlements.pop("com.apple.security.application-groups", None)
     entitlements["application-identifier"] = f"{TEAM_ID}.{bundle_id}"
-    groups = []
-    for value in entitlements.get("keychain-access-groups", []):
-        groups.append(f"{TEAM_ID}.{bundle_id}" if value == f"{TEAM_ID}.*" else value)
-    if groups:
-        entitlements["keychain-access-groups"] = groups
+    entitlements["keychain-access-groups"] = [SHARED_KEYCHAIN_ACCESS_GROUP]
     return entitlements
 
 
@@ -171,6 +158,7 @@ def select_profile(
             and udid in profile["devices"]
             and normalized_datetime(profile["expires"]) > normalized_datetime(now)
             and not profile["entitlements"].get("com.apple.security.application-groups")
+            and f"{TEAM_ID}.*" in profile["entitlements"].get("keychain-access-groups", [])
             and matching
         ):
             valid.append((normalized_datetime(profile["expires"]), profile, matching[0]))
@@ -266,8 +254,11 @@ def verify_repository_contract(root: Path) -> list[str]:
         "cp -p \"$SOURCE_KEYCHAIN_PATH\" \"$CI_KEYCHAIN_PATH\"",
         "security unlock-keychain -p \"$CI_KEYCHAIN_PASSWORD_VALUE\" \"$CI_KEYCHAIN_PATH\"",
         "koyomi_direct_install.py inspect-device",
-        "koyomi_direct_install.py patch-source",
         "koyomi_direct_install.py prepare-signing",
+        SHARED_KEYCHAIN_ACCESS_GROUP,
+        "Print :keychain-access-groups:0",
+        "Direct-install widget Keychain sharing: PASS",
+        "git -C koyomi-source diff --exit-code",
         "CODE_SIGNING_ALLOWED=NO",
         "codesign --force",
         "$APP_PATH/__preview.dylib",
@@ -304,6 +295,8 @@ def verify_repository_contract(root: Path) -> list[str]:
         "cp -p \"${{ steps.provisioning.outputs.profile_path }}\"",
         "--sign \"${{ steps.provisioning.outputs.identity }}\"",
         "echo \"- Device: \\`${{ steps.device.outputs.device_name }}\\`\"",
+        "patch-source",
+        "Temporary limitation: Widget App Group sharing disabled",
     ]
     for token in forbidden:
         if token in text:
@@ -314,9 +307,6 @@ def verify_repository_contract(root: Path) -> list[str]:
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser()
     subparsers = parser.add_subparsers(dest="command", required=True)
-
-    patch_parser = subparsers.add_parser("patch-source")
-    patch_parser.add_argument("--repo", required=True, type=Path)
 
     device_parser = subparsers.add_parser("inspect-device")
     device_parser.add_argument("--details-json", required=True, type=Path)
@@ -340,9 +330,7 @@ def build_parser() -> argparse.ArgumentParser:
 
 def main() -> None:
     args = build_parser().parse_args()
-    if args.command == "patch-source":
-        patch_source(args.repo)
-    elif args.command == "inspect-device":
+    if args.command == "inspect-device":
         inspect_device(args.details_json, args.github_output)
     elif args.command == "prepare-signing":
         prepare_signing(args.profiles_dir, args.keychain, args.udid, args.output_dir, args.github_output)
