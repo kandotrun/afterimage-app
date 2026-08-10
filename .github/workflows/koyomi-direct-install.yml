@@ -1,0 +1,357 @@
+name: Koyomi Direct Install
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: koyomi-direct-install
+  cancel-in-progress: false
+
+jobs:
+  install:
+    runs-on: [self-hosted, macOS, ARM64, afterimage-ci]
+    timeout-minutes: 30
+    env:
+      DEVICE_NAME: Kans iPhone
+      SOURCE_KEYCHAIN_PATH: /Users/kan/actions-runner-afterimage/.ci/afterimage-ci.keychain-db
+      KOYOMI_SOURCE_SHA: d5be33f5579c00e43d9591cd0be1ad9fb2a25b12
+
+    steps:
+      - name: Check out private installer
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Check out pinned Koyomi source
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          repository: kandotrun/koyomi-ios
+          ref: d5be33f5579c00e43d9591cd0be1ad9fb2a25b12
+          path: koyomi-source
+          persist-credentials: false
+
+      - name: Verify direct-install contract
+        run: python3 scripts/koyomi_direct_install.py verify-repository --root "$GITHUB_WORKSPACE"
+
+      - name: Select Xcode 26
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [[ -d /Applications/Xcode_26.6.app ]]; then
+            XCODE_DEVELOPER_DIR=/Applications/Xcode_26.6.app/Contents/Developer
+          elif [[ -d /Applications/Xcode.app ]]; then
+            XCODE_DEVELOPER_DIR=/Applications/Xcode.app/Contents/Developer
+          else
+            echo "Xcode 26 is not installed" >&2
+            exit 1
+          fi
+          echo "DEVELOPER_DIR=$XCODE_DEVELOPER_DIR" >> "$GITHUB_ENV"
+          export DEVELOPER_DIR="$XCODE_DEVELOPER_DIR"
+          XCODE_VERSION_OUTPUT=$(xcodebuild -version)
+          printf '%s\n' "$XCODE_VERSION_OUTPUT"
+          XCODE_VERSION_LINE="${XCODE_VERSION_OUTPUT%%$'\n'*}"
+          [[ "$XCODE_VERSION_LINE" =~ ^Xcode[[:space:]]26([.]|$) ]]
+
+      - name: Inspect target iPhone
+        id: device
+        shell: bash
+        run: |
+          set -euo pipefail
+          DEVICE_DETAILS=$(mktemp "$RUNNER_TEMP/koyomi-device.XXXXXX.json")
+          echo "DEVICE_DETAILS=$DEVICE_DETAILS" >> "$GITHUB_ENV"
+          xcrun devicectl device info details \
+            --device "$DEVICE_NAME" \
+            --json-output "$DEVICE_DETAILS"
+          python3 scripts/koyomi_direct_install.py inspect-device \
+            --details-json "$DEVICE_DETAILS" \
+            --github-output "$GITHUB_OUTPUT"
+
+      - name: Patch only the temporary Koyomi checkout
+        shell: bash
+        run: |
+          set -euo pipefail
+          [[ "$(git -C koyomi-source rev-parse HEAD)" == "$KOYOMI_SOURCE_SHA" ]]
+          python3 scripts/koyomi_direct_install.py patch-source --repo koyomi-source
+          git -C koyomi-source diff --check
+          CHANGED_FILES=$(git -C koyomi-source diff --name-only)
+          [[ "$CHANGED_FILES" == "Shared/PinnedEventsStore.swift" ]]
+
+      - name: Configure temporary signing keychain
+        id: signing_keychain
+        shell: bash
+        env:
+          CI_KEYCHAIN_PASSWORD_VALUE: ${{ secrets.AFTERIMAGE_CI_KEYCHAIN_PASSWORD }}
+        run: |
+          set -euo pipefail
+          [[ -n "$CI_KEYCHAIN_PASSWORD_VALUE" ]] || { echo "Signing secret is empty" >&2; exit 1; }
+          [[ -f "$SOURCE_KEYCHAIN_PATH" ]] || { echo "Signing keychain is missing" >&2; exit 1; }
+
+          ORIGINAL_DEFAULT_RAW=$(security default-keychain -d user)
+          ORIGINAL_DEFAULT_KEYCHAIN="${ORIGINAL_DEFAULT_RAW#*\"}"
+          ORIGINAL_DEFAULT_KEYCHAIN="${ORIGINAL_DEFAULT_KEYCHAIN%\"*}"
+          ORIGINAL_KEYCHAIN_LIST_PATH=$(mktemp "$RUNNER_TEMP/koyomi-direct-original-keychains.XXXXXX")
+          security list-keychains -d user > "$ORIGINAL_KEYCHAIN_LIST_PATH"
+          {
+            echo "ORIGINAL_DEFAULT_KEYCHAIN=$ORIGINAL_DEFAULT_KEYCHAIN"
+            echo "ORIGINAL_KEYCHAIN_LIST_PATH=$ORIGINAL_KEYCHAIN_LIST_PATH"
+          } >> "$GITHUB_ENV"
+
+          CI_KEYCHAIN_DIR=$(mktemp -d "$RUNNER_TEMP/koyomi-direct-keychain.XXXXXX")
+          CI_KEYCHAIN_PATH="$CI_KEYCHAIN_DIR/koyomi-ci.keychain-db"
+          {
+            echo "CI_KEYCHAIN_DIR=$CI_KEYCHAIN_DIR"
+            echo "CI_KEYCHAIN_PATH=$CI_KEYCHAIN_PATH"
+          } >> "$GITHUB_ENV"
+          cp -p "$SOURCE_KEYCHAIN_PATH" "$CI_KEYCHAIN_PATH"
+          security unlock-keychain -p "$CI_KEYCHAIN_PASSWORD_VALUE" "$CI_KEYCHAIN_PATH"
+          security set-keychain-settings -lut 3600 "$CI_KEYCHAIN_PATH"
+          security default-keychain -d user -s "$CI_KEYCHAIN_PATH"
+          security list-keychains -d user -s "$CI_KEYCHAIN_PATH"
+          security find-identity -v -p codesigning "$CI_KEYCHAIN_PATH"
+
+      - name: Resolve wildcard Development profile
+        id: provisioning
+        shell: bash
+        env:
+          TARGET_UDID: ${{ steps.device.outputs.udid }}
+        run: |
+          set -euo pipefail
+          SIGNING_ROOT=$(mktemp -d "$RUNNER_TEMP/koyomi-direct-signing.XXXXXX")
+          echo "SIGNING_ROOT=$SIGNING_ROOT" >> "$GITHUB_ENV"
+          python3 scripts/koyomi_direct_install.py prepare-signing \
+            --profiles-dir "$HOME/Library/Developer/Xcode/UserData/Provisioning Profiles" \
+            --profiles-dir "$HOME/Library/MobileDevice/Provisioning Profiles" \
+            --keychain "$CI_KEYCHAIN_PATH" \
+            --udid "$TARGET_UDID" \
+            --output-dir "$SIGNING_ROOT/generated" \
+            --github-output "$GITHUB_OUTPUT"
+
+      - name: Build unsigned arm64 app
+        shell: bash
+        working-directory: koyomi-source
+        run: |
+          set -euo pipefail
+          DERIVED_DATA=$(mktemp -d "$RUNNER_TEMP/koyomi-direct-derived.XXXXXX")
+          BUILD_LOG=$(mktemp "$RUNNER_TEMP/koyomi-direct-build.XXXXXX.log")
+          APP_PATH="$DERIVED_DATA/Build/Products/Debug-iphoneos/Koyomi.app"
+          {
+            echo "DERIVED_DATA=$DERIVED_DATA"
+            echo "BUILD_LOG=$BUILD_LOG"
+            echo "APP_PATH=$APP_PATH"
+          } >> "$GITHUB_ENV"
+          set -o pipefail
+          xcodebuild -quiet \
+            -project Koyomi.xcodeproj \
+            -scheme Koyomi \
+            -configuration Debug \
+            -sdk iphoneos \
+            -destination 'generic/platform=iOS' \
+            -derivedDataPath "$DERIVED_DATA" \
+            DEVELOPMENT_TEAM=UGNVGWZMAU \
+            CODE_SIGNING_ALLOWED=NO \
+            CODE_SIGNING_REQUIRED=NO \
+            build \
+            | tee "$BUILD_LOG"
+          [[ -d "$APP_PATH" ]]
+
+      - name: Embed profile and sign app
+        shell: bash
+        env:
+          PROFILE_PATH: ${{ steps.provisioning.outputs.profile_path }}
+          SIGNING_IDENTITY: ${{ steps.provisioning.outputs.identity }}
+          APP_SIGNING_ENTITLEMENTS: ${{ steps.provisioning.outputs.app_entitlements }}
+          WIDGET_SIGNING_ENTITLEMENTS: ${{ steps.provisioning.outputs.widget_entitlements }}
+        run: |
+          set -euo pipefail
+          WIDGET_PATH="$APP_PATH/PlugIns/KoyomiWidget.appex"
+          [[ -d "$WIDGET_PATH" ]]
+          cp -p "$PROFILE_PATH" "$APP_PATH/embedded.mobileprovision"
+          cp -p "$PROFILE_PATH" "$WIDGET_PATH/embedded.mobileprovision"
+          codesign --force \
+            --sign "$SIGNING_IDENTITY" \
+            --keychain "$CI_KEYCHAIN_PATH" \
+            --entitlements "$WIDGET_SIGNING_ENTITLEMENTS" \
+            --generate-entitlement-der \
+            --timestamp=none \
+            "$WIDGET_PATH"
+          codesign --force \
+            --sign "$SIGNING_IDENTITY" \
+            --keychain "$CI_KEYCHAIN_PATH" \
+            --entitlements "$APP_SIGNING_ENTITLEMENTS" \
+            --generate-entitlement-der \
+            --timestamp=none \
+            "$APP_PATH"
+
+          codesign --verify --deep --strict --verbose=2 "$APP_PATH"
+          APP_ENTITLEMENTS=$(mktemp "$RUNNER_TEMP/koyomi-direct-app-entitlements.XXXXXX.plist")
+          WIDGET_ENTITLEMENTS=$(mktemp "$RUNNER_TEMP/koyomi-direct-widget-entitlements.XXXXXX.plist")
+          {
+            echo "APP_ENTITLEMENTS=$APP_ENTITLEMENTS"
+            echo "WIDGET_ENTITLEMENTS=$WIDGET_ENTITLEMENTS"
+          } >> "$GITHUB_ENV"
+          codesign -d --entitlements "$APP_ENTITLEMENTS" "$APP_PATH" 2>/dev/null
+          codesign -d --entitlements "$WIDGET_ENTITLEMENTS" "$WIDGET_PATH" 2>/dev/null
+          [[ "$(/usr/libexec/PlistBuddy -c 'Print :application-identifier' "$APP_ENTITLEMENTS")" == "UGNVGWZMAU.run.kan.koyomi" ]]
+          [[ "$(/usr/libexec/PlistBuddy -c 'Print :application-identifier' "$WIDGET_ENTITLEMENTS")" == "UGNVGWZMAU.run.kan.koyomi.widget" ]]
+          if /usr/libexec/PlistBuddy -c 'Print :com.apple.security.application-groups' "$APP_ENTITLEMENTS" >/dev/null 2>&1; then
+            echo "Direct-install app unexpectedly contains App Groups" >&2
+            exit 1
+          fi
+          if /usr/libexec/PlistBuddy -c 'Print :com.apple.security.application-groups' "$WIDGET_ENTITLEMENTS" >/dev/null 2>&1; then
+            echo "Direct-install widget unexpectedly contains App Groups" >&2
+            exit 1
+          fi
+
+      - name: Install Koyomi on iPhone
+        shell: bash
+        env:
+          TARGET_DEVICE_IDENTIFIER: ${{ steps.device.outputs.core_device_identifier }}
+        run: |
+          set -euo pipefail
+          INSTALL_JSON=$(mktemp "$RUNNER_TEMP/koyomi-direct-install.XXXXXX.json")
+          echo "INSTALL_JSON=$INSTALL_JSON" >> "$GITHUB_ENV"
+          xcrun devicectl device install app \
+            --device "$TARGET_DEVICE_IDENTIFIER" \
+            --json-output "$INSTALL_JSON" \
+            "$APP_PATH"
+
+      - name: Launch and verify Koyomi on iPhone
+        shell: bash
+        env:
+          TARGET_DEVICE_IDENTIFIER: ${{ steps.device.outputs.core_device_identifier }}
+        run: |
+          set -euo pipefail
+          APPS_JSON=$(mktemp "$RUNNER_TEMP/koyomi-direct-apps.XXXXXX.json")
+          PROCESSES_JSON=$(mktemp "$RUNNER_TEMP/koyomi-direct-processes.XXXXXX.json")
+          {
+            echo "APPS_JSON=$APPS_JSON"
+            echo "PROCESSES_JSON=$PROCESSES_JSON"
+          } >> "$GITHUB_ENV"
+          xcrun devicectl device info apps \
+            --device "$TARGET_DEVICE_IDENTIFIER" \
+            --bundle-id run.kan.koyomi \
+            --require-container-access \
+            --json-output "$APPS_JSON"
+          xcrun devicectl device process launch \
+            --device "$TARGET_DEVICE_IDENTIFIER" \
+            --terminate-existing \
+            --activate \
+            run.kan.koyomi
+          xcrun devicectl device info processes \
+            --device "$TARGET_DEVICE_IDENTIFIER" \
+            --search Koyomi \
+            --json-output "$PROCESSES_JSON"
+          python3 scripts/koyomi_direct_install.py verify-install \
+            --apps-json "$APPS_JSON" \
+            --processes-json "$PROCESSES_JSON"
+
+      - name: Write installation summary
+        if: success()
+        shell: bash
+        env:
+          TARGET_DEVICE_NAME: ${{ steps.device.outputs.device_name }}
+          TARGET_OS_VERSION: ${{ steps.device.outputs.os_version }}
+        run: |
+          {
+            echo '### Koyomi direct install'
+            echo
+            echo "- Device: \`$TARGET_DEVICE_NAME\`"
+            echo "- iOS: \`$TARGET_OS_VERSION\`"
+            echo "- Source: \`$KOYOMI_SOURCE_SHA\`"
+            echo "- Bundle: \`run.kan.koyomi\`"
+            echo '- Development signature: PASS'
+            echo '- Device install readback: PASS'
+            echo '- Device launch process readback: PASS'
+            echo '- Temporary limitation: Widget App Group sharing disabled'
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Restore keychain and remove temporary files
+        if: always()
+        shell: bash
+        run: |
+          set +e
+          cleanup_status=0
+          ORIGINAL_KEYCHAINS=()
+          if [[ -n "${ORIGINAL_KEYCHAIN_LIST_PATH:-}" && -f "$ORIGINAL_KEYCHAIN_LIST_PATH" ]]; then
+            while IFS= read -r line; do
+              keychain="${line#*\"}"
+              keychain="${keychain%\"*}"
+              [[ -n "$keychain" ]] && ORIGINAL_KEYCHAINS+=("$keychain")
+            done < "$ORIGINAL_KEYCHAIN_LIST_PATH"
+          fi
+
+          restore_keychain_state() {
+            local restore_status=0
+            if [[ -n "${ORIGINAL_DEFAULT_KEYCHAIN:-}" ]]; then
+              security default-keychain -d user -s "$ORIGINAL_DEFAULT_KEYCHAIN" || restore_status=1
+            fi
+            if (( ${#ORIGINAL_KEYCHAINS[@]} > 0 )); then
+              security list-keychains -d user -s "${ORIGINAL_KEYCHAINS[@]}" || restore_status=1
+            fi
+            return "$restore_status"
+          }
+
+          remove_guarded_directory() {
+            local directory="$1"
+            local prefix="$2"
+            case "$directory" in
+              "$RUNNER_TEMP"/"$prefix".*)
+                if [[ -d "$directory" ]]; then
+                  find "$directory" -type f -delete || cleanup_status=1
+                  find "$directory" -type l -delete || cleanup_status=1
+                  find "$directory" -depth -type d -exec rmdir {} \; 2>/dev/null || cleanup_status=1
+                fi
+                ;;
+              "") ;;
+              *)
+                echo "Refusing unexpected temporary directory: $directory" >&2
+                cleanup_status=1
+                ;;
+            esac
+          }
+
+          remove_guarded_file() {
+            local file="$1"
+            local prefix="$2"
+            case "$file" in
+              "$RUNNER_TEMP"/"$prefix".*) rm -f "$file" || cleanup_status=1 ;;
+              "") ;;
+              *)
+                echo "Refusing unexpected temporary file: $file" >&2
+                cleanup_status=1
+                ;;
+            esac
+          }
+
+          restore_keychain_state || cleanup_status=1
+          case "${CI_KEYCHAIN_DIR:-}" in
+            "$RUNNER_TEMP"/koyomi-direct-keychain.*)
+              if [[ -n "${CI_KEYCHAIN_PATH:-}" && -f "$CI_KEYCHAIN_PATH" ]]; then
+                security lock-keychain "$CI_KEYCHAIN_PATH" 2>/dev/null || true
+                security delete-keychain "$CI_KEYCHAIN_PATH" 2>/dev/null || cleanup_status=1
+              fi
+              remove_guarded_directory "$CI_KEYCHAIN_DIR" koyomi-direct-keychain
+              ;;
+            "") ;;
+            *)
+              echo "Refusing unexpected signing keychain path" >&2
+              cleanup_status=1
+              ;;
+          esac
+          restore_keychain_state || cleanup_status=1
+
+          remove_guarded_directory "${SIGNING_ROOT:-}" koyomi-direct-signing
+          remove_guarded_directory "${DERIVED_DATA:-}" koyomi-direct-derived
+          remove_guarded_file "${ORIGINAL_KEYCHAIN_LIST_PATH:-}" koyomi-direct-original-keychains
+          remove_guarded_file "${DEVICE_DETAILS:-}" koyomi-device
+          remove_guarded_file "${BUILD_LOG:-}" koyomi-direct-build
+          remove_guarded_file "${APP_ENTITLEMENTS:-}" koyomi-direct-app-entitlements
+          remove_guarded_file "${WIDGET_ENTITLEMENTS:-}" koyomi-direct-widget-entitlements
+          remove_guarded_file "${INSTALL_JSON:-}" koyomi-direct-install
+          remove_guarded_file "${APPS_JSON:-}" koyomi-direct-apps
+          remove_guarded_file "${PROCESSES_JSON:-}" koyomi-direct-processes
+          git -C "$GITHUB_WORKSPACE/koyomi-source" restore -- Shared/PinnedEventsStore.swift 2>/dev/null || true
+          exit "$cleanup_status"
