@@ -159,6 +159,17 @@ class KoyomiDirectInstallTests(unittest.TestCase):
             "scripts/tests/test_koyomi_direct_install.py",
             package["scripts"]["test:app-store"],
         )
+        workflow = (ROOT / ".github" / "workflows" / "koyomi-direct-install.yml").read_text(
+            encoding="utf-8"
+        )
+        for nested_code in (
+            "$APP_PATH/__preview.dylib",
+            "$APP_PATH/Koyomi.debug.dylib",
+            "$WIDGET_PATH/__preview.dylib",
+            "$WIDGET_PATH/KoyomiWidget.debug.dylib",
+        ):
+            self.assertIn(nested_code, workflow)
+        self.assertIn('codesign --verify --strict "$NESTED_CODE"', workflow)
 
 
 if __name__ == "__main__":
