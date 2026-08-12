@@ -41,6 +41,17 @@ class TargetMainTestFlightWorkflowTests(unittest.TestCase):
                     f"{filename} must pin its reusable workflow to a full commit SHA",
                 )
 
+    def test_koyomi_verification_uses_version_from_the_archived_source_commit(self):
+        workflow = (
+            ROOT / ".github" / "workflows" / "koyomi-main-testflight.yml"
+        ).read_text(encoding="utf-8")
+
+        self.assertIn("version: ${{ steps.state.outputs.version }}", workflow)
+        self.assertIn("contents/project.yml?ref=$SOURCE_SHA", workflow)
+        self.assertIn('echo "version=$MARKETING_VERSION"', workflow)
+        self.assertIn("version: ${{ needs.prepare.outputs.version }}", workflow)
+        self.assertNotRegex(workflow, r"(?m)^\s+version:\s+\d+\.\d+\.\d+\s*$")
+
     def test_provisioning_registers_all_bundle_ids_before_apps(self):
         script = (ROOT / "scripts" / "provision_testflight_apps.rb").read_text(
             encoding="utf-8"
