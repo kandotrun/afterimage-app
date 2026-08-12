@@ -43,6 +43,21 @@ def ensure_bundle_id(target)
   bundle_id
 end
 
+def sync_app_record_name(app, target)
+  if app.name == target.app_name
+    puts "App record name #{target.bundle_identifier}: already #{target.app_name}"
+    return app
+  end
+
+  app.update(attributes: { name: target.app_name })
+  refreshed_app = Spaceship::ConnectAPI::App.find(target.bundle_identifier)
+  unless refreshed_app&.name == target.app_name
+    raise "App record name #{target.bundle_identifier}: update verification failed"
+  end
+  puts "App record name #{target.bundle_identifier}: updated to #{target.app_name}"
+  refreshed_app
+end
+
 def sync_app_name(app, target)
   app_info = app.fetch_edit_app_info || app.fetch_latest_app_info
   raise "App info #{target.bundle_identifier}: missing" unless app_info
@@ -74,6 +89,7 @@ def ensure_app(target, bundle_id)
   app = Spaceship::ConnectAPI::App.find(target.bundle_identifier)
   if app
     puts "App #{target.bundle_identifier}: present"
+    app = sync_app_record_name(app, target)
     sync_app_name(app, target)
     return app
   end

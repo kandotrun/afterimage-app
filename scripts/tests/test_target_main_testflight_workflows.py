@@ -75,12 +75,19 @@ class TargetMainTestFlightWorkflowTests(unittest.TestCase):
             encoding="utf-8"
         )
 
+        self.assertIn("def sync_app_record_name(app, target)", script)
+        self.assertIn("app.update(attributes: { name: target.app_name })", script)
+        self.assertIn(
+            "Spaceship::ConnectAPI::App.find(target.bundle_identifier)", script
+        )
+        self.assertIn("App record name #{target.bundle_identifier}: update verification failed", script)
         self.assertIn("def sync_app_name(app, target)", script)
         self.assertIn("fetch_edit_app_info || app.fetch_latest_app_info", script)
         self.assertIn("fetch_latest_app_info", script)
         self.assertIn("get_app_info_localizations", script)
         self.assertIn("localization.update(attributes: { name: target.app_name })", script)
-        self.assertIn("update verification failed", script)
+        self.assertIn("App name #{target.bundle_identifier}: update verification failed", script)
+        self.assertIn("sync_app_record_name(app, target)", script)
         self.assertIn("sync_app_name(app, target)", script)
 
     def test_ios_ci_covers_testflight_provisioning_contract(self):
