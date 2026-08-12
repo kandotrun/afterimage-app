@@ -61,6 +61,39 @@ class TargetMainTestFlightWorkflowTests(unittest.TestCase):
         app_pass = script.index("ensure_app(target, bundle_ids.fetch(target))")
         self.assertLess(bundle_pass, app_pass)
 
+    def test_provisioning_uses_clean_app_store_names(self):
+        script = (ROOT / "scripts" / "provision_testflight_apps.rb").read_text(
+            encoding="utf-8"
+        )
+
+        self.assertIn('app_name: "こよみ"', script)
+        self.assertIn('app_name: "木のみず"', script)
+        self.assertNotIn(" by kandotrun", script)
+
+    def test_provisioning_synchronizes_existing_app_names(self):
+        script = (ROOT / "scripts" / "provision_testflight_apps.rb").read_text(
+            encoding="utf-8"
+        )
+
+        self.assertIn("def sync_app_name(app, target)", script)
+        self.assertIn("fetch_edit_app_info || app.fetch_latest_app_info", script)
+        self.assertIn("fetch_latest_app_info", script)
+        self.assertIn("get_app_info_localizations", script)
+        self.assertIn("localization.update(attributes: { name: target.app_name })", script)
+        self.assertIn("update verification failed", script)
+        self.assertIn("sync_app_name(app, target)", script)
+
+    def test_ios_ci_covers_testflight_provisioning_contract(self):
+        workflow = (ROOT / ".github" / "workflows" / "ios.yml").read_text(
+            encoding="utf-8"
+        )
+
+        self.assertIn('      - "scripts/provision_testflight_apps.rb"', workflow)
+        self.assertIn(
+            '      - "scripts/tests/test_target_main_testflight_workflows.py"',
+            workflow,
+        )
+
     def test_testflight_build_verification_requires_valid_processing(self):
         script = (ROOT / "scripts" / "verify_testflight_build.rb").read_text(
             encoding="utf-8"

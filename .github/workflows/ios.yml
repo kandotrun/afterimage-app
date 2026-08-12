@@ -11,6 +11,8 @@ on:
       - "scripts/fixtures/app-store/**"
       - "scripts/tests/verify-app-store.test.mjs"
       - "scripts/tests/test_verify_ios_archive.py"
+      - "scripts/tests/test_target_main_testflight_workflows.py"
+      - "scripts/provision_testflight_apps.rb"
       - "scripts/verify-app-store.mjs"
       - "scripts/verify-ios-archive.py"
       - "scripts/generate-app-store-screenshots.sh"
