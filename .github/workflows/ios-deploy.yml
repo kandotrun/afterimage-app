@@ -3,6 +3,9 @@ name: ios-deploy
 on:
   push:
     branches: [main]
+    paths:
+      - "ios/**"
+      - ".github/workflows/ios-deploy.yml"
   workflow_dispatch:
 
 permissions:
