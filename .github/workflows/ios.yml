@@ -21,6 +21,7 @@ on:
       - "scripts/verify-ios-localizations.mjs"
       - "scripts/xcode-clang-probe"
       - ".github/workflows/**"
+  workflow_dispatch:
 
 permissions:
   contents: read
