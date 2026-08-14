@@ -7,8 +7,8 @@ permissions:
   contents: read
 
 concurrency:
-  group: app-store-screenshots-${{ github.ref }}
-  cancel-in-progress: true
+  group: afterimage-ios-self-hosted
+  cancel-in-progress: false
 
 jobs:
   capture:
