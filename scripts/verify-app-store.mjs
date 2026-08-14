@@ -634,6 +634,33 @@ function extractJobs(source) {
 
 const expectedRunnerLabels = ["self-hosted", "macOS", "ARM64", "afterimage-ci"];
 
+function workflowAcceptsDependabotPush(source) {
+  const configured = parseWorkflow(source).on;
+  if (!configured || typeof configured !== "object" || Array.isArray(configured)
+      || !Object.hasOwn(configured, "push")) {
+    return false;
+  }
+  const push = configured.push;
+  if (!push || typeof push !== "object" || Array.isArray(push)) return true;
+  const branches = Array.isArray(push.branches)
+    ? push.branches.map((entry) => String(entry))
+    : push.branches ? [String(push.branches)] : [];
+  const ignored = Array.isArray(push["branches-ignore"])
+    ? push["branches-ignore"].map((entry) => String(entry))
+    : push["branches-ignore"] ? [String(push["branches-ignore"])] : [];
+  if (branches.includes("!dependabot/**") || ignored.includes("dependabot/**")) {
+    return false;
+  }
+  return branches.length === 0
+    || branches.some((pattern) => ["*", "**", "dependabot/**"].includes(pattern));
+}
+
+function jobBlocksDependabotPush(config) {
+  if (Object.hasOwn(config, "needs")) return true;
+  const condition = typeof config.if === "string" ? config.if : "";
+  return /github\.actor\s*!=\s*['"]dependabot\[bot\]['"]/.test(condition);
+}
+
 export function verifyWorkflowTrust(workflows) {
   const failures = [];
   for (const workflow of workflows) {
@@ -661,6 +688,7 @@ export function verifyWorkflowTrust(workflows) {
       ));
     }
 
+    const acceptsDependabotPush = workflowAcceptsDependabotPush(workflow.content);
     for (const job of jobs) {
       if (Object.hasOwn(job.config, "runs-on")) {
         const runner = job.config["runs-on"];
@@ -670,6 +698,17 @@ export function verifyWorkflowTrust(workflows) {
           failures.push(failure(
             "ci.runner-labels",
             `${workflow.path} のjob ${job.name}は runs-on: ${expectedRunner} を使用する必要があります。`,
+          ));
+        }
+        const isSelfHosted = Array.isArray(runner)
+          ? runner.includes("self-hosted")
+          : String(runner).includes("self-hosted");
+        if (acceptsDependabotPush
+            && isSelfHosted
+            && !jobBlocksDependabotPush(job.config)) {
+          failures.push(failure(
+            "ci.push.dependabot-self-hosted",
+            `${workflow.path} のentry job ${job.name}はDependabot pushからself-hosted runnerを実行できません。branch除外またはjob guardを追加してください。`,
           ));
         }
       }

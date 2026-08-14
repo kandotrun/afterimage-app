@@ -2,7 +2,9 @@ name: ios
 
 on:
   push:
-    branches: ["**"]
+    branches:
+      - "**"
+      - "!dependabot/**"
     paths:
       - "ios/**"
       - "docs/app-store/**"
