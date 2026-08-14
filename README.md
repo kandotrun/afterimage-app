@@ -1,12 +1,17 @@
 # Afterimage App
 
-A private, iOS-first lifelog inspired by the effortless camera-roll experience of POOL. New imports are video-only: videos are optimized on-device, only optimized media is kept in private Cloudflare R2, and previously stored images remain supported in the personal timeline. The product direction is searchable memory; transcription and semantic recall follow after the private media foundation.
+A privacy-first iOS lifelog that turns personal video into a searchable timeline.
+The iOS app optimizes media on-device, the Cloudflare backend stores only the
+optimized copy in private R2, and optional transcription, visual analysis, and
+MCP access remain owner-scoped and consent-gated.
 
-> This repository is private product code. The existing `kandotrun/afterimage` repository remains the separate self-hosted/OSS project.
+This repository contains the product app and hosted-backend implementation.
+[`kandotrun/afterimage`](https://github.com/kandotrun/afterimage) is a separate,
+self-hosted camera-ingest project.
 
 ## Screenshots
 
-iPhone 17 Pro / iOS 26.5 Simulator:
+iPhone 17 Pro / iOS 26.5 Simulator using synthetic fixture data:
 
 <p align="center">
   <img src="docs/screenshots/ios26-login.png" alt="Sign in with Apple" width="240">
@@ -14,65 +19,163 @@ iPhone 17 Pro / iOS 26.5 Simulator:
   <img src="docs/screenshots/ios26-detail.png" alt="Memory detail" width="240">
 </p>
 
-## Stack
+## What is included
 
-- iOS 26 only, SwiftUI, Liquid Glass, PhotosPicker, AuthenticationServices, AVKit, Core Haptics
-- On-device optimization before upload: HEVC video + bitstream-passthrough audio in MOV; HEIC photos. R2 never receives the original file.
-- Cloudflare Workers + Hono
-- D1 for users, sessions, asset metadata, multipart state, and cached daily summaries
-- Private R2 for optimized media and thumbnails
-- Qwen Cloud Token Plan (`qwen3.8-max-preview`) for on-demand summaries of completed daily transcripts
+- **iOS 26 app:** SwiftUI, Liquid Glass, PhotosPicker, in-app capture,
+  on-device HEVC optimization, background upload, private playback, search,
+  Live Activity upload progress, and Sign in with Apple.
+- **Cloudflare backend:** Hono on Workers, D1 metadata, private R2 media,
+  short-lived playback/media grants, account deletion, and scheduled cleanup.
+- **Optional AI processing:** Soniox transcription, Qwen daily summaries, and
+  an outbound-only Mage-VL GPU worker.
+- **MCP:** owner-issued, hashed tokens and per-video access controls for
+  read-only agent access.
 
-See [`AGENTS.md`](./AGENTS.md) for security and TDD rules.
+## Privacy model
 
-## Status
+- Original imports are never uploaded. A failed optimization does not fall back
+  to sending the source file.
+- Media objects, transcripts, analyses, grants, and queries are scoped to the
+  authenticated owner.
+- External AI is disabled until the user gives versioned consent. MCP access
+  also requires per-video opt-in.
+- Playback, worker, and agent media URLs are short-lived grants rather than
+  permanent public URLs.
+- Asset and account deletion include durable cleanup and retry paths.
 
-The initial vertical slice is deployed and covers:
+The repository is public, but any deployed instance still handles highly
+sensitive personal data. Review the threat model, provider terms, retention
+policy, and legal requirements before operating it for other people.
 
-1. Sign in with Apple
-2. Video import without loading large movies into memory
-3. Authenticated single and multipart R2 upload
-4. Private timeline and Range-capable playback
-5. macOS CI build/test for the native app
-6. Privacy manifest for linked account data and private photos/videos
+## Repository layout
 
-The production Worker currently runs at `https://afterimage-api.softbank.workers.dev` with APAC D1 (`afterimage-prod`) and private APAC R2 (`afterimage-media-prod`). Deployment-local Cloudflare IDs live only in ignored `backend/wrangler.jsonc`.
+```text
+backend/       Cloudflare Worker, D1 migrations, R2 and provider integrations
+ios/           SwiftUI app and upload Live Activity extension
+mage-worker/   Outbound-only Python Mage-VL lease worker
+scripts/       CI, release, archive, and production rollout contracts
+docs/          App Store material and design/implementation records
+```
 
-## Deletion and cleanup invariant
+See [`AGENTS.md`](./AGENTS.md) and the nested `AGENTS.md` files for project
+boundaries and verification rules.
 
-Asset deletion immediately blocks authenticated access and deletes the current R2 keys plus the whole per-asset prefix. The D1 row remains as a hidden, terminal `failed` tombstone for 24 hours; scheduled cleanup then repeats prefix deletion before removing the row. This grace pass is intentional: it catches a media write that was already in flight when the first deletion completed.
+## Prerequisites
 
-Abandoned uploads use the same two-stage policy: stale `uploading` rows become `failed`, and only a later cleanup pass removes their R2 prefix and D1 metadata.
+- Node.js 24 or newer and npm
+- Python 3.12 or newer for the Mage worker
+- FFmpeg for local media fixtures and Mage processing
+- Xcode 26 and XcodeGen for native iOS builds
+- A Cloudflare account for deployment
+- Apple Developer configuration for Sign in with Apple, WeatherKit, device
+  signing, and App Store distribution
 
-## Before TestFlight
+## Quick verification
 
-The vertical slice is not yet an App Store release candidate. Complete these release blockers first:
+The cross-platform repository checks do not replace a real Xcode build, but
+they validate the backend and source/release contracts:
 
-- Bind every Sign in with Apple request to a unique nonce, verify it server-side, and reject nonce replay.
-- Add in-app account deletion that removes D1 metadata, active multipart uploads, and all owned R2 objects.
-- Configure the Apple Developer team, signing, App Store privacy answers, and a public privacy policy/support URL.
-- Validate HEVC output and byte-for-byte audio passthrough on physical devices across representative AAC/ALAC input files, interruptions, low-storage conditions, and backgrounding.
+```bash
+npm ci
+npm run check
+```
 
-Copy `backend/wrangler.example.jsonc` when provisioning another environment.
+Run the Mage worker tests separately:
 
-## Local development
+```bash
+python3 -m venv /tmp/afterimage-mage-worker-venv
+/tmp/afterimage-mage-worker-venv/bin/pip install -e 'mage-worker[test]'
+/tmp/afterimage-mage-worker-venv/bin/pytest mage-worker/tests -q
+```
+
+For iOS, generate the project and run against an available iOS 26 simulator:
+
+```bash
+cd ios
+xcodegen generate
+xcrun simctl list devices available
+xcodebuild test \
+  -project afterimage.xcodeproj \
+  -scheme afterimage \
+  -destination 'platform=iOS Simulator,id=<SIMULATOR_UDID>' \
+  -derivedDataPath DerivedData \
+  CODE_SIGNING_ALLOWED=NO
+```
+
+The checked-in Xcode project contains the maintainer's bundle identifiers, signing
+team, associated domain, export settings, and production API origin. For a fork,
+replace those values before signing or distribution. During local DEBUG runs,
+point the app at your local Worker with the scheme launch arguments:
+
+```text
+-afterimageApiBase http://127.0.0.1:8787
+```
+
+Do not upload personal media to an endpoint you do not operate. App Store builds
+use the repository's configured HTTPS origin and do not honor this DEBUG-only
+override.
+
+## Local backend
+
+The development config uses local D1 and R2 bindings:
 
 ```bash
 cd backend
-npm run dev          # wrangler dev on :8787 (local D1 + R2, wrangler.dev.jsonc)
-npm run seed:dev     # dev user/session + sample media through the real upload flow
+npm run dev
+# In another terminal:
+npm run seed:dev
 ```
 
-Daily summaries require `QWENCLOUD_TOKEN_PLAN_API_KEY`. Keep it out of Git: use
-`backend/.dev.vars` locally and provision production with
-`npx wrangler secret put QWENCLOUD_TOKEN_PLAN_API_KEY --config wrangler.jsonc`.
-The endpoint and pinned model are non-secret vars in the Wrangler configs.
+The seed command creates synthetic media and prints a development-only bearer
+session for the app's DEBUG launch arguments. Never use it against production.
 
-Mage-VL processing requires migration `0010_agent_video_access.sql`, the
-matching backend deployment, and a production `MAGE_WORKER_TOKEN_HASH` secret.
-Keep the pull worker disabled until all three are in place.
+For a separate Cloudflare environment, copy the placeholder config and fill in
+your own IDs and resource names:
 
-The seed script prints a bearer token for the DEBUG-only launch arguments
-`-afterimageApiBase <url> -afterimageDevSession <token>` (plus
-`-afterimageOpenFirst` to auto-open the first memory). These hooks are
-compiled out of release builds.
+```bash
+cd backend
+cp wrangler.example.jsonc wrangler.jsonc
+```
+
+Keep `wrangler.jsonc`, `.dev.vars*`, `.env*`, private keys, provisioning
+profiles, media, and generated deployment artifacts out of Git. Production
+secrets include:
+
+- `APPLE_PRIVATE_KEY`
+- `SONIOX_API_KEY`
+- `QWENCLOUD_TOKEN_PLAN_API_KEY`
+- `MAGE_WORKER_TOKEN_HASH`
+
+Non-secret provider URLs, model names, bundle IDs, and resource placeholders
+live in the Wrangler configs. The production rollout script is intentionally
+strict and maintenance-aware; read it fully before adapting it to another
+environment.
+
+## Mage-VL worker
+
+The GPU worker opens no inbound port. It polls an authenticated lease endpoint,
+downloads one consented video through a short-lived grant, processes it in a
+per-job directory, and removes source and derivative files on every exit path.
+See [`mage-worker/README.md`](mage-worker/README.md) for the container and
+systemd setup. Model weights and NVIDIA images are not distributed by this
+repository and remain subject to their upstream terms.
+
+## Releases and CI
+
+Native builds, screenshots, TestFlight delivery, and production deployment use
+maintainer-controlled self-hosted runners and repository secrets. Workflows do
+not run untrusted fork code on those runners. External contributors should
+include local test results with their pull request; maintainers run trusted
+native/release checks after review.
+
+## Contributing and security
+
+Read [`CONTRIBUTING.md`](CONTRIBUTING.md) before sending a change. Report
+vulnerabilities privately as described in [`SECURITY.md`](SECURITY.md), and
+never attach real lifelog media, credentials, account identifiers, or provider
+payloads to a public issue.
+
+## License
+
+MIT. See [`LICENSE`](LICENSE). Third-party components and external model/runtime
+artifacts retain their own licenses; see [`THIRD_PARTY_NOTICES.md`](THIRD_PARTY_NOTICES.md).

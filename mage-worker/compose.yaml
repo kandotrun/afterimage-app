@@ -15,7 +15,7 @@ services:
       AFTERIMAGE_API_BASE_URL: ${AFTERIMAGE_API_BASE_URL:?required}
       AFTERIMAGE_TOKEN_FILE: /run/secrets/worker-token
       AFTERIMAGE_WORK_DIR: /work/jobs
-      AFTERIMAGE_WORKER_ID: ${AFTERIMAGE_WORKER_ID:-dgx-spark}
+      AFTERIMAGE_WORKER_ID: ${AFTERIMAGE_WORKER_ID:-gpu-worker-1}
       HF_HOME: /models/huggingface
       HOME: /work/tmp/home
       TMPDIR: /work/tmp

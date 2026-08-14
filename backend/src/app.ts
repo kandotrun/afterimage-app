@@ -1401,7 +1401,7 @@ export function createApp(overrides: Partial<AppDependencies> = {}) {
 
     const now = dependencies.now();
     const nowIso = now.toISOString();
-    const devSubject = "dev-kan";
+    const devSubject = "dev-user";
     const pendingDeletion = await context.env.DB.prepare(
       `SELECT 1 AS found
          FROM account_deletion_jobs
@@ -1421,7 +1421,7 @@ export function createApp(overrides: Partial<AppDependencies> = {}) {
       `INSERT INTO users (id, apple_subject, email, display_name, created_at, updated_at)
        VALUES (?, ?, ?, ?, ?, ?)
        ON CONFLICT(apple_subject) DO UPDATE SET updated_at = excluded.updated_at`,
-    ).bind(proposedUserId, devSubject, "kan@2-38.com", "Kan", nowIso, nowIso).run();
+    ).bind(proposedUserId, devSubject, "dev@afterimage.local", "Dev User", nowIso, nowIso).run();
     const user = await context.env.DB.prepare(
       "SELECT id, apple_subject, email, display_name FROM users WHERE apple_subject = ?",
     ).bind(devSubject).first<UserRow>();

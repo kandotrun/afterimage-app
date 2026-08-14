@@ -42,17 +42,17 @@ The token file must contain one `aft_worker_...` token and have mode `0600`.
 worker name:
 
 ```text
-AFTERIMAGE_API_BASE_URL=https://afterimage.2-38.com
-AFTERIMAGE_WORKER_ID=dgx-spark
+AFTERIMAGE_API_BASE_URL=https://afterimage.example.com
+AFTERIMAGE_WORKER_ID=gpu-worker-1
 AFTERIMAGE_MODEL_CACHE=/srv/afterimage-mage-vl/models
 AFTERIMAGE_DATA_ROOT=/srv/afterimage-mage-vl/data
 AFTERIMAGE_TOKEN_FILE_HOST=/srv/afterimage-mage-vl/secrets/worker-token
 ```
 
-`AFTERIMAGE_API_BASE_URL` must be an HTTPS origin that exposes the internal GPU
-routes under `/v1/internal/gpu-jobs/*`; the production custom domain above is
-the source of truth. A `workers.dev` health endpoint can return 200 while the
-internal GPU route is not registered there.
+`AFTERIMAGE_API_BASE_URL` must be the canonical HTTPS origin that exposes the
+internal GPU routes under `/v1/internal/gpu-jobs/*`. Do not point the worker at
+an alternate health-only origin: a successful health response does not prove
+that the authenticated GPU routes are registered there.
 
 From the `mage-worker` checkout, build and install the user service:
 

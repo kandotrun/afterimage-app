@@ -46,7 +46,7 @@ const expiresAt = new Date(Date.now() + 30 * 24 * 3600 * 1000).toISOString();
 wranglerD1(`DELETE FROM users WHERE apple_subject = 'dev-seed';`);
 wranglerD1(
   `INSERT INTO users (id, apple_subject, email, display_name, created_at, updated_at)
-   VALUES ('${userId}', 'dev-seed', 'dev@afterimage.local', 'Kan', '${nowIso}', '${nowIso}');`,
+   VALUES ('${userId}', 'dev-seed', 'dev@afterimage.local', 'Dev User', '${nowIso}', '${nowIso}');`,
 );
 wranglerD1(
   `INSERT INTO sessions (id, user_id, token_hash, expires_at, created_at)

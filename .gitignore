@@ -30,6 +30,19 @@ artifacts/
 !.env.example
 *.p8
 *.mobileprovision
+*.p12
+*.pem
+*.key
+*.keychain*
+*.ipa
+*.xcarchive/
+*.mov
+*.mp4
+*.m4a
+*.wav
+*.heic
+*.jpg
+*.jpeg
 
 # OS / editors
 .DS_Store
