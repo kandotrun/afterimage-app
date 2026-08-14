@@ -222,6 +222,50 @@ jobs:
   assert.ok(failures.some((failure) => failure.id === "ci.pr.trigger"));
 });
 
+test("Dependabot push からentry self-hosted jobを実行できない", () => {
+  const failures = verifyWorkflowTrust([{
+    path: ".github/workflows/dependabot-unsafe.yml",
+    content: `name: dependabot-unsafe
+on:
+  push:
+    branches: ["**"]
+  workflow_dispatch:
+jobs:
+  test:
+    runs-on: [self-hosted, macOS, ARM64, afterimage-ci]
+    steps:
+      - run: npm ci
+`,
+  }]);
+
+  assert.ok(
+    failures.some((failure) => failure.id === "ci.push.dependabot-self-hosted"),
+  );
+});
+
+test("branch除外後もmanual dispatchでDependabot refを検証できる", () => {
+  const failures = verifyWorkflowTrust([{
+    path: ".github/workflows/dependabot-guarded.yml",
+    content: `name: dependabot-guarded
+on:
+  push:
+    branches:
+      - "**"
+      - "!dependabot/**"
+  workflow_dispatch:
+jobs:
+  test:
+    runs-on: [self-hosted, macOS, ARM64, afterimage-ci]
+    steps:
+      - run: npm ci
+`,
+  }]);
+
+  assert.ok(
+    !failures.some((failure) => failure.id === "ci.push.dependabot-self-hosted"),
+  );
+});
+
 test("backend workflow はcheck成功後のmain pushだけでproduction deployし、configをcleanupする", () => {
   const safe = [
     "name: backend",

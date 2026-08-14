@@ -2,7 +2,9 @@ name: backend
 
 on:
   push:
-    branches: ["**"]
+    branches:
+      - "**"
+      - "!dependabot/**"
     paths:
       - "backend/**"
       - "package.json"

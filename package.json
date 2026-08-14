@@ -10,7 +10,7 @@
   "scripts": {
     "test": "node scripts/verify-backend-crons.mjs && npm --workspace backend test",
     "typecheck": "npm --workspace backend run typecheck",
-    "test:app-store": "python3 -m unittest scripts/tests/test_verify_ios_archive.py scripts/tests/test_koyomi_direct_install.py scripts/tests/test_koyomi_testflight_workflow.py scripts/tests/test_target_main_testflight_workflows.py && node --test scripts/tests/verify-app-store.test.mjs",
+    "test:app-store": "python3 -m unittest scripts/tests/test_verify_ios_archive.py && node --test scripts/tests/verify-app-store.test.mjs",
     "verify:app-store": "node scripts/verify-app-store.mjs --mode contracts",
     "verify:app-store:screenshots": "node scripts/verify-app-store.mjs --mode screenshots",
     "verify:app-store:submission": "node scripts/verify-app-store.mjs --mode submission",

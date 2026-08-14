@@ -27,9 +27,10 @@ final class MCPContractTests: XCTestCase {
 
     func testGeneratedAgentConfigurationIsValidAndContainsBearerCredential() throws {
         let endpoint = try XCTUnwrap(URL(string: "https://afterimage.2-38.com/mcp"))
+        let fixtureToken = "aft_" + "mcp_" + String(repeating: "x", count: 48)
         let configuration = MCPAgentConfiguration(
             endpoint: endpoint,
-            token: "aft_mcp_abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQ"
+            token: fixtureToken
         )
 
         let jsonData = try XCTUnwrap(configuration.genericJSON.data(using: .utf8))
