@@ -656,7 +656,6 @@ function workflowAcceptsDependabotPush(source) {
 }
 
 function jobBlocksDependabotPush(config) {
-  if (Object.hasOwn(config, "needs")) return true;
   const condition = typeof config.if === "string" ? config.if : "";
   return /github\.actor\s*!=\s*['"]dependabot\[bot\]['"]/.test(condition);
 }
@@ -708,7 +707,7 @@ export function verifyWorkflowTrust(workflows) {
             && !jobBlocksDependabotPush(job.config)) {
           failures.push(failure(
             "ci.push.dependabot-self-hosted",
-            `${workflow.path} のentry job ${job.name}はDependabot pushからself-hosted runnerを実行できません。branch除外またはjob guardを追加してください。`,
+            `${workflow.path} のjob ${job.name}はDependabot pushからself-hosted runnerを実行できません。branch除外またはjob guardを追加してください。`,
           ));
         }
       }
