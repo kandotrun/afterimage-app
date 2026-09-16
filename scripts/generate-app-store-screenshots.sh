@@ -20,10 +20,10 @@ for command in xcodegen xcodebuild xcrun python3; do
 done
 
 device_id="$(
-  AFTERIMAGE_DEVICE_NAME="$device_name" xcrun simctl list devices available -j |
-    python3 -c 'import json, os, sys
+  xcrun simctl list devices available -j |
+    python3 -c 'import json, sys
 payload = json.load(sys.stdin)
-name = os.environ["AFTERIMAGE_DEVICE_NAME"]
+name = sys.argv[1]
 matches = [
     device["udid"]
     for runtime, devices in payload["devices"].items()
@@ -33,7 +33,7 @@ matches = [
 ]
 if len(matches) != 1:
     raise SystemExit(f"expected exactly one available iOS 26 {name} simulator, found {len(matches)}")
-print(matches[0])'
+print(matches[0])' "$device_name"
 )"
 
 cleanup_status_bar() {
