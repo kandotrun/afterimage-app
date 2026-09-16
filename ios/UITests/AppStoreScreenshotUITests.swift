@@ -1,3 +1,5 @@
+import CoreGraphics
+import ImageIO
 import UIKit
 import XCTest
 
@@ -29,7 +31,9 @@ final class AppStoreScreenshotUITests: XCTestCase {
             ]
             app.launch()
 
-            let ready = app.otherElements["app-store-screenshot-ready-\(scene)"]
+            let ready = app.descendants(matching: .any)
+                .matching(identifier: "app-store-screenshot-ready-\(scene)")
+                .firstMatch
             XCTAssertTrue(ready.waitForExistence(timeout: 10))
             let screenshot = XCUIScreen.main.screenshot()
             let data = try opaquePNGData(screenshot)
@@ -41,23 +45,48 @@ final class AppStoreScreenshotUITests: XCTestCase {
         }
     }
 
+    /// Redraws the screenshot into an opaque device-RGB bitmap and encodes it as a
+    /// PNG without an alpha channel. `UIGraphicsImageRenderer` with
+    /// `format.opaque = true` can still emit colorType 6, which App Store
+    /// submission rejects, so the RGB context below is the authoritative step.
     private func opaquePNGData(_ screenshot: XCUIScreenshot) throws -> Data {
-        guard let image = UIImage(data: screenshot.pngRepresentation) else {
+        guard let image = UIImage(data: screenshot.pngRepresentation)?.cgImage else {
             throw AppStoreScreenshotError.invalidImage
         }
-        let format = UIGraphicsImageRendererFormat()
-        format.opaque = true
-        format.scale = image.scale
-        let renderer = UIGraphicsImageRenderer(size: image.size, format: format)
-        let flattened = renderer.image { context in
-            UIColor.black.setFill()
-            context.fill(CGRect(origin: .zero, size: image.size))
-            image.draw(in: CGRect(origin: .zero, size: image.size))
-        }
-        guard let data = flattened.pngData() else {
+        let width = image.width
+        let height = image.height
+        let bitmapInfo = CGImageAlphaInfo.noneSkipLast.rawValue
+        guard let context = CGContext(
+            data: nil,
+            width: width,
+            height: height,
+            bitsPerComponent: 8,
+            bytesPerRow: 0,
+            space: CGColorSpaceCreateDeviceRGB(),
+            bitmapInfo: bitmapInfo
+        ) else {
             throw AppStoreScreenshotError.invalidImage
         }
-        return data
+        context.setFillColor(red: 0, green: 0, blue: 0, alpha: 1)
+        context.fill(CGRect(x: 0, y: 0, width: width, height: height))
+        context.draw(image, in: CGRect(x: 0, y: 0, width: width, height: height))
+        guard let opaque = context.makeImage() else {
+            throw AppStoreScreenshotError.invalidImage
+        }
+        let buffer = NSMutableData()
+        guard let destination = CGImageDestinationCreateWithData(
+            buffer,
+            "public.png" as CFString,
+            1,
+            nil
+        ) else {
+            throw AppStoreScreenshotError.invalidImage
+        }
+        CGImageDestinationAddImage(destination, opaque, nil)
+        guard CGImageDestinationFinalize(destination) else {
+            throw AppStoreScreenshotError.invalidImage
+        }
+        return buffer as Data
     }
 }
 
