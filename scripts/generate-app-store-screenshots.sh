@@ -72,7 +72,7 @@ done
   cd "$repository_root/ios"
   xcodegen generate
   set -o pipefail
-  AFTERIMAGE_SCREENSHOT_OUTPUT_DIR="$output_directory" xcodebuild test \
+  TEST_RUNNER_AFTERIMAGE_SCREENSHOT_OUTPUT_DIR="$output_directory" xcodebuild test \
     -project afterimage.xcodeproj \
     -scheme afterimage \
     -destination "platform=iOS Simulator,id=$device_id" \
