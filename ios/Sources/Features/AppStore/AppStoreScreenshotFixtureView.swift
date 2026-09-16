@@ -37,6 +37,7 @@ struct AppStoreScreenshotFixtureView: View {
             }
         }
         .preferredColorScheme(.dark)
+        .accessibilityElement(children: .contain)
         .accessibilityIdentifier(scene.readyIdentifier)
     }
 }
